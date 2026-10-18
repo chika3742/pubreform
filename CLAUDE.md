@@ -27,5 +27,5 @@ pub の依存を更新する PR を作成・保守する GitHub Action。TypeScr
 
 ## 未確認のこと
 
-- E2E（詳細 §17.1）は、テスト用リポジトリが用意されたら行う
+- ローカル E2E（詳細 §17.1）と GitHub E2E（詳細 §17.2、テスト用リポジトリ `chika3742/pubreform-e2e`）はまだ作っていない
 - 実際の GitHub での動作はまだ確かめていない: コミットが Verified になるか、`mergeable_state`、App のトークンでのラベルの作成、`/` を含むブランチ名での ref の API

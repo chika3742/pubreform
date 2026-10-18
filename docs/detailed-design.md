@@ -231,6 +231,7 @@ pub(args: string[], opts: { pubspec: string; lock: string }): Promise<{ pubspec:
 - それ以外のパスは pub.dev の応答をそのまま返す
 - 取得した一覧は、実行中はメモリに保持して再利用する。1 回の実行の中で、どの解決にも同じ一覧を見せるためである
 - pub.dev への取得は 30 秒で打ち切る。失敗したら 502 を返す（pub が失敗し、その解決のエラーになる）
+- テストのために、環境変数 `PUBREFORM_UPSTREAM` があれば、pub.dev の代わりにその URL から取得する（E2E でフィクスチャー用サーバーに向けるため。利用者向けの設定ではないので、README には書かない）
 - 計画のために `visibleVersions(name)`（絞り込み後のバージョン一覧）を公開する
 
 `ignore` は、制約を書き換えるのではなく、ここで隠すことで実現する。U / R / S / 適用のすべての解決に同じように効き、制約の補集合を計算する必要がない。名前だけを指定したパッケージは、ロック済みのバージョンしか見えなくなるので、現在のバージョンに留まる。
@@ -374,6 +375,7 @@ interface Meta {
   configHash: string
   commit: string
   previous?: string   // 再生成の直前のブランチの head（§14.4）
+  closed?: true        // pubreform が閉じた PR（§14.3）
 }
 ```
 
@@ -447,7 +449,7 @@ pubreform failed to update this PR.
 | PR の作成 | `POST /pulls` → `POST /issues/{n}/labels`（設定のラベル。空なら呼ばない） |
 | PR の更新 | `PATCH /pulls/{n}`（`title`、`body`）→ `POST /issues/{n}/labels` |
 | コメント | `GET /issues/{n}/comments`（必要なときだけ、全ページ）、`POST /issues/{n}/comments` |
-| クローズ | `POST /issues/{n}/comments` → `PATCH /pulls/{n}`（`state: closed`）→ `DELETE /git/refs/heads/<branch>` |
+| クローズ | `POST /issues/{n}/comments` → `PATCH /pulls/{n}`（`state: closed` と、メタデータに `closed: true` を入れた `body` を 1 回で送る）→ `DELETE /git/refs/heads/<branch>` |
 
 - tree の `content` を使うと blob を別に作らなくてよい
 - ラベルの作成に失敗したら、エラーとして記録して（最後に失敗終了する）、そのラベルを付けずに続ける。ラベルの作成も Pull requests の権限で行える
@@ -493,7 +495,7 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 
 | 状況 | 操作 |
 |---|---|
-| 単位があり、PR がない | 同じ種類で、内容が同じ未マージの closed PR があれば何もしない。なければ `create`。内容が同じとは、パッケージ名の集合が同じで、それぞれの `to` も同じこと（片方にしかないパッケージがあれば違う） |
+| 単位があり、PR がない | 同じ種類で、内容が同じ未マージの closed PR があり、そのメタデータに `closed` がなければ（= 利用者が閉じた PR なら）何もしない。なければ `create`。内容が同じとは、パッケージ名の集合が同じで、それぞれの `to` も同じこと（片方にしかないパッケージがあれば違う）。pubreform が閉じた PR（`ignore` への追加や統合で閉じたもの）は対象にしない。対象にすると、`ignore` に一時的に入れて外しただけで、同じ PR が二度と作られなくなるため |
 | 単位の適用に失敗し、PR がある | `commentError` |
 | 単位の適用に失敗し、PR がない | なし（ログだけ） |
 | PR があり、単位がない | PR のパッケージのどれかが `uncertain`、または適用に失敗した単位に含まれていれば `none`（計画や適用に失敗しただけかもしれないので閉じない）。そうでなければ `close`。PR のパッケージが別の単位に含まれていれば `supersededBy` を付ける |
@@ -554,45 +556,76 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 | 単体 | version、clock、config、changelog の抜き出し、render（メタデータの往復、本文の長さの上限）、reconciler の `decide`、planner（`closure` と併合） | `bun test`。planner は偽の `resolve` を渡す。ネットワークは使わない |
 | 結合 | 中継サーバーと pub | プロトタイプの検証（基本 §4.2）を `bun test` に移す。pub.dev へのネットワークと Dart / fvm が必要なので、環境変数 `PUBREFORM_IT=1` のときだけ動かす |
 | 設定のスキーマ | `pubreform.schema.json` と config.ts | 同じ設定例を両方で判定し、結果が一致することを確かめる（§4.2） |
-| E2E | Action 全体 | テスト用の別リポジトリで行う（§17.1） |
+| ローカル E2E | Action 全体（ビルドした `dist/main.js`） | フィクスチャー用サーバー、偽の GitHub API、bare リポジトリで、場面ごとに動かす（§17.1） |
+| GitHub E2E | 本物の GitHub でしか分からない挙動 | テスト用リポジトリで、本物の GitHub に対して動かす（§17.2） |
 
-pubreform 自身の CI では、push と pull request のたびに `tsc --noEmit` と単体テストを動かす。
+pubreform 自身の CI では、push と pull request のたびに `tsc --noEmit`、単体テスト、ローカル E2E を動かす。
 
-### 17.1 E2E
+### 17.1 ローカル E2E
 
-テスト用リポジトリ [`chika3742/pubreform-e2e`](https://github.com/chika3742/pubreform-e2e)（非公開）で行う。pubreform のルートには Action のコードがあり pubspec がないので、v1 の対象（ルートの pubspec とデフォルトブランチ）に合わないためである。
+ビルドした `dist/main.js` を、外部に一切接続しない環境で実行し、場面ごとの結果を確かめる。pub の解決は本物の `dart pub` が行う。環境変数 `PUBREFORM_E2E=1` のときだけ動かす（Dart が必要なため）。
+
+構成:
+
+| 置き換えるもの | 置き換え先 |
+|---|---|
+| pub.dev | フィクスチャー用サーバー。`PUBREFORM_UPSTREAM`（§9）で中継サーバーの取得元にする。パッケージ一覧（`/api/packages/<name>`）とアーカイブ（tar.gz）を配る |
+| GitHub API | 偽の API。`GITHUB_API_URL` で向ける。§13 の API だけを実装し、コミットと ref は bare リポジトリに git のコマンドで書き込む |
+| GitHub のリポジトリ | ローカルの bare リポジトリ。`GITHUB_SERVER_URL=file://…` で clone させる |
+
+フィクスチャー:
+
+- パッケージは pub.dev と名前が重ならないように `fx_` で始める。テスト用プロジェクトの依存はフィクスチャーだけにした Dart のプロジェクトとし、pub.dev には接続しない
+- 公開日は、テストを始めた時刻からの相対で決める（例: 30 日前、1 日前）。Action の現在時刻は差し替えない。設定の cron は毎分（`* * * * *`）にして、slot が現在時刻とほぼ同じになるようにする
+- アーカイブは同じ定義から毎回同じバイト列になるように作る（tar の更新時刻を固定し、gzip のヘッダーに時刻を入れない）。lockfile の `sha256` が変わらないようにするため。アーカイブには `pubspec.yaml` と、版ごとの節を持つ `CHANGELOG.md` を入れる
+- 次の場面が起こるようにパッケージを組む（各パッケージはロック済みの 1.0.0 から始める）
+
+| パッケージ | 用意する版 | 期待する結果 |
+|---|---|---|
+| `fx_patch`、`fx_minor` | 1.0.1、1.2.0（30 日前） | マイナー・パッチグループ（N = 2、表あり） |
+| `fx_major` | 2.0.0（30 日前） | 単独 PR |
+| `fx_needs_b`、`fx_b` | `fx_needs_b` 1.1.0 は `fx_b ^2.0.0` を要求。`fx_b` 2.0.0（どちらも 30 日前） | 同時更新グループ {fx_b, fx_needs_b} |
+| `fx_sdk` | 2.0.0 は Dart SDK `^99.0.0` を要求 | 解決不能（PR なし、サマリーに記録） |
+| `fx_fresh` | 1.1.0（1 日前。`min_release_age_days: 3`） | 待機中なので PR なし |
+| `fx_ignored` | 1.1.0（30 日前）。設定の `ignore` に名前を入れる | PR なし |
+
+場面（前の場面の状態を引き継ぎ、順に実行する）:
+
+1. 作成: 上の表の PR がそれぞれ作られる。タイトル、本文（表、更新履歴、メタデータ、チェックボックス）、コミットメッセージ、ラベル（ないラベルは作られる）、ジョブサマリー（解決不能）を確かめる
+2. 何も変わらない: もう一度実行し、どの PR の head も変わらず、コメントも増えない
+3. チェックボックス: 単独 PR のチェックボックスにチェックを入れて実行すると、再生成され、チェックが外れる。内容は同じなのでコメントは出ない
+4. 新しいリリース: `fx_major` に 2.1.0（30 日前）を追加して実行すると、単独 PR が再生成され、内容の変更のコメントが出る
+5. ベースの更新: マイナー・パッチグループの PR をマージしたことにする（PR のブランチの内容をベースに反映し、PR を閉じる）。実行すると、ほかの PR は再生成されるが、内容の変更のコメントは出ない
+6. 人手のコミット: 同時更新グループの PR のブランチにコミットを追加して実行すると、通知のコメントが 1 回だけ出て、再生成されない。もう一度実行しても、通知は増えない
+7. 設定の変更: `ignore` に `fx_major` を足して実行すると、単独 PR が「no longer needed」でクローズされ、ブランチが消える。閉じた PR のメタデータに `closed: true` が入る
+8. 設定を戻す: `ignore` から `fx_major` を外して実行すると、単独 PR が作り直される（pubreform が閉じた PR は、作り直しを止めない）
+9. 利用者がクローズ: 8 の単独 PR を、利用者の操作として（メタデータを変えずに）マージせずに閉じて実行すると、同じ内容の PR は作られない
+10. 途中の失敗: 偽の API でブランチの更新を 1 回だけ失敗させると、その PR にエラーコメントが出て、ジョブは失敗する。次の実行で再生成され、成功する
+
+### 17.2 GitHub E2E
+
+本物の GitHub でしか分からない次の 4 点を、テスト用リポジトリ [`chika3742/pubreform-e2e`](https://github.com/chika3742/pubreform-e2e)（非公開）で確かめる。pub.dev の代わりに、17.1 と同じフィクスチャー用サーバーを使う。
+
+- API で作ったコミットが Verified になる
+- `mergeable_state` が取得できる（GitHub の計算を待つため、null でなくなるまで数回取り直す）
+- App のトークンで、ないラベルを作れる
+- `/` を含むブランチ名で、ref の取得と更新ができる
 
 前提（利用者が設定する）:
 
 - GitHub App を pubreform-e2e と pubreform の両方にインストールする。pubreform-e2e には本番と同じ権限（Contents と Pull requests の Read and write）が要る。pubreform は非公開なので、E2E のワークフローがコードを取得するために Contents の読み取りが要る
 - pubreform-e2e に、変数 `PUBREFORM_CLIENT_ID` とシークレット `PUBREFORM_PRIVATE_KEY` を設定する
-- トークンは `actions/create-github-app-token@v3` で、`repositories: pubreform-e2e,pubreform` として両方を対象に発行する
 
-テスト用プロジェクト（pubreform-e2e のルート）:
+ワークフロー（pubreform-e2e の `.github/workflows/e2e.yml`。`workflow_dispatch` で、入力 `ref` は pubreform の ref）:
 
-- `.fvmrc` は Flutter 3.47.7
-- `pubspec.yaml` と `pubspec.lock` は、次の更新が起こるように古いバージョンでロックしておく
-  - 制約の範囲内の更新が 1 つ → 変わる直接依存が 1 つのマイナー・パッチグループ（タイトルは単独 PR と同じ形）
-  - メジャー更新が 1 つ → 単独 PR
-- 同時更新グループは、安定して再現できるパッケージの組が見つかるまで対象外とする
-- `.github/pubreform.yaml` の `labels` には、リポジトリにないラベル `pubreform-e2e` を入れる（作成を確かめるため）
-
-ワークフロー `.github/workflows/e2e.yml`（`workflow_dispatch`。入力 `ref` は pubreform の ref）:
-
-1. App のトークンを発行する
+1. `actions/create-github-app-token@v3` で、`repositories: pubreform-e2e,pubreform` としてトークンを発行する
 2. pubreform-e2e を checkout し、pubreform の `ref` を `pubreform-src/` に checkout する
-3. setup-bun を入れ、`pubreform-src/` で `bun install --frozen-lockfile` と `bun run build` を行う
-4. setup-fvm を入れる
-5. 前回の実行の後片付け: `pubreform/` で始まるブランチの open の PR を閉じ、そのブランチとラベル `pubreform-e2e` を消す
-6. 1 回目: `uses: ./pubreform-src` で Action を実行する
-7. `gh api` で確かめる。バージョンは pub.dev の状況で変わるので、ブランチ名とタイトルの形だけを見る
-   - 期待した 2 つの PR があり、ブランチ名とタイトルの形が正しい
-   - 両方の PR にラベルが付き、`pubreform-e2e` が作られている
-   - head のコミットが Verified（`commit.verification.verified`）
-   - 本文にメタデータとチェックボックスがある
-   - `mergeable_state` が取得できる（GitHub の計算を待つため、null でなくなるまで数回取り直す）
-8. 2 回目: もう一度実行し、両方の PR の head が変わらないことを確かめる
-9. 3 回目: 片方の PR のチェックボックスにチェックを入れてから実行し、その PR の head が変わり、チェックが外れていることを確かめる（`/` を含むブランチ名で ref を更新する API もここで確かめられる）
+3. setup-bun を入れ、`pubreform-src/` で `bun install --frozen-lockfile` と `bun run build` を行う。`dart-lang/setup-dart`（Dart 3.13.5）を入れる。setup-fvm は使わない（起動時の `pub get` がフィクスチャーを pub.dev から取ろうとして失敗するため）
+4. フィクスチャー用サーバーを裏で起動する
+5. テスト用プロジェクト（`pubspec.yaml`、`pubspec.lock`、`.github/pubreform.yaml`）を `pubreform-src/` のスクリプトで生成し、内容が変わっていれば main に push する。main のこれらのファイルはこのワークフローが管理する（`.github/workflows/` には触れない）
+6. 前回の実行の後片付け: `pubreform/` で始まるブランチの open の PR を閉じ、そのブランチと、設定のラベルを消す
+7. 1 回目: `PUBREFORM_UPSTREAM` を付けて `uses: ./pubreform-src` で実行し、上の 4 点のうち、Verified、`mergeable_state`、ラベルを確かめる
+8. 2 回目: PR のどれかのチェックボックスにチェックを入れてから実行し、その PR の head が変わったこと（`/` を含むブランチ名での ref の取得と更新）を確かめる
 
 ## 18. ビルドとリリース
 
@@ -606,7 +639,7 @@ pubreform 自身の CI では、push と pull request のたびに `tsc --noEmit
 
 | 項目 | 内容 |
 |---|---|
-| E2E の環境 | テスト用リポジトリは `chika3742/pubreform-e2e`。App のインストールと、変数・シークレットの設定は利用者が行う（§17.1） |
+| GitHub E2E の環境 | テスト用リポジトリは `chika3742/pubreform-e2e`。App のインストールと、変数・シークレットの設定は利用者が行う（§17.2） |
 
 ## 20. 基本設計からの変更点
 
