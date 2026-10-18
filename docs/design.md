@@ -97,18 +97,23 @@ TypeScript の JavaScript Action（`runs.using: node24`）として実装する�
 pub には公開日時で候補を絞る機能がない。クールダウン機能は [dart-lang/pub#4831](https://github.com/dart-lang/pub/pull/4831) でドラフトの段階で、2026-10-12 時点の master にも実装はない。そのため、pub が参照するパッケージリポジトリを差し替えて実現する。
 
 - Action 内で `127.0.0.1` の HTTP サーバーを起動し、`PUB_HOSTED_URL` に指定して pub を実行する
-- `GET /api/packages/<name>`: pub.dev の応答から `published` が `cutoff` より後のバージョンを除き、`latest` を計算し直して返す。ただし、ベースの `pubspec.lock` でロックされているバージョンは必ず残す（ダウングレードを防ぐ）
+- `GET /api/packages/<name>`: pub.dev の応答の `versions` から、`published` が `cutoff` より後のバージョンを除いて返す（pub は `versions` だけを読み、`latest` は使わない）。ただし、ベースの `pubspec.lock` でロックされているバージョンは必ず残す（ダウングレードを防ぐ）
 - `archive_url` は pub.dev の URL のまま返す。アーカイブは pub.dev から直接ダウンロードされ、`archive_sha256` で検証される
 - その他のパスは pub.dev にそのまま中継する
 - 取り下げ（retracted）されたバージョンは pub 自体が選ばないので、プロキシでは扱わない
 
-pub は lockfile の各パッケージにホストの `url` を記録しており、`PUB_HOSTED_URL` と違う URL のエントリはロック済みとして扱わない。そのため、pub を実行する前に作業用コピーの lockfile の `url: "https://pub.dev"` をプロキシの URL に置き換え、実行後に元へ戻す。
+pub は lockfile の各パッケージにホストの `url` を記録しており、`PUB_HOSTED_URL` と違う URL のエントリはロック済みとして扱わない。そのため、pub を実行する前に作業用コピーの lockfile の `url: "https://pub.dev"` をプロキシの URL（`url: "http://127.0.0.1:<port>"`。pub が書く形そのまま）に置き換え、実行後に元へ戻す。
 
 pub はダウンロードしたパッケージを、ホストごとのディレクトリに保存する。プロキシ経由で取得したパッケージは `~/.pub-cache/hosted/localhost%58<port>/` に入り、setup-fvm が復元する `hosted/pub.dev/` とは別になる。ポートを実行ごとに変えると保存先も変わり、キャッシュが増え続けるため、プロキシのポートは固定にする。
 
-> **要検証**: 次の点をプロトタイプで確認する。pub にクールダウン機能が入ったら、この仕組みはそれに置き換える。
-> - lockfile の URL を置き換えても `pub get` がロックを維持し、`sha256` が変わらないこと
-> - プロキシ経由でのダウンロードとキャッシュの増え方が、実行時間とキャッシュ容量の面で許容できること
+> **検証結果**（2026-10-18、Dart 3.13.5、[`prototype/cooldown/`](../prototype/cooldown/)）: 次をすべて確認した。
+> - 締切より後に公開されたバージョンは、直接依存（`http`）でも推移的依存（`async`）でも選ばれない（`pub get` / `pub upgrade` / `pub add`）
+> - lockfile の URL を置き換えて実行すると、`pub get` はロックを維持する。元に戻した lockfile は、プロキシなしの pub が書くものとバイト単位で同じになる（`sha256` も同じ）
+> - URL を置き換えないと、pub はロックを無視して解決し直し（`pub get` でも `http` が上がる）、lockfile にプロキシの URL を書く
+> - ロック済みのバージョンを残せば、締切より新しいバージョンがロックされていても、`pub get` / `pub upgrade` でダウングレードしない
+> - pub は警告を出さない。プロキシ経由で取得したパッケージは `hosted/localhost%58<port>/` に保存される
+>
+> 未確認: `flutter pub`（`fvm flutter pub`）での動作、CI での実行時間とキャッシュ容量への影響。pub にクールダウン機能が入ったら、この仕組みはそれに置き換える。
 
 ## 5. 更新単位の計画（Planner）
 
