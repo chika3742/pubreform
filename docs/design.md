@@ -25,9 +25,10 @@ pubreform は、Dart / Flutter プロジェクトの pub 依存を更新する P
 - path / git / sdk 依存、pub.dev 以外のホストの依存
 - `dependency_overrides` に書かれたパッケージ
 - Dart / Flutter SDK 自体と `environment` の更新
-- pub workspace、ルート以外のディレクトリ。ルートの pubspec に `workspace:` があれば、未対応として何も変更せずに失敗終了する（将来の対応は §14）
+- pub workspace、ルート以外のディレクトリ。ルートの pubspec に `workspace:` があれば、未対応として何も変更せずに失敗終了する（将来の対応は §14.1）
 - `pubspec.lock` をコミットしないプロジェクト（ライブラリなど）
 - プレリリース版（更新先は安定版のみ）
+- セキュリティアドバイザリによる待機期間の短縮（将来の対応は §14.2）
 
 前提:
 
@@ -406,11 +407,12 @@ jobs:
 - 人手のコミットがある PR は自動で再生成しない（§7.2）
 - 利用者がマージせずにクローズした PR と同じ内容の PR は再作成しない（§7.2）
 - プレリリース版は対象外
-- セキュリティアドバイザリがあっても待機期間は短縮しない（pub.dev の advisories API を使って後から対応できる）
 - 本文とコメントは英語
 - コミットは API で作る（Verified になり、git の認証設定も要らない。代わりに、head の確認から ref の更新までの間に入った push は検出できない）（§11）
 
-## 14. 将来の拡張: pub workspace
+## 14. 将来の拡張
+
+### 14.1 pub workspace
 
 v1 はルートの 1 パッケージだけを扱う。pub workspace では、lockfile はルートに 1 つで、制約は各メンバーの `pubspec.yaml` にある。同じパッケージを複数のメンバーが別々の制約で宣言することもある。後から対応しやすいように、v1 から次の形で実装しておく。
 
@@ -419,6 +421,16 @@ v1 はルートの 1 パッケージだけを扱う。pub workspace では、loc
 - `baseHash` は、一覧のすべての `pubspec.yaml`、lockfile、`.fvmrc` から計算する
 
 PR の単位とブランチ名は lockfile ごとに決まるので、workspace に対応しても変えなくてよい（workspace 全体で 1 組の PR になる）。lockfile が複数ある構成（独立したプロジェクトが並ぶリポジトリ）に広げる場合は、ブランチ名にディレクトリを入れる（例: `pubreform/<dir>/minor-and-patch`）。
+
+### 14.2 セキュリティアドバイザリ
+
+v1 は、セキュリティアドバイザリがあっても待機期間を短縮しない。脆弱性を直したバージョンも、ほかのバージョンと同じく `min_release_age_days` が過ぎるまで対象にならない。
+
+対応するときの案:
+
+- pub.dev の `GET /api/packages/<name>/advisories` でアドバイザリを取得する。OSV 形式で、影響を受けるバージョンは `affected[].versions` にすべて並ぶ（pub もこのフィールドだけを使う。Hosted Pub Repository Specification Version 2）
+- ベースの lockfile でロックしているバージョンが影響を受けるパッケージは、影響を受けない新しいバージョンを、待機期間が過ぎていなくても中継サーバーで見せる。待機期間の目的（公開直後のバージョンを避ける）と両立させるため、見せるのは必要な範囲に限る
+- PR の本文に、該当するアドバイザリへのリンク（`database_specific.pub_display_url`）を載せる
 
 ## 参考
 
