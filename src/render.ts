@@ -32,14 +32,14 @@ export function branchName(unit: Unit): string {
 }
 
 export function title(result: UnitResult): string {
-  if (result.unit.kind === 'single') {
-    const name = result.unit.members[0]!
-    const change = result.changes[name]
-    const from = change?.from ?? '?'
-    const to = change?.to ?? result.unit.targets[name]
-    return `Update ${name} from ${from} to ${to}`
-  }
-  return `Update ${Object.keys(result.changes).length} packages`
+  const names = Object.keys(result.changes)
+  // single, and minor / group with one change, name the package.
+  const name = result.unit.kind === 'single' ? result.unit.members[0]! : names.length === 1 ? names[0] : undefined
+  if (name === undefined) return `Update ${names.length} packages`
+  const change = result.changes[name]
+  const from = change?.from ?? '?'
+  const to = change?.to ?? result.unit.targets[name]
+  return `Update ${name} from ${from} to ${to}`
 }
 
 const typeOf = (change: Change) => (change.section === 'dev_dependencies' ? 'dev' : 'direct')
@@ -57,7 +57,7 @@ function changeTable(changes: Record<string, Change>, link: boolean): string {
 }
 
 export function commitMessage(result: UnitResult): string {
-  if (result.unit.kind === 'single') return title(result)
+  if (result.unit.kind === 'single' || Object.keys(result.changes).length === 1) return title(result)
   return `${title(result)}\n\n${changeTable(result.changes, false)}\n`
 }
 

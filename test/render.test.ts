@@ -52,6 +52,19 @@ describe('names', () => {
     expect(title(single)).toBe('Update http from 1.5.0 to 2.0.0')
     expect(title(group)).toBe('Update 2 packages')
   })
+  test('minor and group with one change are titled like single', () => {
+    const one: UnitResult = {
+      unit: { kind: 'minor', members: ['http'], targets: {} },
+      files: { pubspec: '', lock: '' },
+      changes: { http: { from: '1.5.0', to: '1.6.0', section: 'dependencies' } },
+    }
+    expect(title(one)).toBe('Update http from 1.5.0 to 1.6.0')
+    expect(commitMessage(one)).toBe('Update http from 1.5.0 to 1.6.0')
+    expect(branchName(one.unit)).toBe('pubreform/minor-and-patch')
+    const groupOne = { ...one, unit: { kind: 'group' as const, members: ['http', 'lints'], targets: {} } }
+    expect(title(groupOne)).toBe('Update http from 1.5.0 to 1.6.0')
+    expect(commitMessage(groupOne)).toBe('Update http from 1.5.0 to 1.6.0')
+  })
   test('commitMessage', () => {
     expect(commitMessage(single)).toBe('Update http from 1.5.0 to 2.0.0')
     expect(commitMessage(group)).toBe(
