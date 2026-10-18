@@ -97,7 +97,7 @@ TypeScript の JavaScript Action（`runs.using: node24`）として実装する�
 pub には公開日時で候補を絞る機能がない。クールダウン機能は [dart-lang/pub#4831](https://github.com/dart-lang/pub/pull/4831) でドラフトの段階で、2026-10-12 時点の master にも実装はない。そのため、pub が参照するパッケージリポジトリを差し替えて実現する。
 
 - Action 内で `127.0.0.1` の HTTP サーバーを起動し、`PUB_HOSTED_URL` に指定して pub を実行する
-- `GET /api/packages/<name>`: pub.dev の応答の `versions` から、`published` が `cutoff` より後のバージョンを除いて返す（pub は `versions` だけを読み、`latest` は使わない）。ただし、ベースの `pubspec.lock` でロックされているバージョンは必ず残す（ダウングレードを防ぐ）
+- `GET /api/packages/<name>`: pub.dev の応答の `versions` から、`published` が `cutoff` より後のバージョンを除いて返す（pub は `versions` だけを読み、`latest` は使わない）。ただし、ベースの `pubspec.lock` でロックされているバージョンは必ず残す。ダウングレードを防ぐためと、Flutter SDK が要求するバージョン（下記）を隠さないためである
 - `archive_url` は pub.dev の URL のまま返す。アーカイブは pub.dev から直接ダウンロードされ、`archive_sha256` で検証される
 - その他のパスは pub.dev にそのまま中継する
 - 取り下げ（retracted）されたバージョンは pub 自体が選ばないので、プロキシでは扱わない
@@ -106,14 +106,17 @@ pub は lockfile の各パッケージにホストの `url` を記録してお�
 
 pub はダウンロードしたパッケージを、ホストごとのディレクトリに保存する。プロキシ経由で取得したパッケージは `~/.pub-cache/hosted/localhost%58<port>/` に入り、setup-fvm が復元する `hosted/pub.dev/` とは別になる。ポートを実行ごとに変えると保存先も変わり、キャッシュが増え続けるため、プロキシのポートは固定にする。
 
-> **検証結果**（2026-10-18、Dart 3.13.5、[`prototype/cooldown/`](../prototype/cooldown/)）: 次をすべて確認した。
-> - 締切より後に公開されたバージョンは、直接依存（`http`）でも推移的依存（`async`）でも選ばれない（`pub get` / `pub upgrade` / `pub add`）
+> **検証結果**（2026-10-18、[`prototype/cooldown/`](../prototype/cooldown/)）: Dart 3.13.5 の `dart pub` と、fvm 4.3.2 で入れた Flutter 3.47.7 の `fvm flutter pub` の両方で、次をすべて確認した。
+> - 締切より後に公開されたバージョンは、直接依存（`http` / `dio`）でも推移的依存（`async` / `vector_math`）でも選ばれない（`pub get` / `pub upgrade` / `pub add`）
 > - lockfile の URL を置き換えて実行すると、`pub get` はロックを維持する。元に戻した lockfile は、プロキシなしの pub が書くものとバイト単位で同じになる（`sha256` も同じ）
-> - URL を置き換えないと、pub はロックを無視して解決し直し（`pub get` でも `http` が上がる）、lockfile にプロキシの URL を書く
+> - URL を置き換えないと、pub はロックを無視して解決し直し（`pub get` でも直接依存が上がる）、lockfile にプロキシの URL を書く
 > - ロック済みのバージョンを残せば、締切より新しいバージョンがロックされていても、`pub get` / `pub upgrade` でダウングレードしない
 > - pub は警告を出さない。プロキシ経由で取得したパッケージは `hosted/localhost%58<port>/` に保存される
+> - pub の解決器はバージョン一覧を毎回サーバーから取得する。キャッシュ（最大 3 日）を使うのはロック済みのバージョンの情報を読むときだけで、ロック済みのバージョンは常に一覧に残すため、結果に影響しない
 >
-> 未確認: `flutter pub`（`fvm flutter pub`）での動作、CI での実行時間とキャッシュ容量への影響。pub にクールダウン機能が入ったら、この仕組みはそれに置き換える。
+> Flutter SDK の要求: Flutter SDK のパッケージは、pub.dev のパッケージの最低バージョンを要求する（Flutter 3.47.7 の `flutter` は `meta ^1.18.3`（2026-06-04 公開）、`vector_math ^2.4.0`（2026-06-03 公開）など）。lockfile がなく、これらが締切より新しいと解決に失敗する。ベースの lockfile にはその SDK で解決したバージョンが入っているので、ロック済みのバージョンを残せば解決できる（締切を 2025-10-01 にして確認。残さないと `get` も `upgrade` も失敗する）。ただし、main で `.fvmrc` だけを上げて lockfile を更新していない場合は、新しい SDK が要求するバージョンが締切より新しいと解決に失敗する（全体エラーとしてジョブのログに出る）。
+>
+> pub にクールダウン機能が入ったら、この仕組みはそれに置き換える。
 
 ## 5. 更新単位の計画（Planner）
 
