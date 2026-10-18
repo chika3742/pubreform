@@ -1,0 +1,12 @@
+name: pubreform
+description: Keeps pub dependencies up to date with pull requests.
+inputs:
+  token:
+    description: GitHub App installation token used for commits, pull requests and comments.
+    required: true
+  config:
+    description: Path to the config file, read from the default branch.
+    default: .github/pubreform.yaml
+runs:
+  using: node24
+  main: dist/main.js
