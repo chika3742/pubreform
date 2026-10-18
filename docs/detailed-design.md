@@ -611,7 +611,7 @@ pubreform 自身の CI では、push と pull request のたびに `tsc --noEmit
 - App のトークンで、ないラベルを作れる
 - `/` を含むブランチ名で、ref の取得と更新ができる
 
-2026-10-18 に実行し、4 点とも確認済み（[run #2](https://github.com/chika3742/pubreform-e2e/actions/runs/39103097609)）。`mergeable_state` は `clean` と `unstable` が返った。ref を更新した直後は、PR の `head.sha` がまだ前の head を返す（GitHub が裏で反映する。最初の実行では、更新の 4 秒後に読んで前の head が返った）。そのため 2 回目の確認では、`head.sha` が変わるまで数回取り直す。
+2026-10-18 に実行し、4 点とも確認済み（[run #2](https://github.com/chika3742/pubreform-e2e/actions/runs/39103097609)、1 つのスクリプトにした後の [run #3](https://github.com/chika3742/pubreform-e2e/actions/runs/39104022006)）。`mergeable_state` は `clean` と `unstable` が返った。ref を更新した直後は、`GET /git/ref` はすでに新しいコミットを返すが、PR の `head.sha` はまだ前の head を返す（GitHub が裏で反映する。最初の実行では、更新の 4 秒後に読んでも前の head が返った）。そのため 2 回目の確認では、`head.sha` が変わるまで数回取り直す。
 
 前提（利用者が設定する）:
 
