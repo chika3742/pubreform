@@ -358,7 +358,12 @@ Update minor and patch (2 packages)
   （`## 1.6.0`、`## [1.6.0] - 2025-11-10`、`# v1.6.0` などに合う）
 - 見出しから次のバージョンの見出しの直前までを、その版の節とする
 - `from < v ≤ to` の節を、ファイル内の順に連結する。1 つもなければ、抜き出せなかった扱いにする
-- GitHub の Issue、PR、Discussion への URL（`https://github.com/<owner>/<repo>/(issues|pull|discussions)/<n>`）は、ホストを `redirect.github.com` に置き換える。そのまま載せると、リンク先の Issue などに PR からの参照が表示され、更新のたびに大量のバックリンクが付くため（Dependabot と同じ方法）
+- 抜き出した更新履歴は、PR の本文に載せるとバックリンクや通知が生まれる書き方を、次のように置き換える。そのまま載せると、リンク先の Issue などに更新のたびに PR からの参照が付き、メンションされた人には通知が届くため（Dependabot と同じ考え方）
+  - GitHub の Issue、PR、Discussion への URL（`https://github.com/<owner>/<repo>/(issues|pull|discussions)/<n>`）: ホストを `redirect.github.com` にする
+  - `<owner>/<repo>#<n>`: `[<owner>/<repo>#<n>](https://redirect.github.com/<owner>/<repo>/issues/<n>)` にする
+  - `#<n>`: 利用者のリポジトリの Issue として解釈されてしまうため、ソースへのリンクが `https://github.com/<owner>/<repo>` で始まるなら `[#<n>](https://redirect.github.com/<owner>/<repo>/issues/<n>)` にする。そうでなければ `#` の後ろにゼロ幅スペース（U+200B）を入れて、リンクにならないようにする
+  - `@<name>`: `@` の後ろにゼロ幅スペースを入れて、メンションにならないようにする
+  - コード（`` ` `` で囲んだ部分と ```` ``` ```` のブロック）は変えない。GitHub がリンクにもメンションにもしないため。既にあるリンク `[...](...)` は、URL だけを上のように置き換え、文字列は `@<name>` だけを置き換える（リンクの中をリンクにすると Markdown が崩れるため）
 - 長さの上限: 更新履歴全体で 50,000 文字とし、パッケージ数で等分する。超えた節は行の境界で切り、`…` の行と `[Full changelog](https://pub.dev/packages/<name>/changelog)` の行を付ける
 - 組み立てた本文が 65,000 文字を超えたら、更新履歴をすべて省き、各パッケージを読めなかったときと同じ `[Changelog](…)` の 1 行にする
 
