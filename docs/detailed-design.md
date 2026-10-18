@@ -358,6 +358,7 @@ Update minor and patch (2 packages)
   （`## 1.6.0`、`## [1.6.0] - 2025-11-10`、`# v1.6.0` などに合う）
 - 見出しから次のバージョンの見出しの直前までを、その版の節とする
 - `from < v ≤ to` の節を、ファイル内の順に連結する。1 つもなければ、抜き出せなかった扱いにする
+- GitHub の Issue、PR、Discussion への URL（`https://github.com/<owner>/<repo>/(issues|pull|discussions)/<n>`）は、ホストを `redirect.github.com` に置き換える。そのまま載せると、リンク先の Issue などに PR からの参照が表示され、更新のたびに大量のバックリンクが付くため（Dependabot と同じ方法）
 - 長さの上限: 更新履歴全体で 50,000 文字とし、パッケージ数で等分する。超えた節は行の境界で切り、`…` の行と `[Full changelog](https://pub.dev/packages/<name>/changelog)` の行を付ける
 - 組み立てた本文が 65,000 文字を超えたら、更新履歴をすべて省き、各パッケージを読めなかったときと同じ `[Changelog](…)` の 1 行にする
 

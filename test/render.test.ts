@@ -23,6 +23,7 @@ import {
   renderBody,
   renderMeta,
   title,
+  withoutBacklinks,
 } from '../src/render.ts'
 
 const single: UnitResult = {
@@ -301,5 +302,23 @@ describe('comments', () => {
     expect(out).toContain('token ***')
     expect(out).toContain('https://***@example.com/x')
     expect(formatLog('x'.repeat(70_000), [])).toHaveLength(60_000)
+  })
+})
+
+describe('withoutBacklinks', () => {
+  test('points issue, pull request and discussion links at redirect.github.com', () => {
+    expect(
+      withoutBacklinks(
+        '- Fix ([#12](https://github.com/a/b/issues/12)), <http://www.github.com/a/b.c/pull/3>, ' +
+          'https://github.com/a-b/c_d/discussions/4#note',
+      ),
+    ).toBe(
+      '- Fix ([#12](https://redirect.github.com/a/b/issues/12)), <https://redirect.github.com/a/b.c/pull/3>, ' +
+        'https://redirect.github.com/a-b/c_d/discussions/4#note',
+    )
+  })
+  test('keeps other links', () => {
+    const text = 'https://github.com/a/b, https://github.com/a/b/releases/tag/v1, https://notgithub.com/a/b/issues/1'
+    expect(withoutBacklinks(text)).toBe(text)
   })
 })

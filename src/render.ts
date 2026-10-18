@@ -113,6 +113,13 @@ export function extractChangelog(text: string, from: string, to: string): string
 
 // ---- Body ----
 
+const GITHUB_REF_URL = /\bhttps?:\/\/(?:www\.)?github\.com\/([\w.-]+\/[\w.-]+\/(?:issues|pull|discussions)\/\d+)/g
+
+/** Points links to GitHub issues, pull requests and discussions at redirect.github.com, so that they get no backlinks. */
+export function withoutBacklinks(text: string): string {
+  return text.replace(GITHUB_REF_URL, 'https://redirect.github.com/$1')
+}
+
 const CHANGELOG_BUDGET = 50_000
 const BODY_LIMIT = 65_000
 
@@ -210,7 +217,7 @@ export function renderBody(result: UnitResult, meta: Meta, infos: Map<string, Pa
       let changelog: string | undefined
       if (withChangelog && info.changelog !== undefined) {
         const extracted = extractChangelog(info.changelog, change.from, change.to)
-        if (extracted !== undefined) changelog = truncate(extracted, budget, name)
+        if (extracted !== undefined) changelog = truncate(withoutBacklinks(extracted), budget, name)
       }
       return packageSection(name, change, info, changelog)
     })
