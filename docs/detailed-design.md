@@ -611,6 +611,8 @@ pubreform 自身の CI では、push と pull request のたびに `tsc --noEmit
 - App のトークンで、ないラベルを作れる
 - `/` を含むブランチ名で、ref の取得と更新ができる
 
+2026-10-18 に実行し、4 点とも確認済み（[run #2](https://github.com/chika3742/pubreform-e2e/actions/runs/39103097609)）。`mergeable_state` は `clean` と `unstable` が返った。ref を更新した直後は、PR の `head.sha` がまだ前の head を返す（GitHub が裏で反映する。最初の実行では、更新の 4 秒後に読んで前の head が返った）。そのため手順 8 の確認は、`head.sha` が変わるまで数回取り直す。
+
 前提（利用者が設定する）:
 
 - GitHub App を pubreform-e2e と pubreform の両方にインストールする。pubreform-e2e には本番と同じ権限（Contents と Pull requests の Read and write）が要る。pubreform は非公開なので、E2E のワークフローがコードを取得するために Contents の読み取りが要る

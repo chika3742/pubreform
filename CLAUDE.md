@@ -16,6 +16,7 @@ pub の依存を更新する PR を作成・保守する GitHub Action。TypeScr
 - `bun run typecheck`、`bun test`、`bun run build`
 - 結合テスト: `PUBREFORM_IT=1 bun test test/integration.test.ts`。pub.dev への接続と、PATH 上の `dart`（Dart 3 の stable）と `fvm`（Flutter 3.47.7 を入れられること）が必要
 - ローカル E2E: `bun run build && PUBREFORM_E2E=1 bun test test/e2e`。PATH 上の `dart`（Dart 3 の stable）が必要。外部には接続しない（フィクスチャー用サーバー、偽の GitHub API、bare リポジトリを使う。詳細 §17.1）
+- GitHub E2E: `chika3742/pubreform-e2e` の E2E ワークフローを `workflow_dispatch` で実行する（入力 `ref` に pubreform のブランチ。詳細 §17.2）
 - `dist/` はコミットしない。`v*` タグを push すると `.github/workflows/build.yml` が生成してコミットし、タグとメジャータグを付け直す
 
 ## 開発環境（クラウドのセッション）
@@ -28,4 +29,4 @@ pub の依存を更新する PR を作成・保守する GitHub Action。TypeScr
 
 ## 未確認のこと
 
-- GitHub E2E（詳細 §17.2、テスト用リポジトリ `chika3742/pubreform-e2e` のワークフロー）はまだ実行していない。実際の GitHub での動作（コミットが Verified になるか、`mergeable_state`、App のトークンでのラベルの作成、`/` を含むブランチ名での ref の API）はこれで確かめる
+- README のワークフロー例（トリガーと `if` の条件）と、setup-fvm と組み合わせた Flutter プロジェクトでの実行は、実際の GitHub ではまだ確かめていない。GitHub E2E は Dart だけで、`workflow_dispatch` から直接実行している
