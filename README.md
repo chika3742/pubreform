@@ -1,28 +1,36 @@
 # pubreform
 
-A GitHub Action that keeps the pub dependencies of a Dart or Flutter project up to date with pull requests.
+A GitHub Action that opens pull requests to update the pub dependencies of a Dart or Flutter project.
 
-- One pull request per update, with links to the source and the changelog
-- Minor and patch updates that resolve together are grouped into one pull request
-- Major updates get their own pull requests
-- Updates that only resolve when several packages are updated together are grouped together
-- Versions that no other package's latest stable version can resolve are skipped
-- Versions are used only after they have been published for a given number of days
-- Pull requests are regenerated when needed, and changes are reported as comments
+pub itself chooses the versions, so each pull request contains only versions that resolve together. New releases are used only after they have been out for a few days.
 
-## Requirements
+## What you get
 
-- `pubspec.yaml` and `pubspec.lock` at the repository root, with `pubspec.lock` committed
-- A GitHub App installed on the repository, with these repository permissions:
-  - Contents: Read and write
-  - Pull requests: Read and write
-- The Dart or Flutter SDK set up in the workflow. For Flutter, use [chika3742/setup-fvm](https://github.com/chika3742/setup-fvm) with `.fvmrc`
+Each run compares the dependencies in `pubspec.yaml` with pub.dev and keeps these pull requests open:
 
-A GitHub App token is needed because pull requests created with `GITHUB_TOKEN` do not run CI until someone approves the workflow runs. Commits are created through the GitHub API, so they are shown as Verified.
+| Pull request | Title | Contents |
+|---|---|---|
+| Minor and patch updates | `Update minor and patch (N packages)` | All updates that fit the current version constraints, in one pull request |
+| Major update | `Update <package> from <old> to <new>` | One package that needs a new constraint |
+| Packages updated together | `Update <a> to <new>, <b> to <new>` | Major updates that only resolve when made together |
 
-## Usage
+- A pull request that updates only one package is titled like a major update
+- The description links each package to pub.dev, its source, and its changelog
+- When an update changes, for example because a newer version is released, the pull request is updated and a comment describes the change. When it is no longer needed, it is closed
+- Updates that do not resolve with the other dependencies are skipped and listed in the job summary
 
-Add `.github/pubreform.yaml`:
+## Setup
+
+You need `pubspec.yaml` and a committed `pubspec.lock` at the repository root.
+
+**1. Create a GitHub App** with these repository permissions, and install it on the repository:
+
+- Contents: Read and write
+- Pull requests: Read and write
+
+Add its client ID as the variable `PUBREFORM_CLIENT_ID`, and a private key as the secret `PUBREFORM_PRIVATE_KEY`. An App is needed because CI does not run on pull requests created with `GITHUB_TOKEN` until someone approves it. Commits are made through the GitHub API as the App, so they are shown as Verified.
+
+**2. Add the config** as `.github/pubreform.yaml`:
 
 ```yaml
 # $schema: https://raw.githubusercontent.com/chika3742/pubreform/v1/pubreform.schema.json
@@ -33,7 +41,7 @@ min_release_age_days: 3
 labels: [dependencies]
 ```
 
-Add a workflow:
+**3. Add the workflow**, for example as `.github/workflows/pubreform.yml`:
 
 ```yaml
 name: pubreform
@@ -73,62 +81,45 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
 ```
 
-The action behaves the same whatever event starts it, so the triggers above are only an example.
+The workflow decides when the action runs. This one runs it every Monday, after the dependency files or the config change, and when a pubreform pull request is edited (to pick up the checkbox below). The action does the same thing whichever event starts it.
 
-### Inputs
-
-| Input | Default | Description |
-|---|---|---|
-| `token` | (required) | GitHub App installation token |
-| `config` | `.github/pubreform.yaml` | Path to the config file, read from the default branch |
-
-### Configuration
+## Configuration
 
 | Key | Default | Description |
 |---|---|---|
-| `schedule.cron` | (required) | Cron expression with 5 fields |
+| `schedule.cron` | (required) | Cron expression with 5 fields. See [Waiting period](#waiting-period) |
 | `schedule.timezone` | `UTC` | IANA time zone name for `schedule.cron` |
-| `min_release_age_days` | `0` | Only versions published at least this many days before the schedule time are used |
-| `labels` | `[]` | Labels added to pull requests. Missing labels are created |
-| `versioning` | `increase` | `increase` raises lower bounds in `pubspec.yaml` for minor and patch updates. `lockfile-only` changes only `pubspec.lock` for them |
-| `ignore` | `[]` | Updates to skip: `{ name }` skips every update of the package, `{ name, versions }` skips the versions in a pub version constraint such as `">=3.0.0"` |
+| `min_release_age_days` | `0` | Days a version must have been out before it is used |
+| `labels` | `[]` | Labels added to the pull requests. Missing labels are created |
+| `versioning` | `increase` | `increase` also raises the lower bounds in `pubspec.yaml` for minor and patch updates. `lockfile-only` changes only `pubspec.lock` for them |
+| `ignore` | `[]` | Updates to skip. `{ name }` skips the package, `{ name, versions }` skips the versions in a constraint such as `">=3.0.0"` |
 
-The first line of the config file above enables completion and validation in IntelliJ IDEA and VS Code (YAML extension) through [the JSON schema](pubreform.schema.json).
+The `# $schema:` line enables completion and validation in IntelliJ IDEA and in VS Code with the YAML extension.
 
-## How it works
+The action has two inputs: `token` (required), and `config`, the path to the config file on the default branch (default `.github/pubreform.yaml`).
 
-### Schedule
+## Things to know
 
-`schedule.cron` sets when the range of target versions moves forward, not when the action runs. Each run uses the latest time the cron fired (the slot) and considers only versions published at least `min_release_age_days` before it. Every run until the next slot gives the same result, so the action can run at any time and as often as needed.
+### Waiting period
 
-### Pull requests
+`schedule.cron` is not when the action runs. It sets the time from which the waiting period is counted: a run uses only versions published at least `min_release_age_days` days before the latest time the cron fired. Running the action more often does not change the result until the cron fires again.
 
-| Kind | Branch | Title |
-|---|---|---|
-| A single package | `pubreform/single/<package>` | `Update <package> from <old> to <new>` |
-| Minor and patch updates | `pubreform/minor-and-patch` | `Update minor and patch (<N> packages)` |
-| Packages that must be updated together | `pubreform/group/<package>` | `Update <package> to <new>, <package> to <new>, ...` |
+### Updating a pull request
 
-A group that updates only one package is titled like a single package update. Transitive dependencies are updated in `pubspec.lock` as needed but are not listed.
+Check "Rebase this PR" in the description to rebuild a pull request on the latest default branch. pubreform also does this by itself when the pull request conflicts, when `pubspec.yaml`, `pubspec.lock`, `.fvmrc` or the config change on the default branch, or when the update changes.
 
-A pull request is regenerated on top of the latest default branch when:
-
-- the "Rebase this PR" checkbox in its description is checked
-- it conflicts with the default branch
-- the update changes (for example, a newer version is released); a comment describes the change
-- `pubspec.yaml`, `pubspec.lock` or `.fvmrc` changes on the default branch
-- the config changes
-
-A pull request that has commits not created by pubreform is not regenerated automatically; check the checkbox to discard them. A pull request closed without merging is not created again for the same update. When an update is no longer needed, its pull request is closed with a comment.
-
-If an update fails, the error log is posted to its pull request, and the job fails.
+- If you push commits to a pubreform branch, pubreform stops updating that pull request and leaves a comment. Check the box to discard your commits
+- A pull request you close without merging is not opened again for the same versions
+- If an update fails, the error is posted to its pull request, and the job fails
+- Branches are named `pubreform/...`. Transitive dependencies are updated in `pubspec.lock` as needed, but are not listed
 
 ## Limitations
 
-- Only the repository root is supported. Pub workspaces are not supported yet
-- Only dependencies hosted on pub.dev are updated
-- Pre-release versions are not targeted
+- Only the repository root. Pub workspaces are not supported yet
+- Only packages hosted on pub.dev
+- No pre-release versions
 - `dependency_overrides` and the SDK constraints are not changed
+- Security advisories do not shorten the waiting period
 
 ## License
 
