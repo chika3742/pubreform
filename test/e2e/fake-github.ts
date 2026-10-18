@@ -1,5 +1,5 @@
-// Fake GitHub REST API for the local E2E test (detailed design §17.1).
-// Implements only the API of §13. Commits and refs are written to a local bare repository with git,
+// Fake GitHub REST API for the local E2E test.
+// Implements only the API that pubreform uses. Commits and refs are written to a local bare repository with git,
 // so that the Action can clone the base from it (GITHUB_SERVER_URL=file://…).
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -308,7 +308,7 @@ export class FakeGitHub {
     if ((m = /^\/issues\/(\d+)\/labels$/.exec(p)) && method === 'POST') {
       const pr = this.pr(Number(m[1]))
       for (const label of body.labels as string[]) {
-        // pubreform must create missing labels first (§13).
+        // pubreform must create missing labels first.
         if (!this.labels.includes(label)) throw new HttpError(422, `label ${label} does not exist`)
         if (!pr.labels.includes(label)) pr.labels.push(label)
       }

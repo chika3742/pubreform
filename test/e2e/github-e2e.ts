@@ -1,4 +1,4 @@
-// GitHub E2E (detailed design §17.2): runs pubreform twice against the real GitHub API and checks
+// GitHub E2E: runs pubreform twice against the real GitHub API and checks
 // what only the real GitHub shows. Run by the workflow of chika3742/pubreform-e2e, in its checkout,
 // after pubreform is built, with GH_TOKEN (the App token) and the environment of the runner:
 //   bun pubreform-src/test/e2e/github-e2e.ts

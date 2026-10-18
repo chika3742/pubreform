@@ -1,4 +1,4 @@
-// pubreform.schema.json and config.ts must accept and reject the same configs (detailed design §4.2).
+// pubreform.schema.json and config.ts must accept and reject the same configs.
 import { describe, expect, test } from 'bun:test'
 import Ajv2020 from 'ajv/dist/2020'
 import { parse } from 'yaml'

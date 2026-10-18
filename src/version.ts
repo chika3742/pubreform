@@ -1,4 +1,4 @@
-// Versions and version constraints, as far as pubreform needs them (detailed design §6).
+// Versions and version constraints, as far as pubreform needs them.
 // pub's caret differs from npm's (^0.0.1 = >=0.0.1 <0.1.0), so this does not use a semver library.
 
 export interface Version {

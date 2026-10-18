@@ -1,4 +1,4 @@
-// Registry proxy: relays pub.dev and hides versions published after the cutoff (detailed design §9).
+// Registry proxy: relays pub.dev and hides versions published after the cutoff.
 // pub reads only `versions` from the listing, so `latest` is left as is.
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'

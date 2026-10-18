@@ -1,4 +1,4 @@
-// Planning update units (detailed design §10).
+// Planning update units.
 import { type DirectDep, withConstraints } from './pubspec.ts'
 import { allows, compareVersions, isStable, maxVersion } from './version.ts'
 

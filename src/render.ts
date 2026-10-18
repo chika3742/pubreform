@@ -1,4 +1,4 @@
-// Titles, bodies, commit messages, comments and metadata (detailed design §12).
+// Titles, bodies, commit messages, comments and metadata.
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -16,13 +16,13 @@ export interface Meta {
   baseHash: string
   configHash: string
   commit: string
-  /** The branch head just before the regeneration (§14.4). */
+  /** The branch head just before the regeneration. */
   previous?: string
-  /** Set when pubreform closed the pull request (§14.3). */
+  /** Set when pubreform closed the pull request. */
   closed?: true
 }
 
-// ---- Branch names, titles, commit messages (§12.1, §12.2) ----
+// ---- Branch names, titles, commit messages ----
 
 export function branchName(unit: Unit): string {
   switch (unit.kind) {
@@ -65,7 +65,7 @@ export function commitMessage(result: UnitResult): string {
   return `${title(result)}\n\n${changeTable(result.changes, false)}\n`
 }
 
-// ---- Package information from the pub cache (§12.3) ----
+// ---- Package information from the pub cache ----
 
 export interface PackageInfo {
   /** `repository`, or `homepage`, of the new version. */
@@ -111,7 +111,7 @@ export function extractChangelog(text: string, from: string, to: string): string
   return sections.length > 0 ? sections.join('\n\n') : undefined
 }
 
-// ---- Body (§12.3) ----
+// ---- Body ----
 
 const CHANGELOG_BUDGET = 50_000
 const BODY_LIMIT = 65_000
@@ -222,7 +222,7 @@ export function renderBody(result: UnitResult, meta: Meta, infos: Map<string, Pa
   return body.length > BODY_LIMIT ? build(false) : body
 }
 
-// ---- Comments (§12.5, §12.6) ----
+// ---- Comments ----
 
 export function contentChangedComment(before: Meta['packages'], after: Record<string, Change>): string {
   const names = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()
@@ -283,7 +283,7 @@ export function errorComment(log: string): string {
   ].join('\n')
 }
 
-// ---- Logs (§15) ----
+// ---- Logs ----
 
 const MAX_LOG_LINES = 200
 const MAX_LOG_CHARS = 60_000

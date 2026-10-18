@@ -1,4 +1,4 @@
-// Matching planned units with existing pull requests and deciding operations (detailed design §14).
+// Matching planned units with existing pull requests and deciding operations.
 import type { UnitResult } from './applier.ts'
 import type { Plan, Unit } from './planner.ts'
 import type { GitHub } from './github.ts'
@@ -78,7 +78,7 @@ function metaTargets(meta: Meta): Map<string, string> {
   return new Map(Object.entries(meta.packages).map(([name, [, to]]) => [name, to]))
 }
 
-/** Pairs units with open pull requests (§14.2). */
+/** Pairs units with open pull requests. */
 export function match(items: Item[], openPrs: PrState[]): Map<Item, PrState> {
   const pairs = new Map<Item, PrState>()
   const used = new Set<PrState>()
@@ -133,7 +133,7 @@ function decideBoth(pr: PrState, result: UnitResult, ctx: DecideContext): Op {
 }
 
 /**
- * Decides the operations (§14.3). Pure: comments are not read here.
+ * Decides the operations. Pure: comments are not read here.
  * `results` are the applied units, `unitErrors` the units that failed to apply.
  */
 export function decide(
@@ -192,7 +192,7 @@ export function decide(
   return ops
 }
 
-// ---- Execution (§14.4) ----
+// ---- Execution ----
 
 export interface Outcome {
   kind: Unit['kind'] | undefined
@@ -223,7 +223,7 @@ export interface ExecuteContext {
   hashes: DecideContext
   labels: string[]
   packageInfo: (name: string, version: string) => PackageInfo
-  /** Formats an error log for a comment or the job log (§15). */
+  /** Formats an error log for a comment or the job log. */
   formatLog: (log: string) => string
   log: (message: string) => void
 }
@@ -369,7 +369,7 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
         try {
           const supersededBy = op.supersededBy === undefined ? undefined : numbers.get(op.supersededBy)
           await github.comment(pr.number, closeComment(supersededBy))
-          // closed: true tells a later run that pubreform, not a person, closed it (§14.3).
+          // closed: true tells a later run that pubreform, not a person, closed it.
           await github.closePr(pr.number, markClosed(pr.body))
           await github.deleteBranch(pr.branch)
           outcomes.push({ ...base, action: 'closed' })

@@ -1,4 +1,4 @@
-// slot and cutoff (detailed design §5).
+// slot and cutoff.
 import { CronExpressionParser } from 'cron-parser'
 
 const DAY_MS = 24 * 60 * 60 * 1000

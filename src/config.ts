@@ -1,4 +1,4 @@
-// Config file: loading, validation and hash (detailed design §4).
+// Config file: loading, validation and hash.
 // The checks here must agree with pubreform.schema.json (test/config-schema.test.ts).
 import { createHash } from 'node:crypto'
 import { CronExpressionParser } from 'cron-parser'

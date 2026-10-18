@@ -1,4 +1,4 @@
-// GitHub API operations (detailed design §13).
+// GitHub API operations.
 import { getOctokit } from '@actions/github'
 import type { PubFiles } from './pub.ts'
 import { BRANCH_PREFIX, parseMeta } from './render.ts'

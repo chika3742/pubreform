@@ -1,4 +1,4 @@
-// pubspec.yaml and pubspec.lock: reading, and rewriting the working copy (detailed design §7).
+// pubspec.yaml and pubspec.lock: reading, and rewriting the working copy.
 import { createHash } from 'node:crypto'
 import { isMap, isScalar, parse, parseDocument } from 'yaml'
 
@@ -75,7 +75,7 @@ function hostedConstraint(value: unknown): string | undefined {
   return typeof value.version === 'string' ? value.version : undefined
 }
 
-/** Direct dependencies that pubreform updates (detailed design §7.1). */
+/** Direct dependencies that pubreform updates. */
 export function directDeps(pubspecText: string, lockText: string): DirectDep[] {
   const pubspec = parsePubspec(pubspecText)
   const lock = parseLock(lockText)
@@ -133,7 +133,7 @@ export function withConstraints(pubspecText: string, constraints: Map<string, st
   return doc.toString()
 }
 
-/** SHA-256 of pubspec.yaml, pubspec.lock and .fvmrc (detailed design §7.3). */
+/** SHA-256 of pubspec.yaml, pubspec.lock and .fvmrc. */
 export function baseHash(files: { pubspec: string; lock: string; fvmrc?: string }): string {
   return createHash('sha256')
     .update(['pubspec.yaml', files.pubspec, 'pubspec.lock', files.lock, '.fvmrc', files.fvmrc ?? ''].join('\0'))

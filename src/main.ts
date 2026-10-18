@@ -1,4 +1,4 @@
-// Entry point: the overall flow and error collection (detailed design §3).
+// Entry point: the overall flow and error collection.
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -138,7 +138,7 @@ export async function run(): Promise<void> {
     cutoff: window.cutoff,
     locked: lockVersions(files.lock),
     ignore: config.ignore,
-    // For tests only (§9): fetch from a fixture registry instead of pub.dev.
+    // For tests only: fetch from a fixture registry instead of pub.dev.
     upstream: process.env.PUBREFORM_UPSTREAM || undefined,
   })
   await proxy.start()

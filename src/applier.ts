@@ -1,4 +1,4 @@
-// Applying an update unit to the base (detailed design §11).
+// Applying an update unit to the base.
 import type { Versioning } from './config.ts'
 import type { Unit } from './planner.ts'
 import type { PubFiles } from './pub.ts'

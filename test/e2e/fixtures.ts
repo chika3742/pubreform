@@ -1,4 +1,4 @@
-// Fixture registry for the E2E tests (detailed design §17.1, §17.2).
+// Fixture registry for the E2E tests.
 // Serves package listings and archives in the hosted pub repository format, in place of pub.dev.
 // Archives are built to be byte-identical for the same definition, so that lockfile sha256 values stay fixed.
 import { createHash } from 'node:crypto'
@@ -16,7 +16,7 @@ export interface FixtureVersion {
 
 export type Fixtures = Record<string, FixtureVersion[]>
 
-/** Packages that produce each case of §17.1. Every package starts locked at 1.0.0. */
+/** Packages that produce each case of the local E2E. Every package starts locked at 1.0.0. */
 export function defaultFixtures(): Fixtures {
   const old = (version: string, extra: Partial<FixtureVersion> = {}) => ({ version, daysAgo: 30, ...extra })
   const base = { version: '1.0.0', daysAgo: 60 }
@@ -135,7 +135,7 @@ export function archiveOf(name: string, versions: FixtureVersion[], version: str
 
 export interface FixtureServer {
   url: string
-  /** Adds a version while the server runs (§17.1 case 4). */
+  /** Adds a version while the server runs. */
   addVersion(name: string, version: FixtureVersion): void
   close(): Promise<void>
 }

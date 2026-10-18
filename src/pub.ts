@@ -1,4 +1,4 @@
-// Running pub in the working directory (detailed design §8).
+// Running pub in the working directory.
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -86,7 +86,7 @@ export function cachedPackageDir(hostedUrl: string, name: string, version: strin
   return path.join(cache, 'hosted', hostDir, `${name}-${version}`)
 }
 
-/** Shallow-clones the base branch without putting the token in the URL (detailed design §8.1). */
+/** Shallow-clones the base branch without putting the token in the URL. */
 export async function cloneBase(opts: {
   serverUrl: string
   repository: string

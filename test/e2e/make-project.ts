@@ -1,4 +1,4 @@
-// Generates the E2E test project: pubspec.yaml, pubspec.lock and .github/pubreform.yaml (detailed design §17.1, §17.2).
+// Generates the E2E test project: pubspec.yaml, pubspec.lock and .github/pubreform.yaml.
 // The lockfile is resolved by real `dart pub get` against the fixture registry, with every package at 1.0.0,
 // and its URLs are then rewritten to https://pub.dev, as pubreform expects of a real project.
 //
