@@ -17,3 +17,22 @@ jobs:
       - run: bun run typecheck
 
       - run: bun test
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: 3.13.5
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run build
+
+      - run: bun test test/e2e
+        env:
+          PUBREFORM_E2E: '1'
