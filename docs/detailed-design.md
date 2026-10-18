@@ -296,7 +296,7 @@ interface Plan {
 | 単位 | 実行するコマンド |
 |---|---|
 | minor | `pub upgrade`（`versioning: increase` なら `--tighten` も付ける） |
-| single / group | `pub add <spec>…`。spec は `name:^R(name)`。dev_dependencies なら `dev:name:^R(name)`。複数の spec を 1 回で渡す（Flutter 3.47.7 で、dev_dependencies のままで制約が書き換わり、pubspec のコメントも残ることを確認済み） |
+| single / group | `pub add <spec>…`。spec は `name:^R(name)`。元の制約がバージョンそのもの（`1.2.3` のように 1 つに固定したもの）なら、固定のまま `name:R(name)` にする（`dart pub add path:1.9.0` で `path: 1.9.0` と書かれ、コメントも残ることを Dart 3.13.5 で確認済み）。dev_dependencies なら `dev:` を前に付ける。複数の spec を 1 回で渡す（Flutter 3.47.7 で、dev_dependencies のままで制約が書き換わり、pubspec のコメントも残ることを確認済み） |
 
 ```ts
 interface Change { from: string; to: string; section: Section }
