@@ -29,10 +29,10 @@ jobs:
         uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8 # v1.0.250
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          track_progress: true
           plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
           plugins: "code-review@claude-code-plugins"
-          prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event.issue.number }}"
+          prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event.issue.number }} --comment"
+          show_full_output: true
           claude_args: |
             --model claude-opus-5-5\
             --effort high\
