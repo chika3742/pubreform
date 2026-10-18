@@ -561,7 +561,7 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 | ローカル E2E | Action 全体（ビルドした `dist/main.js`） | フィクスチャー用サーバー、偽の GitHub API、bare リポジトリで、場面ごとに動かす（§17.1） |
 | GitHub E2E | 本物の GitHub でしか分からない挙動 | テスト用リポジトリで、本物の GitHub に対して動かす（§17.2） |
 
-pubreform 自身の CI では、push と pull request のたびに `tsc --noEmit`、単体テスト、ローカル E2E を動かす。
+pubreform 自身の CI では、main への push と pull request のたびに（PR のブランチへの push では動かさない。pull request と 2 回動くため） `tsc --noEmit`、単体テスト、ローカル E2E を動かす。
 
 ### 17.1 ローカル E2E
 
