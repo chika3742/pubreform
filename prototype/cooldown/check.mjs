@@ -1,6 +1,7 @@
 // Prototype check for the cooldown proxy (design doc §4.2).
 // Needs network access to pub.dev. Run:
-//   DART=/path/to/dart node prototype/cooldown/check.mjs
+//   DART=/path/to/dart node prototype/cooldown/check.mjs   # dart pub
+//   FLUTTER=3.47.7 node prototype/cooldown/check.mjs       # fvm flutter pub (fvm on PATH)
 //
 // Fixtures (pub.dev publish dates):
 //   http  1.5.0 2025-08-07, 1.6.0 2025-11-10   (direct)
@@ -14,7 +15,8 @@ import { promisify } from 'node:util';
 import { lockedVersions, startProxy } from './proxy.mjs';
 
 const run = promisify(execFile);
-const DART = process.env.DART ?? 'dart';
+const FLUTTER = process.env.FLUTTER;
+const [CMD, ...CMD_ARGS] = FLUTTER ? ['fvm', 'flutter', 'pub'] : [process.env.DART ?? 'dart', 'pub'];
 const PORT = 8471;
 const PROXY = `http://127.0.0.1:${PORT}`;
 const PUB_DEV_URL = 'url: "https://pub.dev"';
@@ -24,12 +26,16 @@ const NEW = '2026-01-01T00:00:00Z'; // http 1.6.0, async 2.13.0 visible
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cooldown-'));
 const PUB_CACHE = path.join(tmp, 'pub-cache');
+// fvm picks the nearest .fvmrc up from the project dir.
+if (FLUTTER) fs.writeFileSync(path.join(tmp, '.fvmrc'), JSON.stringify({ flutter: FLUTTER }));
 
 function project(lock) {
   const dir = fs.mkdtempSync(path.join(tmp, 'p-'));
   fs.writeFileSync(
     path.join(dir, 'pubspec.yaml'),
-    'name: proto\nenvironment:\n  sdk: ^3.0.0\ndependencies:\n  http: ^1.3.0\n',
+    'name: proto\nenvironment:\n  sdk: ^3.0.0\ndependencies:\n' +
+      (FLUTTER ? '  flutter:\n    sdk: flutter\n' : '') +
+      '  http: ^1.3.0\n',
   );
   if (lock) fs.writeFileSync(path.join(dir, 'pubspec.lock'), lock);
   return dir;
@@ -40,7 +46,7 @@ const readLock = (dir) => fs.readFileSync(lockPath(dir), 'utf8');
 const editLock = (dir, f) => fs.existsSync(lockPath(dir)) && fs.writeFileSync(lockPath(dir), f(readLock(dir)));
 const versions = (dir) => Object.fromEntries(['http', 'async'].map((p) => [p, lockedVersions(readLock(dir)).get(p)]));
 
-/** Runs `dart pub`, through the proxy when `cutoff` is given. Throws on failure. */
+/** Runs `dart pub` / `fvm flutter pub`, through the proxy when `cutoff` is given. Throws on failure. */
 async function pub(dir, args, { cutoff, locked = new Map(), rewrite = true } = {}) {
   const env = { ...process.env, PUB_CACHE };
   let server;
@@ -50,7 +56,7 @@ async function pub(dir, args, { cutoff, locked = new Map(), rewrite = true } = {
     if (rewrite) editLock(dir, (l) => l.replaceAll(PUB_DEV_URL, PROXY_URL));
   }
   try {
-    return (await run(DART, ['pub', ...args], { cwd: dir, env })).stdout;
+    return (await run(CMD, [...CMD_ARGS, ...args], { cwd: dir, env })).stdout;
   } finally {
     if (server) {
       server.closeAllConnections();
