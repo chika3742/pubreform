@@ -1,19 +1,20 @@
-// Steps of the GitHub E2E that talk to the real GitHub API (detailed design §17.2).
-// Run from the workflow of chika3742/pubreform-e2e, with GH_TOKEN (the App token) and GITHUB_REPOSITORY:
-//   bun test/e2e/github-e2e.ts cleanup        step 6: close leftover PRs (marked as closed by pubreform), delete their branches and labels
-//   bun test/e2e/github-e2e.ts check-first    step 7: commits are Verified, mergeable_state is computed, labels are created and added
-//   bun test/e2e/github-e2e.ts check-box      step 8: checks the box of the single PR; prints its head to GITHUB_OUTPUT as `head`
-//   bun test/e2e/github-e2e.ts check-second <head>   step 8: the head of that PR has changed and the box is unchecked
-import fs from 'node:fs'
+// GitHub E2E (detailed design §17.2): runs pubreform twice against the real GitHub API and checks
+// what only the real GitHub shows. Run by the workflow of chika3742/pubreform-e2e, in its checkout,
+// after pubreform is built, with GH_TOKEN (the App token) and the environment of the runner:
+//   bun pubreform-src/test/e2e/github-e2e.ts
+import { spawn, spawnSync } from 'node:child_process'
+import path from 'node:path'
 import { parseConfig } from '../../src/config.ts'
 import { BRANCH_PREFIX, isRebaseChecked, markClosed, parseMeta } from '../../src/render.ts'
-import { CONFIG } from './make-project.ts'
+import { startFixtureServer } from './fixtures.ts'
+import { CONFIG, makeProject, writeProject } from './make-project.ts'
 
 const API = process.env.GITHUB_API_URL || 'https://api.github.com'
 const TOKEN = process.env.GH_TOKEN
 const REPO = process.env.GITHUB_REPOSITORY
 const SINGLE = `${BRANCH_PREFIX}single/fx_major`
 const LABELS = parseConfig(CONFIG).labels
+const MAIN = path.join(import.meta.dir, '../../dist/main.js')
 
 interface Pull {
   number: number
@@ -108,45 +109,84 @@ async function single(): Promise<Pull> {
   return pr
 }
 
-async function checkBox() {
+/** Checks the box of the single pull request and returns its head. */
+async function checkBox(): Promise<string> {
   const pr = await single()
   const body = (pr.body ?? '').replace('- [ ] Rebase this PR', '- [x] Rebase this PR')
   check(isRebaseChecked(body), `#${pr.number}: the box is checked`)
   await api('PATCH', `/pulls/${pr.number}`, { body })
-  if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `head=${pr.head.sha}\n`)
-  console.log(`head=${pr.head.sha}`)
+  return pr.head.sha
 }
 
-async function checkSecond(previous: string | undefined) {
-  if (!previous) throw new Error('usage: check-second <previous head>')
-  // GitHub updates the head of a pull request in the background after the ref moves.
+async function checkSecond(previous: string) {
+  // Read at once: whether the ref returns the new commit right after the update.
+  const ref = (await api<{ object: { sha: string } }>('GET', `/git/ref/heads/${SINGLE}`))!
   let pr = await single()
+  const meta = parseMeta(pr.body ?? '')
+  check(meta?.commit !== undefined && meta.commit !== previous, `#${pr.number}: metadata has a new commit`)
+  check(ref.object.sha === meta!.commit, `${SINGLE}: the ref has the new commit at once`)
+  console.log(`head of #${pr.number} at once: ${pr.head.sha === previous ? 'not updated yet' : 'updated'}`)
+  // GitHub updates the head of a pull request in the background after the ref moves.
   for (let i = 0; i < 10 && pr.head.sha === previous; i++) {
     await sleep(3000)
     pr = await single()
   }
-  const ref = (await api<{ object: { sha: string } }>('GET', `/git/ref/heads/${SINGLE}`))!
-  check(pr.head.sha !== previous, `#${pr.number}: head moved from ${previous} to ${pr.head.sha}`)
-  check(ref.object.sha === pr.head.sha, `${SINGLE}: the ref has the new head`)
+  check(pr.head.sha === meta!.commit, `#${pr.number}: head moved from ${previous} to ${pr.head.sha}`)
   check(!isRebaseChecked(pr.body ?? ''), `#${pr.number}: the box is unchecked`)
-  check(parseMeta(pr.body ?? '')?.previous === previous, `#${pr.number}: metadata records the previous head`)
+  check(meta!.previous === previous, `#${pr.number}: metadata records the previous head`)
+}
+
+function git(...args: string[]): number {
+  const { status } = spawnSync('git', args, { stdio: 'inherit' })
+  return status ?? -1
+}
+
+/** Writes the test project, and pushes it to main when it changed. */
+async function updateProject() {
+  writeProject('.', await makeProject())
+  if (git('add', 'pubspec.yaml', 'pubspec.lock', '.github/pubreform.yaml') !== 0) throw new Error('git add failed')
+  if (git('diff', '--cached', '--quiet') === 0) {
+    console.log('The test project is up to date.')
+    return
+  }
+  const author = ['-c', 'user.name=pubreform-e2e', '-c', 'user.email=pubreform-e2e@users.noreply.github.com']
+  if (git(...author, 'commit', '-m', 'Update the test project') !== 0) throw new Error('git commit failed')
+  if (git('push', 'origin', 'HEAD:main') !== 0) throw new Error('git push failed')
+}
+
+/** Runs the built action as the runner would, with its inputs in the environment. */
+async function runPubreform(upstream: string) {
+  // Not spawnSync: the fixture registry runs in this process.
+  const child = spawn('node', [MAIN], {
+    stdio: 'inherit',
+    env: { ...process.env, INPUT_TOKEN: TOKEN, INPUT_CONFIG: '.github/pubreform.yaml', PUBREFORM_UPSTREAM: upstream },
+  })
+  const status = await new Promise<number | null>((resolve) => child.on('close', resolve))
+  if (status !== 0) throw new Error(`pubreform exited with ${status}`)
 }
 
 if (!TOKEN || !REPO) throw new Error('GH_TOKEN and GITHUB_REPOSITORY are required')
-const [command, arg] = process.argv.slice(2)
-switch (command) {
-  case 'cleanup':
-    await cleanup()
-    break
-  case 'check-first':
-    await checkFirst()
-    break
-  case 'check-box':
-    await checkBox()
-    break
-  case 'check-second':
-    await checkSecond(arg)
-    break
-  default:
-    throw new Error(`unknown command: ${command}`)
+let step = ''
+const registry = await startFixtureServer()
+try {
+  let previous = ''
+  const steps: [string, () => Promise<unknown>][] = [
+    ['Update the test project', updateProject],
+    ['Clean up the previous run', cleanup],
+    ['Run pubreform (1st)', () => runPubreform(registry.url)],
+    ['Check the 1st run', checkFirst],
+    ['Check the box', async () => (previous = await checkBox())],
+    ['Run pubreform (2nd)', () => runPubreform(registry.url)],
+    ['Check the 2nd run', () => checkSecond(previous)],
+  ]
+  for (const [name, run] of steps) {
+    step = name
+    console.log(`\n==> ${name}`)
+    await run()
+  }
+} catch (e) {
+  console.log(`::error title=${step}::${e instanceof Error ? e.message : String(e)}`)
+  process.exitCode = 1
+} finally {
+  await registry.close()
 }

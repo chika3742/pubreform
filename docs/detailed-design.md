@@ -611,7 +611,7 @@ pubreform 自身の CI では、push と pull request のたびに `tsc --noEmit
 - App のトークンで、ないラベルを作れる
 - `/` を含むブランチ名で、ref の取得と更新ができる
 
-2026-10-18 に実行し、4 点とも確認済み（[run #2](https://github.com/chika3742/pubreform-e2e/actions/runs/39103097609)）。`mergeable_state` は `clean` と `unstable` が返った。ref を更新した直後は、PR の `head.sha` がまだ前の head を返す（GitHub が裏で反映する。最初の実行では、更新の 4 秒後に読んで前の head が返った）。そのため手順 8 の確認は、`head.sha` が変わるまで数回取り直す。
+2026-10-18 に実行し、4 点とも確認済み（[run #2](https://github.com/chika3742/pubreform-e2e/actions/runs/39103097609)）。`mergeable_state` は `clean` と `unstable` が返った。ref を更新した直後は、PR の `head.sha` がまだ前の head を返す（GitHub が裏で反映する。最初の実行では、更新の 4 秒後に読んで前の head が返った）。そのため 2 回目の確認では、`head.sha` が変わるまで数回取り直す。
 
 前提（利用者が設定する）:
 
@@ -622,14 +622,18 @@ pubreform 自身の CI では、push と pull request のたびに `tsc --noEmit
 
 1. `actions/create-github-app-token@v3` で、`repositories: pubreform-e2e,pubreform` としてトークンを発行する
 2. pubreform-e2e を checkout し、pubreform の `ref` を `pubreform-src/` に checkout する（pubreform 側は push しないので `persist-credentials: false`）
-3. setup-bun を入れ、`pubreform-src/` で `bun install --frozen-lockfile` と `bun run build` を行う。`dart-lang/setup-dart`（Dart の stable）を入れる。pub の挙動の変化に早く気づけるよう、Dart は固定しない（ローカル E2E の CI も同じ）。setup-fvm は使わない（起動時の `pub get` がフィクスチャーを pub.dev から取ろうとして失敗するため）
-4. フィクスチャー用サーバーを裏で起動する
-5. テスト用プロジェクト（`pubspec.yaml`、`pubspec.lock`、`.github/pubreform.yaml`）を `pubreform-src/test/e2e/make-project.ts` で生成し、内容が変わっていれば main に push する（コミットの作成者は `pubreform-e2e`）。main のこれらのファイルはこのワークフローが管理する（`.github/workflows/` には触れない）。main にブランチ保護を設定すると、この push が失敗する
-6. 前回の実行の後片付け: `pubreform/` で始まるブランチの open の PR を閉じ、`pubreform/` で始まる ref をすべて（open の PR がないものも）消し、設定のラベルを消す。PR は、pubreform が閉じるときと同じく、本文のメタデータに `closed: true` を入れて閉じる（入れないと利用者が閉じた PR として扱われ、フィクスチャーが毎回同じなので、次の実行で同じ内容の PR が作られなくなる）
-7. 1 回目: `PUBREFORM_UPSTREAM` を付けて `uses: ./pubreform-src` で実行し、上の 4 点のうち、Verified、`mergeable_state`、ラベルを確かめる
-8. 2 回目: PR のどれかのチェックボックスにチェックを入れてから実行し、その PR の head が変わったこと（`/` を含むブランチ名での ref の取得と更新）を確かめる
+3. setup-bun と、`actions/setup-node`（Node 24。`action.yml` の `runs.using` と同じ）を入れ、`pubreform-src/` で `bun install --frozen-lockfile` と `bun run build` を行う。`dart-lang/setup-dart`（Dart の stable）を入れる。pub の挙動の変化に早く気づけるよう、Dart は固定しない（ローカル E2E の CI も同じ）。setup-fvm は使わない（起動時の `pub get` がフィクスチャーを pub.dev から取ろうとして失敗するため）
+4. pubreform-e2e の checkout で `bun pubreform-src/test/e2e/github-e2e.ts` を実行する。このスクリプトが次の手順を 1 つのプロセスで行う
 
-API を使う手順（6、7、8 の確認）は、bash ではなく `pubreform-src/test/e2e/github-e2e.ts` で行う。後片付けで `closed: true` を入れる処理に、本体と同じ `markClosed`（src/render.ts）を使うためである。
+`github-e2e.ts` の手順:
+
+1. フィクスチャー用サーバーを同じプロセスで起動する
+2. テスト用プロジェクト（`pubspec.yaml`、`pubspec.lock`、`.github/pubreform.yaml`）を `make-project.ts` の `makeProject` で生成し、内容が変わっていれば main に push する（コミットの作成者は `pubreform-e2e`）。main のこれらのファイルはこのワークフローが管理する（`.github/workflows/` には触れない）。main にブランチ保護を設定すると、この push が失敗する
+3. 前回の実行の後片付け: `pubreform/` で始まるブランチの open の PR を閉じ、`pubreform/` で始まる ref をすべて（open の PR がないものも）消し、設定のラベルを消す。PR は、pubreform が閉じるときと同じく、本文のメタデータに `closed: true` を入れて閉じる（入れないと利用者が閉じた PR として扱われ、フィクスチャーが毎回同じなので、次の実行で同じ内容の PR が作られなくなる）。`closed: true` を入れる処理には、本体と同じ `markClosed`（src/render.ts）を使う
+4. 1 回目: ビルドした `dist/main.js` を `node` で実行し、上の 4 点のうち、Verified、`mergeable_state`、ラベルを確かめる。入力はローカル E2E と同じく環境変数（`INPUT_TOKEN`、`INPUT_CONFIG`）で渡し、`PUBREFORM_UPSTREAM` を付ける。ランナーの環境変数（`GITHUB_REPOSITORY`、`RUNNER_TEMP` など）はそのまま渡す
+5. 2 回目: 単独 PR のチェックボックスにチェックを入れてから実行し、その PR が作り直されたこと（`/` を含むブランチ名での ref の取得と更新）を確かめる。実行の直後に待たずに ref を読み、PR のメタデータの `commit` と一致することを確かめる（ref が更新の直後から新しいコミットを返すかを見るため）。PR の `head.sha` は、変わるまで数回取り直す
+
+`uses:` でアクションを呼ぶと、その前後の操作や確認がワークフローのステップに分かれるため、`dist/main.js` を直接実行して 1 つのスクリプトにまとめる。このため `action.yml`（`main` のパスと入力の既定値）は確かめない。`action.yml` は短く、誤っていれば実際に使った最初の実行で失敗して分かるためである。失敗したときは、失敗した手順の名前をエラーの注釈（`::error::`）に出す。
 
 ## 18. ビルドとリリース
 
