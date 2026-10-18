@@ -16,7 +16,7 @@ pubreform は、Dart / Flutter プロジェクトの pub 依存を更新する P
 
 対象:
 
-- 1 つのディレクトリにある `pubspec.yaml` / `pubspec.lock`（`pubspec.lock` がコミットされていること）
+- リポジトリのルートにある `pubspec.yaml` / `pubspec.lock`（`pubspec.lock` がコミットされていること）
 - pub.dev から取得する `dependencies` / `dev_dependencies` と、その推移的依存
 - Dart と Flutter の両方。依存に `sdk: flutter` があれば `flutter pub`、なければ `dart pub` を使う
 
@@ -25,7 +25,8 @@ pubreform は、Dart / Flutter プロジェクトの pub 依存を更新する P
 - path / git / sdk 依存、pub.dev 以外のホストの依存
 - `dependency_overrides` に書かれたパッケージ
 - Dart / Flutter SDK 自体と `environment` の更新
-- pub workspace、複数ディレクトリ（→ Q5）
+- pub workspace、ルート以外のディレクトリ。ルートの pubspec に `workspace:` があれば、未対応として何も変更せずに失敗終了する（将来の対応は §14）
+- `pubspec.lock` をコミットしないプロジェクト（ライブラリなど）
 - プレリリース版（更新先は安定版のみ）
 
 前提:
@@ -65,7 +66,7 @@ TypeScript の JavaScript Action（`runs.using: node24`）として実装する�
 
 - ワークフローでは、fvm の設定ファイルを `subosito/flutter-action` の `flutter-version-file` に渡して SDK を入れる（§10.3）
 - Action は、ベースブランチの fvm 設定の `flutter` を読み、`flutter --version --machine` の `frameworkVersion` と比べる。一致しなければ、何も変更せずに失敗終了する。ワークフローがベース以外の ref を checkout した場合などに、違う SDK で解決してしまうのを防ぐためである
-- fvm 設定は、fvm と同じく `directory` から親ディレクトリへ順に探す。`.fvmrc` を優先し、なければ `.fvm/fvm_config.json` を使う
+- fvm 設定はリポジトリのルートの `.fvmrc` を使い、なければ `.fvm/fvm_config.json` を使う
 - fvm 設定がなければ、PATH 上の SDK をそのまま使う（Dart だけのプロジェクトなど）
 - `flutter` の値は正確なバージョン（例: `3.35.0`）であること。`flutter-action` が扱えないため、チャンネル名（`stable`）、`3.35.0@beta`、フォークの指定には対応しない
 - fvm 設定はベースのハッシュ（§6.1）に含める。Flutter のバージョンが変わると、すべての PR を再生成する
@@ -84,7 +85,11 @@ TypeScript の JavaScript Action（`runs.using: node24`）として実装する�
 
 - 次の slot までのどの実行でも、入力（ベース、設定、pub.dev）が同じなら計画も同じになる。結果が起動のタイミングや回数に左右されない
 - GitHub の schedule が遅延・欠落しても、その後の最初の実行で同じ結果が得られる。前回の実行時刻を保存する必要がない
-- 新しいリリースが PR に入るのは、slot を過ぎた後の最初の実行。slot と slot の間に PR の内容が変わる（新規作成を含む）のは、ベースや設定が変わったときと導入直後だけ（→ Q1）
+- 新しいリリースが PR に入るのは、slot を過ぎた後の最初の実行。slot と slot の間に PR の内容が変わる（新規作成を含む）のは、ベースや設定が変わったときと導入直後だけ（→ Q1）。新規作成が起こる例:
+  - 導入後の最初の実行
+  - 設定の変更: `ignore` から外す、`min_release_age_days` を短くする、`schedule` を変える
+  - main の変更: 古い制約で依存を追加する、lockfile で意図的にバージョンを下げる、マージ済みの bot の PR を revert する、`.fvmrc` で Flutter を上げる（新しい SDK を要求していた更新が解決できるようになる）
+  - bot の PR をマージしただけでは、新しい PR はほぼ作られない（他の PR の再生成になる）
 - PR に入るバージョンは、PR 作成時点で必ず `min_release_age_days` 日以上経過している
 
 ワークフローの起動頻度は自由に決めてよい。slot の直後に PR が欲しい場合は、ワークフローの `schedule` を同じ cron とタイムゾーンにする（GitHub Actions の `schedule` は `timezone` を指定できる）。
@@ -146,7 +151,7 @@ R 自体がこの条件を満たす解なので、この解決は失敗しない
 
 - 要素が重なる `S` 同士を 1 つにまとめ、まとめた集合で同じ反復をもう一度行って確定させる
 - 要素が 1 つ: **単独 PR**
-- 要素が 2 つ以上: **同時更新グループ PR**（→ Q2）
+- 要素が 2 つ以上: **同時更新グループ PR**。単独で解決できるメジャー更新 B でも、他の更新 A が B を必要とするなら {A, B} の同時更新グループに入れ、B の単独 PR は作らない
 - 同時更新グループに入ったパッケージでも、今の制約の範囲での更新はマイナー・パッチグループに残る。例: A の 1.2→1.4 はマイナー・パッチグループ、1.4→1.5（B 3.0 が必要）は同時更新グループに入る。マイナー・パッチグループがマージされると、同時更新グループは再生成され、内容が「A 1.4→1.5」になる
 
 注: pub の解決器は、動かすパッケージの数を最小にするわけではない。そのため `S` は最小とは限らず、pub が選んだ結果に従う。
@@ -168,13 +173,14 @@ R 自体がこの条件を満たす解なので、この解決は失敗しない
 |---|---|---|
 | 単独 | `pubreform/single/<package>` | `Update <package> from <前> to <後>` |
 | マイナー・パッチグループ | `pubreform/minor-and-patch` | `Update <N> packages` |
-| 同時更新グループ | `pubreform/group/<作成時の先頭パッケージ名>` | `Update <N> packages`（→ Q2） |
+| 同時更新グループ | `pubreform/group/<作成時の先頭パッケージ名>` | `Update <N> packages` |
 
-- N はバージョンが変わるパッケージの数（推移的依存を含む）（→ Q3）
+- N はバージョンが変わる直接依存（`dependencies` / `dev_dependencies`）の数。推移的依存は数えないが、表には載せる
+- マイナー・パッチグループで、直接依存が変わらず推移的依存だけが変わる場合のタイトルは `Update transitive dependencies` とする（→ Q6）
 - コミットはベースの最新コミットの上に 1 つだけ作る。コミットメッセージの 1 行目はタイトルと同じ。グループの場合は本文に更新したパッケージの表を入れる
 
 ```
-Update 3 packages
+Update 2 packages
 
 | Package | From | To | Type |
 |---|---|---|---|
@@ -283,7 +289,7 @@ Updates the following packages.
 | 発生箇所 | 扱い |
 |---|---|
 | 既存 PR がある更新単位の処理中（適用、ブランチの更新、PR 操作） | その PR にエラーログをコメントする。ブランチは変更しない。他の更新単位の処理は続ける |
-| まだ PR がない更新単位の処理中 | ジョブのログとサマリーに出す（→ Q4） |
+| まだ PR がない更新単位の処理中 | ジョブのログに出す |
 | 全体（設定の誤り、pub.dev に到達できない、SDK がない） | 何も変更せずに失敗終了する |
 | 更新履歴やソースリンクの取得 | エラーにしない。本文に取得できなかった旨と pub.dev へのリンクを載せる |
 
@@ -304,7 +310,6 @@ Updates the following packages.
 
 ```yaml
 # .github/pubreform.yaml
-directory: .                # pubspec.yaml のあるディレクトリ
 schedule:
   cron: "0 9 * * 1"         # 必須
   timezone: Asia/Tokyo      # IANA のタイムゾーン名。既定は UTC
@@ -391,14 +396,12 @@ jobs:
 
 | # | 論点 | 仮の方針 | 他の案 |
 |---|---|---|---|
-| Q1 | slot と slot の間の PR 作成 | ベースや設定の変更、導入直後をきっかけに、slot 以外の時刻でも PR を新規作成する（含まれるバージョンは slot 時点の範囲） | 新規作成は slot から一定時間内の実行に限る（その間にワークフローが起動しなければ、その回は作られない） |
-| Q2 | 単独で解決できるメジャー更新 B に、別の更新 A が依存する場合 | {A, B} を 1 つの同時更新グループにし、B の単独 PR は作らない。タイトルはマイナー・パッチグループと同じ `Update <N> packages` | B は単独 PR にし、A は B のマージ後にマイナー・パッチグループに入れる。タイトルを区別する（例: `Update <A> and <B> together`） |
-| Q3 | pubspec と推移的依存の扱い | マイナー・パッチグループでも pubspec の下限を上げる（`--tighten`）。推移的依存もグループの内容と N に含める | lockfile だけを更新する。N と表は直接依存だけにする。また、`pubspec.lock` をコミットしないライブラリも対象にするなら、lockfile を前提にしたこの設計を見直す必要がある |
-| Q4 | まだ PR がない更新でのエラー | ジョブを失敗させ、サマリーに出すだけ | エラーがあっても PR を作り、本文にエラーを書く。または専用の Issue に集約する |
-| Q5 | 対象範囲 | 1 つのディレクトリだけ | pub workspace や複数ディレクトリ（アプリと `packages/*` など）に対応する |
+| Q1 | slot と slot の間の PR 作成 | ベースや設定の変更、導入直後をきっかけに、slot 以外の時刻でも PR を新規作成する（含まれるバージョンは slot 時点の範囲。起こる例は §4.1） | 新規作成は slot から一定時間内の実行に限る（その間にワークフローが起動しなければ、その回は作られない） |
+| Q6 | 推移的依存だけが変わるマイナー・パッチグループ | タイトルを `Update transitive dependencies` にして PR を作る | PR を作らない（推移的依存は、直接依存の更新があるときだけ一緒に上げる） |
 
 次は仮決めした点。必要なら変更する。
 
+- マイナー・パッチグループでも pubspec の下限を上げる（`versioning: increase`、`pub upgrade --tighten`）（§5.5）
 - 人手のコミットがある PR は自動で再生成しない（§7.2）
 - マージせずにクローズされた PR と同じ内容の PR は再作成しない（§7.2）
 - プレリリース版は対象外
@@ -406,6 +409,16 @@ jobs:
 - 本文とコメントは英語
 - コミットは API で作る（Verified になり、git の認証設定も要らない。代わりに、head の確認から ref の更新までの間に入った push は検出できない）（§11）
 - Flutter SDK はワークフローで fvm の設定から入れ、Action はバージョンの照合だけを行う。Action の中で fvm を実行する方式にはしない（§3.2）
+
+## 14. 将来の拡張: pub workspace
+
+v1 はルートの 1 パッケージだけを扱う。pub workspace では、lockfile はルートに 1 つで、制約は各メンバーの `pubspec.yaml` にある。同じパッケージを複数のメンバーが別々の制約で宣言することもある。後から対応しやすいように、v1 から次の形で実装しておく。
+
+- 「`pubspec.yaml` の一覧」と「lockfile」を分けて扱う。v1 では一覧はルートの 1 つだけ
+- 直接依存は「パッケージ名 → それを宣言している `pubspec.yaml` の一覧」で持つ。制約の書き換え（R の計算、`pub add`）は、宣言しているすべての `pubspec.yaml` に対して行う
+- `baseHash` は、一覧のすべての `pubspec.yaml`、lockfile、fvm 設定から計算する
+
+PR の単位とブランチ名は lockfile ごとに決まるので、workspace に対応しても変えなくてよい（workspace 全体で 1 組の PR になる）。lockfile が複数ある構成（独立したプロジェクトが並ぶリポジトリ）に広げる場合は、ブランチ名にディレクトリを入れる（例: `pubreform/<dir>/minor-and-patch`）。
 
 ## 参考
 
