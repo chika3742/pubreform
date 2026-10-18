@@ -97,8 +97,8 @@ describe.skipIf(!E2E)('local E2E', () => {
   test('1. creates the planned pull requests', async () => {
     const { summary } = await runOk()
     expect(open().map((pr) => [pr.branch, pr.title]).sort()).toEqual([
-      [GROUP, 'Update 2 packages'],
-      [MINOR, 'Update 2 packages'],
+      [GROUP, 'Update fx_b to 2.0.0, fx_needs_b to 1.1.0'],
+      [MINOR, 'Update minor and patch (2 packages)'],
       [SINGLE, 'Update fx_major from 1.0.0 to 2.0.0'],
     ])
 
@@ -115,7 +115,7 @@ describe.skipIf(!E2E)('local E2E', () => {
       commit: github.headOf(minor),
     })
     expect(commitMessage(github.headOf(minor))).toBe(
-      'Update 2 packages\n\n| Package | From | To | Type |\n|---|---|---|---|\n| fx_minor | 1.0.0 | 1.2.0 | dev |\n| fx_patch | 1.0.0 | 1.0.1 | direct |',
+      'Update minor and patch (2 packages)\n\n| Package | From | To | Type |\n|---|---|---|---|\n| fx_minor | 1.0.0 | 1.2.0 | dev |\n| fx_patch | 1.0.0 | 1.0.1 | direct |',
     )
     // versioning: increase raises the lower bounds; the lockfile keeps pub.dev URLs.
     const minorPubspec = github.readFile(github.headOf(minor), 'pubspec.yaml')
@@ -156,11 +156,18 @@ describe.skipIf(!E2E)('local E2E', () => {
     const single = openOn(SINGLE)
     const head = github.headOf(single)
     github.checkRebaseBox(single.number)
+    github.staleHead(single.number)
     await runOk()
     expect(github.headOf(single)).not.toBe(head)
     expect(single.body).toContain('- [ ] Rebase this PR')
     expect(parseMeta(single.body)).toMatchObject({ commit: github.headOf(single), previous: head })
     expect(single.comments).toEqual([])
+
+    // A run right after it, while the pull request still reports the previous head, changes nothing.
+    const before = snapshot()
+    await runOk()
+    expect(snapshot()).toEqual(before)
+    github.freshHeads()
   })
 
   test('4. a new release regenerates with a comment on the change', async () => {

@@ -50,6 +50,8 @@ export class FakeGitHub {
   /** Requests received, as "METHOD /path". */
   readonly requests: string[] = []
   private failRefUpdates = 0
+  /** Heads that the pull requests report, behind their refs, as GitHub does for a few seconds. */
+  private staleHeads = new Map<number, string>()
   private clock = 0
   private server?: http.Server
   url = ''
@@ -160,6 +162,15 @@ export class FakeGitHub {
     pr.updated = ++this.clock
   }
 
+  /** Makes the pull request keep reporting its current head after the ref moves, until `freshHeads`. */
+  staleHead(number: number) {
+    this.staleHeads.set(number, this.headOf(this.pr(number)))
+  }
+
+  freshHeads() {
+    this.staleHeads.clear()
+  }
+
   /** Makes the next `count` branch updates (PATCH /git/refs) fail. */
   failNextBranchUpdates(count = 1) {
     this.failRefUpdates = count
@@ -206,7 +217,7 @@ export class FakeGitHub {
       merged_at: pr.merged_at,
       mergeable: true,
       mergeable_state: 'clean',
-      head: { ref: pr.branch, sha: this.headOf(pr), repo: { full_name: `${this.owner}/${this.repo}` } },
+      head: { ref: pr.branch, sha: this.staleHeads.get(pr.number) ?? this.headOf(pr), repo: { full_name: `${this.owner}/${this.repo}` } },
       base: { ref: pr.base },
       labels: pr.labels.map((name) => ({ name })),
     }

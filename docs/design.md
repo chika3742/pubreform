@@ -182,14 +182,15 @@ R 自体がこの条件を満たす解なので、この解決は失敗しない
 | 種類 | ブランチ | タイトル |
 |---|---|---|
 | 単独 | `pubreform/single/<package>` | `Update <package> from <前> to <後>` |
-| マイナー・パッチグループ | `pubreform/minor-and-patch` | `Update <N> packages` |
-| 同時更新グループ | `pubreform/group/<作成時の先頭パッケージ名>` | `Update <N> packages` |
+| マイナー・パッチグループ | `pubreform/minor-and-patch` | `Update minor and patch (<N> packages)` |
+| 同時更新グループ | `pubreform/group/<作成時の先頭パッケージ名>` | `Update <package> to <後>, <package 2> to <後>, ...` |
 
 - N はバージョンが変わる直接依存（`dependencies` / `dev_dependencies`）の数。N = 1 のときは、グループでもタイトルを単独 PR と同じ `Update <package> from <前> to <後>` にし、コミットメッセージもタイトルだけにする
+- 同時更新グループのタイトルには、グループのメンバー（同時に上げる必要のあるパッケージ）をパッケージ名の順に並べる。メンバー以外で動いた直接依存は、単独 PR と同じく本文の表にだけ載せる
 - コミットはベースの最新コミットの上に 1 つだけ作る。コミットメッセージの 1 行目はタイトルと同じ。グループの場合は本文に、更新した直接依存の表を入れる
 
 ```
-Update 2 packages
+Update minor and patch (2 packages)
 
 | Package | From | To | Type |
 |---|---|---|---|

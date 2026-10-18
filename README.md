@@ -106,8 +106,8 @@ The first line of the config file above enables completion and validation in Int
 | Kind | Branch | Title |
 |---|---|---|
 | A single package | `pubreform/single/<package>` | `Update <package> from <old> to <new>` |
-| Minor and patch updates | `pubreform/minor-and-patch` | `Update <N> packages` |
-| Packages that must be updated together | `pubreform/group/<package>` | `Update <N> packages` |
+| Minor and patch updates | `pubreform/minor-and-patch` | `Update minor and patch (<N> packages)` |
+| Packages that must be updated together | `pubreform/group/<package>` | `Update <package> to <new>, <package> to <new>, ...` |
 
 A group that updates only one package is titled like a single package update. Transitive dependencies are updated in `pubspec.lock` as needed but are not listed.
 

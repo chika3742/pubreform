@@ -64,7 +64,14 @@ export class GitHub {
     const result: PrState[] = []
     for (const pr of prs.filter((p) => this.isOurs(p))) {
       const { data } = await this.octokit.rest.pulls.get({ ...this.r, pull_number: pr.number })
-      result.push({ ...this.toState(data), mergeable: data.mergeable, mergeableState: data.mergeable_state })
+      // The head of a pull request follows its ref only after a few seconds.
+      const { data: ref } = await this.octokit.rest.git.getRef({ ...this.r, ref: `heads/${data.head.ref}` })
+      result.push({
+        ...this.toState(data),
+        headSha: ref.object.sha,
+        mergeable: data.mergeable,
+        mergeableState: data.mergeable_state,
+      })
     }
     return result
   }

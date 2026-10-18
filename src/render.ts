@@ -36,14 +36,14 @@ export function branchName(unit: Unit): string {
 }
 
 export function title(result: UnitResult): string {
+  const { kind, members, targets } = result.unit
   const names = Object.keys(result.changes)
+  const to = (name: string) => result.changes[name]?.to ?? targets[name]
   // single, and minor / group with one change, name the package.
-  const name = result.unit.kind === 'single' ? result.unit.members[0]! : names.length === 1 ? names[0] : undefined
-  if (name === undefined) return `Update ${names.length} packages`
-  const change = result.changes[name]
-  const from = change?.from ?? '?'
-  const to = change?.to ?? result.unit.targets[name]
-  return `Update ${name} from ${from} to ${to}`
+  const name = kind === 'single' ? members[0]! : names.length === 1 ? names[0] : undefined
+  if (name !== undefined) return `Update ${name} from ${result.changes[name]?.from ?? '?'} to ${to(name)}`
+  if (kind === 'minor') return `Update minor and patch (${names.length} packages)`
+  return `Update ${[...members].sort().map((n) => `${n} to ${to(n)}`).join(', ')}`
 }
 
 const typeOf = (change: Change) => (change.section === 'dev_dependencies' ? 'dev' : 'direct')

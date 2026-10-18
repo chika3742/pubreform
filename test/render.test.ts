@@ -49,9 +49,15 @@ describe('names', () => {
     expect(branchName({ kind: 'minor', members: ['x'], targets: {} })).toBe('pubreform/minor-and-patch')
     expect(branchName(group.unit)).toBe('pubreform/group/http')
   })
-  test('title uses only the member for single', () => {
+  test('title', () => {
     expect(title(single)).toBe('Update http from 1.5.0 to 2.0.0')
-    expect(title(group)).toBe('Update 2 packages')
+    expect(title({ ...group, unit: { ...group.unit, kind: 'minor' } })).toBe('Update minor and patch (2 packages)')
+    expect(title(group)).toBe('Update http to 1.6.0, lints to 6.1.0')
+  })
+  test('title names only the members of single and group', () => {
+    // single above has a non-member change too.
+    const extra = { ...group, changes: { ...group.changes, async: single.changes.async! } }
+    expect(title(extra)).toBe('Update http to 1.6.0, lints to 6.1.0')
   })
   test('minor and group with one change are titled like single', () => {
     const one: UnitResult = {
@@ -69,7 +75,7 @@ describe('names', () => {
   test('commitMessage', () => {
     expect(commitMessage(single)).toBe('Update http from 1.5.0 to 2.0.0')
     expect(commitMessage(group)).toBe(
-      'Update 2 packages\n\n| Package | From | To | Type |\n|---|---|---|---|\n| http | 1.5.0 | 1.6.0 | direct |\n| lints | 6.0.0 | 6.1.0 | dev |\n',
+      'Update http to 1.6.0, lints to 6.1.0\n\n| Package | From | To | Type |\n|---|---|---|---|\n| http | 1.5.0 | 1.6.0 | direct |\n| lints | 6.0.0 | 6.1.0 | dev |\n',
     )
   })
 })

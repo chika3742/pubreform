@@ -318,19 +318,20 @@ interface UnitResult {
 | 種類 | ブランチ | タイトル |
 |---|---|---|
 | single | `pubreform/single/<name>` | `Update <name> from <from> to <to>` |
-| minor | `pubreform/minor-and-patch` | `Update <N> packages` |
-| group | `pubreform/group/<作成時の members を並べ替えた先頭>` | `Update <N> packages` |
+| minor | `pubreform/minor-and-patch` | `Update minor and patch (<N> packages)` |
+| group | `pubreform/group/<作成時の members を並べ替えた先頭>` | `Update <name> to <to>, <name 2> to <to>, ...`（members を名前の順に並べる） |
 
 - N は `changes` の数
 - N = 1 のときは、minor / group でもタイトルを single と同じ `Update <name> from <from> to <to>` にする（ユーザーの決定）。ブランチ名と種類（`kind`）は変えない
-- single の `changes` に、メンバー以外の直接依存（制約の範囲内で動いたもの）が含まれることがある。タイトルはメンバーだけで書き、表にはすべて載せる
+- single と group の `changes` に、メンバー以外の直接依存（制約の範囲内で動いたもの）が含まれることがある。タイトルはメンバーだけで書き、表にはすべて載せる
+- group のタイトルの長さは制限しない。GitHub は 257 文字のタイトルへの変更も拒否しなかった（2026-10-18 に pubreform-e2e の PR で確認。保存時に切り詰められるかは確かめていない）
 
 ### 12.2 コミットメッセージ
 
 single と、N = 1 の minor / group はタイトルだけ。それ以外の minor / group は、タイトル、空行、表。
 
 ```
-Update 2 packages
+Update minor and patch (2 packages)
 
 | Package | From | To | Type |
 |---|---|---|---|
@@ -441,6 +442,7 @@ pubreform failed to update this PR.
 | ベースの取得 | `GET /repos/{owner}/{repo}`（`default_branch`） |
 | open の PR | `GET /repos/{owner}/{repo}/pulls?state=open&base=<base>&per_page=100`（全ページ）。`head.ref` が `pubreform/` で始まり、`head.repo.full_name` が同じリポジトリのもの |
 | mergeable | `GET /repos/{owner}/{repo}/pulls/{n}`（`mergeable`、`mergeable_state`）。対象の PR ごとに 1 回 |
+| PR の head | `GET /git/ref/heads/<branch>`。対象の PR ごとに 1 回。PR の `head.sha` は使わない。ref を更新した直後は、ref はすでに新しいコミットを返すが、PR の `head.sha` は数秒のあいだ前のコミットを返すため（§17.2 で確認済み）。前の実行が PR を作り直した直後に次の実行が読むと、前の head を見て、作り直しが途中で止まったと誤って判断する |
 | closed の PR | `GET /repos/{owner}/{repo}/pulls?state=closed&base=<base>&sort=updated&direction=desc&per_page=100`（1 ページだけ）。`merged_at` が null のもの |
 | コミットの作成 | `POST /git/trees`（`base_tree` = ベースの tree、`pubspec.yaml` と `pubspec.lock` を `content` で直接渡す）→ `POST /git/commits`（`parents` = [baseSha]。author / committer は指定しない） |
 | ブランチの作成 | `POST /git/refs`。既にあれば（422）、そのブランチを使う open の PR がないことを確かめてから強制更新する |
@@ -593,7 +595,7 @@ pubreform 自身の CI では、push と pull request のたびに `tsc --noEmit
 
 1. 作成: 上の表の PR がそれぞれ作られる。タイトル、本文（表、更新履歴、メタデータ、チェックボックス）、コミットメッセージ、ラベル（ないラベルは作られる）、ジョブサマリー（解決不能）を確かめる
 2. 何も変わらない: もう一度実行し、どの PR の head も変わらず、コメントも増えない
-3. チェックボックス: 単独 PR のチェックボックスにチェックを入れて実行すると、再生成され、チェックが外れる。内容は同じなのでコメントは出ない
+3. チェックボックス: 単独 PR のチェックボックスにチェックを入れて実行すると、再生成され、チェックが外れる。内容は同じなのでコメントは出ない。その直後に、PR の `head.sha` が前の head のまま（偽の API で、本物の GitHub の反映の遅れを再現する）でもう一度実行しても、何も変わらない（§13）
 4. 新しいリリース: `fx_major` に 2.1.0（30 日前）を追加して実行すると、単独 PR が再生成され、内容の変更のコメントが出る
 5. ベースの更新: マイナー・パッチグループの PR をマージしたことにする（PR のブランチの内容をベースに反映し、PR を閉じる）。実行すると、ほかの PR は再生成されるが、内容の変更のコメントは出ない
 6. 人手のコミット: 同時更新グループの PR のブランチにコミットを追加して実行すると、通知のコメントが 1 回だけ出て、再生成されない。もう一度実行しても、通知は増えない

@@ -107,9 +107,9 @@ describe('execute', () => {
     ]
     const outcomes = await execute(ops, context(github))
     expect(calls).toEqual([
-      'createCommit Update 2 packages',
+      'createCommit Update a to 2.0.0, b to 2.0.0',
       'createBranch pubreform/group/a newsha',
-      'createPr pubreform/group/a Update 2 packages',
+      'createPr pubreform/group/a Update a to 2.0.0, b to 2.0.0',
       'ensureLabels ["dependencies"]',
       'addLabels 100 ["dependencies"]',
       'comment 7 Closing: superseded by #100.',
