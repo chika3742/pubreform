@@ -1,0 +1,372 @@
+// Matching planned units with existing pull requests and deciding operations (detailed design §14).
+import type { UnitResult } from './applier.ts'
+import type { Plan, Unit } from './planner.ts'
+import type { GitHub } from './github.ts'
+import {
+  BRANCH_PREFIX,
+  type Meta,
+  type PackageInfo,
+  branchName,
+  closeComment,
+  commitMessage,
+  contentChangedComment,
+  errorComment,
+  errorHash,
+  errorHashOf,
+  isRebaseChecked,
+  manualComment,
+  manualMarker,
+  metaOf,
+  renderBody,
+  title,
+} from './render.ts'
+
+export interface PrState {
+  number: number
+  branch: string
+  headSha: string
+  title: string
+  body: string
+  meta?: Meta
+  mergeable?: boolean | null
+  mergeableState?: string
+}
+
+export interface UnitError {
+  unit: Unit
+  log: string
+}
+
+export type Op =
+  | { op: 'create'; result: UnitResult; branch: string }
+  | { op: 'regenerate'; pr: PrState; result: UnitResult; contentChanged: boolean }
+  | { op: 'notifyManual'; pr: PrState }
+  | { op: 'commentError'; pr: PrState; log: string }
+  | { op: 'close'; pr: PrState; supersededBy?: string } // supersededBy: the branch of the unit that takes over
+  | { op: 'none'; pr: PrState }
+  /** A unit without a pull request, skipped because the same update was closed without merging. */
+  | { op: 'skip'; result: UnitResult; closedPr: PrState }
+  /** A unit that failed to apply and has no pull request. Only logged. */
+  | { op: 'error'; unit: Unit; log: string }
+
+export interface DecideContext {
+  baseHash: string
+  configHash: string
+}
+
+type Item = { unit: Unit; result?: UnitResult; error?: string }
+
+const GROUP_PREFIX = `${BRANCH_PREFIX}group/`
+
+/** Package names in the pull request, from the metadata or the branch name. */
+function prPackages(pr: PrState): string[] {
+  if (pr.meta) return Object.keys(pr.meta.packages)
+  const m = /^pubreform\/(?:single|group)\/(.+)$/.exec(pr.branch)
+  return m ? [m[1]!] : []
+}
+
+function targets(result: UnitResult): Map<string, string> {
+  return new Map(Object.entries(result.changes).map(([name, c]) => [name, c.to]))
+}
+
+function sameTargets(a: Map<string, string>, b: Map<string, string>): boolean {
+  return a.size === b.size && [...a].every(([name, to]) => b.get(name) === to)
+}
+
+function metaTargets(meta: Meta): Map<string, string> {
+  return new Map(Object.entries(meta.packages).map(([name, [, to]]) => [name, to]))
+}
+
+/** Pairs units with open pull requests (§14.2). */
+export function match(items: Item[], openPrs: PrState[]): Map<Item, PrState> {
+  const pairs = new Map<Item, PrState>()
+  const used = new Set<PrState>()
+  const take = (item: Item, pr: PrState) => {
+    pairs.set(item, pr)
+    used.add(pr)
+  }
+
+  // single and minor: by branch name.
+  for (const item of items.filter((i) => i.unit.kind !== 'group')) {
+    const pr = openPrs.find((p) => !used.has(p) && p.branch === branchName(item.unit))
+    if (pr) take(item, pr)
+  }
+
+  // group: by overlap of packages, greedily from the largest overlap, then the smaller PR number.
+  const groups = items.filter((i) => i.unit.kind === 'group')
+  const groupPrs = openPrs.filter((p) => p.branch.startsWith(GROUP_PREFIX))
+  const candidates: { item: Item; pr: PrState; overlap: number }[] = []
+  for (const item of groups) {
+    for (const pr of groupPrs.filter((p) => p.meta)) {
+      const overlap = Object.keys(pr.meta!.packages).filter((name) => item.unit.members.includes(name)).length
+      if (overlap > 0) candidates.push({ item, pr, overlap })
+    }
+  }
+  candidates.sort((a, b) => b.overlap - a.overlap || a.pr.number - b.pr.number)
+  for (const { item, pr } of candidates) {
+    if (!pairs.has(item) && !used.has(pr)) take(item, pr)
+  }
+  // group PRs without metadata: the first package in the branch name must be a member.
+  for (const pr of groupPrs.filter((p) => !p.meta && !used.has(p))) {
+    const first = pr.branch.slice(GROUP_PREFIX.length)
+    const item = groups.find((i) => !pairs.has(i) && i.unit.members.includes(first))
+    if (item) take(item, pr)
+  }
+  return pairs
+}
+
+function decideBoth(pr: PrState, result: UnitResult, ctx: DecideContext): Op {
+  const checked = isRebaseChecked(pr.body)
+  const meta = pr.meta
+  const contentChanged = meta !== undefined && !sameTargets(metaTargets(meta), targets(result))
+  const regenerate: Op = { op: 'regenerate', pr, result, contentChanged }
+  if (meta && pr.headSha !== meta.commit && !checked) return { op: 'notifyManual', pr }
+  if (checked) return regenerate
+  if (pr.mergeable === false && pr.mergeableState === 'dirty') return regenerate
+  if (contentChanged) return regenerate
+  if (meta && (meta.baseHash !== ctx.baseHash || meta.configHash !== ctx.configHash)) return regenerate
+  if (!meta) return regenerate
+  return { op: 'none', pr }
+}
+
+/**
+ * Decides the operations (§14.3). Pure: comments are not read here.
+ * `results` are the applied units, `unitErrors` the units that failed to apply.
+ */
+export function decide(
+  results: UnitResult[],
+  unitErrors: UnitError[],
+  plan: Pick<Plan, 'uncertain'>,
+  openPrs: PrState[],
+  closedPrs: PrState[],
+  ctx: DecideContext,
+): Op[] {
+  const items: Item[] = [
+    ...results.map((result) => ({ unit: result.unit, result })),
+    ...unitErrors.map((e) => ({ unit: e.unit, error: e.log })),
+  ]
+  const pairs = match(items, openPrs)
+  const ops: Op[] = []
+
+  for (const item of items) {
+    const pr = pairs.get(item)
+    if (item.error !== undefined) {
+      ops.push(pr ? { op: 'commentError', pr, log: item.error } : { op: 'error', unit: item.unit, log: item.error })
+      continue
+    }
+    const result = item.result!
+    if (pr) {
+      ops.push(decideBoth(pr, result, ctx))
+      continue
+    }
+    const closed = closedPrs.find(
+      (p) => p.meta && p.meta.kind === result.unit.kind && sameTargets(metaTargets(p.meta), targets(result)),
+    )
+    ops.push(closed ? { op: 'skip', result, closedPr: closed } : { op: 'create', result, branch: branchName(result.unit) })
+  }
+
+  const matched = new Set(pairs.values())
+  for (const pr of openPrs.filter((p) => !matched.has(p))) {
+    const packages = prPackages(pr)
+    if (packages.some((name) => plan.uncertain.has(name))) {
+      ops.push({ op: 'none', pr })
+      continue
+    }
+    const successor = items.find((i) => {
+      const names = new Set([...i.unit.members, ...Object.keys(i.result?.changes ?? {})])
+      return packages.some((name) => names.has(name))
+    })
+    const supersededBy = successor ? (pairs.get(successor)?.branch ?? branchName(successor.unit)) : undefined
+    ops.push({ op: 'close', pr, supersededBy })
+  }
+  return ops
+}
+
+// ---- Execution (§14.4) ----
+
+export interface Outcome {
+  kind: Unit['kind'] | undefined
+  packages: string[]
+  action: 'created' | 'regenerated' | 'unchanged' | 'closed' | 'skipped' | 'notified' | 'error'
+  pr?: number
+  error?: string
+}
+
+export interface ExecuteContext {
+  github: Pick<
+    GitHub,
+    | 'createCommit'
+    | 'createBranch'
+    | 'updateBranch'
+    | 'deleteBranch'
+    | 'createPr'
+    | 'updatePr'
+    | 'closePr'
+    | 'ensureLabels'
+    | 'addLabels'
+    | 'comments'
+    | 'comment'
+  >
+  base: string
+  baseSha: string
+  baseTree: string
+  hashes: DecideContext
+  labels: string[]
+  packageInfo: (name: string, version: string) => PackageInfo
+  /** Formats an error log for a comment or the job log (§15). */
+  formatLog: (log: string) => string
+  log: (message: string) => void
+}
+
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
+}
+
+function unitPackages(result: UnitResult): string[] {
+  return Object.keys(result.changes)
+}
+
+function prKind(pr: PrState): Unit['kind'] | undefined {
+  return pr.meta?.kind
+}
+
+/** Runs the operations. Failures are returned as outcomes with `error`, never thrown. */
+export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]> {
+  const { github } = ctx
+  const outcomes: Outcome[] = []
+  /** branch -> pull request number, for "superseded by". */
+  const numbers = new Map<string, number>()
+
+  const labels = async () =>
+    ctx.labels.length === 0
+      ? []
+      : github.ensureLabels(ctx.labels, (label, e) => {
+          outcomes.push({ kind: undefined, packages: [], action: 'error', error: `cannot create label "${label}": ${errorText(e)}` })
+        })
+
+  const commentError = async (pr: number, rawLog: string) => {
+    const log = ctx.formatLog(rawLog)
+    const comments = await github.comments(pr)
+    const last = comments.filter((c) => c.isBot && errorHashOf(c.body) !== undefined).pop()
+    if (last && errorHashOf(last.body) === errorHash(log)) return
+    await github.comment(pr, errorComment(log))
+  }
+
+  /** Records a failure, and comments it on the pull request if there is one. */
+  const fail = async (outcome: Omit<Outcome, 'action' | 'error'>, e: unknown) => {
+    const error = errorText(e)
+    ctx.log(`Error (${outcome.packages.join(', ')}): ${ctx.formatLog(error)}`)
+    let comment = ''
+    if (outcome.pr !== undefined) {
+      try {
+        await commentError(outcome.pr, error)
+      } catch (ce) {
+        comment = `\nand cannot comment on #${outcome.pr}: ${errorText(ce)}`
+      }
+    }
+    outcomes.push({ ...outcome, action: 'error', error: error + comment })
+  }
+
+  const commit = (result: UnitResult) =>
+    github.createCommit({
+      baseSha: ctx.baseSha,
+      baseTree: ctx.baseTree,
+      files: result.files,
+      message: commitMessage(result),
+    })
+
+  const body = (result: UnitResult, sha: string) => {
+    const infos = new Map(Object.entries(result.changes).map(([name, c]) => [name, ctx.packageInfo(name, c.to)]))
+    return renderBody(result, metaOf(result, ctx.hashes, sha), infos)
+  }
+
+  // close runs last, so that the pull request that supersedes it has a number.
+  const ordered = [...ops.filter((o) => o.op !== 'close'), ...ops.filter((o) => o.op === 'close')]
+  for (const op of ordered) {
+    switch (op.op) {
+      case 'create': {
+        const base = { kind: op.result.unit.kind, packages: unitPackages(op.result) }
+        let pr: number | undefined
+        try {
+          const sha = await commit(op.result)
+          await github.createBranch(op.branch, sha)
+          pr = await github.createPr({ base: ctx.base, branch: op.branch, title: title(op.result), body: body(op.result, sha) })
+          numbers.set(op.branch, pr)
+          await github.addLabels(pr, await labels())
+          outcomes.push({ ...base, action: 'created', pr })
+        } catch (e) {
+          await fail({ ...base, pr }, e)
+        }
+        break
+      }
+      case 'regenerate': {
+        const { pr, result } = op
+        const base = { kind: result.unit.kind, packages: unitPackages(result), pr: pr.number }
+        numbers.set(pr.branch, pr.number)
+        try {
+          const sha = await commit(result)
+          await github.updateBranch(pr.branch, pr.headSha, sha)
+          await github.updatePr(pr.number, { title: title(result), body: body(result, sha) })
+          await github.addLabels(pr.number, await labels())
+          if (op.contentChanged && pr.meta) await github.comment(pr.number, contentChangedComment(pr.meta.packages, result.changes))
+          outcomes.push({ ...base, action: 'regenerated' })
+        } catch (e) {
+          await fail(base, e)
+        }
+        break
+      }
+      case 'notifyManual': {
+        const { pr } = op
+        const base = { kind: prKind(pr), packages: prPackages(pr), pr: pr.number }
+        numbers.set(pr.branch, pr.number)
+        try {
+          const marker = manualMarker(pr.headSha)
+          const comments = await github.comments(pr.number)
+          if (!comments.some((c) => c.isBot && c.body.includes(marker))) {
+            await github.comment(pr.number, manualComment(pr.headSha))
+          }
+          outcomes.push({ ...base, action: 'notified' })
+        } catch (e) {
+          outcomes.push({ ...base, action: 'error', error: errorText(e) })
+        }
+        break
+      }
+      case 'commentError': {
+        const { pr } = op
+        numbers.set(pr.branch, pr.number)
+        await fail({ kind: prKind(pr), packages: prPackages(pr), pr: pr.number }, op.log)
+        break
+      }
+      case 'error':
+        await fail({ kind: op.unit.kind, packages: op.unit.members }, op.log)
+        break
+      case 'none':
+        numbers.set(op.pr.branch, op.pr.number)
+        outcomes.push({ kind: prKind(op.pr), packages: prPackages(op.pr), action: 'unchanged', pr: op.pr.number })
+        break
+      case 'skip':
+        outcomes.push({
+          kind: op.result.unit.kind,
+          packages: unitPackages(op.result),
+          action: 'skipped',
+          pr: op.closedPr.number,
+        })
+        break
+      case 'close': {
+        const { pr } = op
+        const base = { kind: prKind(pr), packages: prPackages(pr), pr: pr.number }
+        try {
+          const supersededBy = op.supersededBy === undefined ? undefined : numbers.get(op.supersededBy)
+          await github.comment(pr.number, closeComment(supersededBy))
+          await github.closePr(pr.number)
+          await github.deleteBranch(pr.branch)
+          outcomes.push({ ...base, action: 'closed' })
+        } catch (e) {
+          await fail(base, e)
+        }
+        break
+      }
+    }
+  }
+  return outcomes
+}
