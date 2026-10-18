@@ -33,7 +33,7 @@ pubreform は、Dart / Flutter プロジェクトの pub 依存を更新する P
 
 - PR の作成、コミット、コメントは GitHub App のインストールトークンで行う（§11）
 - Dart / Flutter SDK はワークフロー側でセットアップする。解決結果はこの SDK のバージョンに依存し、より新しい SDK を要求するバージョンは「解決不能」として扱われる
-- Flutter のバージョンは fvm の設定（`.fvmrc`、旧形式の `.fvm/fvm_config.json`）から取る（§3.2）
+- Flutter SDK は fvm で用意する。ワークフローで `chika3742/setup-fvm` を使う（§3.2）
 
 ## 3. 全体構成
 
@@ -54,22 +54,20 @@ TypeScript の JavaScript Action（`runs.using: node24`）として実装する�
 
 1. ベースブランチ（リポジトリのデフォルトブランチ）の最新コミットを fetch し、作業用の worktree を作る
 2. 設定ファイルをベースブランチから読む（起動元の ref にある設定は使わない）
-3. ベースの fvm 設定と、PATH 上の Flutter SDK のバージョンを照合する（§3.2）
-4. Clock で slot と cutoff を求める（§4）
-5. RegistryProxy を起動する。以降の pub コマンドはすべてプロキシ経由で実行する
-6. Planner で更新単位の集合を求める（§5）
-7. 各更新単位を Applier で適用し、変更内容（pubspec の差分とバージョン変更の一覧）を得る
-8. Reconciler で既存 PR（open と closed）と突き合わせ、必要な操作を実行する（§7）
-9. ジョブサマリーに slot、cutoff、各 PR への操作、解決不能だった更新、エラーを書く。エラーが 1 件でもあれば失敗終了する
+3. Clock で slot と cutoff を求める（§4）
+4. RegistryProxy を起動する。以降の pub コマンドはすべてプロキシ経由で、作業用 worktree の中で実行する（§3.2）
+5. Planner で更新単位の集合を求める（§5）
+6. 各更新単位を Applier で適用し、変更内容（pubspec の差分とバージョン変更の一覧）を得る
+7. Reconciler で既存 PR（open と closed）と突き合わせ、必要な操作を実行する（§7）
+8. ジョブサマリーに slot、cutoff、各 PR への操作、解決不能だった更新、エラーを書く。エラーが 1 件でもあれば失敗終了する
 
-### 3.2 Flutter SDK のバージョン
+### 3.2 Flutter SDK
 
-- ワークフローでは、fvm の設定ファイルを `subosito/flutter-action` の `flutter-version-file` に渡して SDK を入れる（§10.3）
-- Action は、ベースブランチの fvm 設定の `flutter` を読み、`flutter --version --machine` の `frameworkVersion` と比べる。一致しなければ、何も変更せずに失敗終了する。ワークフローがベース以外の ref を checkout した場合などに、違う SDK で解決してしまうのを防ぐためである
-- fvm 設定はリポジトリのルートの `.fvmrc` を使い、なければ `.fvm/fvm_config.json` を使う
-- fvm 設定がなければ、PATH 上の SDK をそのまま使う（Dart だけのプロジェクトなど）
-- `flutter` の値は正確なバージョン（例: `3.35.0`）であること。`flutter-action` が扱えないため、チャンネル名（`stable`）、`3.35.0@beta`、フォークの指定には対応しない
-- fvm 設定はベースのハッシュ（§6.1）に含める。Flutter のバージョンが変わると、すべての PR を再生成する
+- ワークフローで [`chika3742/setup-fvm`](https://github.com/chika3742/setup-fvm) を使い、FVM と Flutter SDK を入れる。Flutter SDK と pub のキャッシュの保存・復元も setup-fvm が行う（§10.3）
+- Action は、ルートに `.fvmrc` があれば、§2 の pub コマンドの前に `fvm` を付けて実行する（`fvm flutter pub …` / `fvm dart pub …`）。fvm は実行したディレクトリの `.fvmrc` のバージョンを使う。Action は pub をベースの worktree の中で実行するので、使われるのはベースの `.fvmrc` のバージョンになる
+- checkout した ref とベースで `.fvmrc` が違う場合は、fvm がベースのバージョンを自動でインストールしてから実行する。結果はベースのバージョンで解決したものになるが、SDK の取得に時間がかかる
+- `.fvmrc` がなければ、PATH 上の `flutter` / `dart` をそのまま使う（Dart だけのプロジェクトなど。SDK は `dart-lang/setup-dart` などで用意する）
+- `.fvmrc` はベースのハッシュ（§6.1）に含める。Flutter のバージョンが変わると、すべての PR を再生成する
 
 ## 4. スケジュールとリリース後の待機期間
 
@@ -106,7 +104,11 @@ pub には公開日時で候補を絞る機能がない。クールダウン機�
 
 pub は lockfile の各パッケージにホストの `url` を記録しており、`PUB_HOSTED_URL` と違う URL のエントリはロック済みとして扱わない。そのため、pub を実行する前に作業用コピーの lockfile の `url: "https://pub.dev"` をプロキシの URL に置き換え、実行後に元へ戻す。
 
-> **要検証**: この置き換えで `pub get` がロックを維持すること、`sha256` が変わらないことをプロトタイプで確認する。pub にクールダウン機能が入ったら、この仕組みはそれに置き換える。
+pub はダウンロードしたパッケージを、ホストごとのディレクトリに保存する。プロキシ経由で取得したパッケージは `~/.pub-cache/hosted/localhost%58<port>/` に入り、setup-fvm が復元する `hosted/pub.dev/` とは別になる。ポートを実行ごとに変えると保存先も変わり、キャッシュが増え続けるため、プロキシのポートは固定にする。
+
+> **要検証**: 次の点をプロトタイプで確認する。pub にクールダウン機能が入ったら、この仕組みはそれに置き換える。
+> - lockfile の URL を置き換えても `pub get` がロックを維持し、`sha256` が変わらないこと
+> - プロキシ経由でのダウンロードとキャッシュの増え方が、実行時間とキャッシュ容量の面で許容できること
 
 ## 5. 更新単位の計画（Planner）
 
@@ -198,7 +200,7 @@ Update 2 packages
 | キー | 用途 |
 |---|---|
 | `kind`, `packages` | 計画との突き合わせ、内容の変更の検出、クローズ済み PR の再作成の抑止 |
-| `baseHash` | 生成時のベースの `pubspec.yaml`、`pubspec.lock`、fvm 設定のハッシュ。ベースの更新と Flutter のバージョン変更を検出する |
+| `baseHash` | 生成時のベースの `pubspec.yaml`、`pubspec.lock`、`.fvmrc` のハッシュ。ベースの更新と Flutter のバージョン変更を検出する |
 | `configHash` | 設定の変更を検出する |
 | `commit` | 生成したコミットの SHA。PR の head と違えば、人手のコミットがある |
 
@@ -226,7 +228,7 @@ PR の識別にはブランチ名の接頭辞とメタデータを使い、ラ�
 | 本文のチェックボックスがチェックされた | 本文中のマーカー付きチェックボックスが `[x]` |
 | ベースとコンフリクトしている | PR の `mergeable_state` が `dirty`。`mergeable` が未計算なら今回は判定しない |
 | 更新内容が変わった | 適用結果の `packages` がメタデータと違う |
-| ベースの `pubspec.yaml` / `pubspec.lock`（と fvm 設定）が更新された | ベースのハッシュがメタデータの `baseHash` と違う |
+| ベースの `pubspec.yaml` / `pubspec.lock`（と `.fvmrc`）が更新された | ベースのハッシュがメタデータの `baseHash` と違う |
 | 設定が変わった | 設定のハッシュがメタデータの `configHash` と違う |
 
 PR が変更するのは pubspec の 2 ファイルだけなので、コンフリクトはほぼ `baseHash` の比較で検出できる。`mergeable_state` は念のために見る。
@@ -355,9 +357,7 @@ jobs:
           client-id: ${{ vars.PUBREFORM_CLIENT_ID }}
           private-key: ${{ secrets.PUBREFORM_PRIVATE_KEY }}
       - uses: actions/checkout@v7
-      - uses: subosito/flutter-action@v2    # Dart だけなら dart-lang/setup-dart@v1
-        with:
-          flutter-version-file: .fvmrc      # fvm の設定からバージョンを取る
+      - uses: chika3742/setup-fvm@v3        # Dart だけなら dart-lang/setup-dart@v1
       - uses: chika3742/pubreform@v1
         with:
           token: ${{ steps.app-token.outputs.token }}
@@ -398,7 +398,6 @@ jobs:
 - セキュリティアドバイザリがあっても待機期間は短縮しない（pub.dev の advisories API を使って後から対応できる）
 - 本文とコメントは英語
 - コミットは API で作る（Verified になり、git の認証設定も要らない。代わりに、head の確認から ref の更新までの間に入った push は検出できない）（§11）
-- Flutter SDK はワークフローで fvm の設定から入れ、Action はバージョンの照合だけを行う。Action の中で fvm を実行する方式にはしない（§3.2）
 
 ## 14. 将来の拡張: pub workspace
 
@@ -406,7 +405,7 @@ v1 はルートの 1 パッケージだけを扱う。pub workspace では、loc
 
 - 「`pubspec.yaml` の一覧」と「lockfile」を分けて扱う。v1 では一覧はルートの 1 つだけ
 - 直接依存は「パッケージ名 → それを宣言している `pubspec.yaml` の一覧」で持つ。制約の書き換え（R の計算、`pub add`）は、宣言しているすべての `pubspec.yaml` に対して行う
-- `baseHash` は、一覧のすべての `pubspec.yaml`、lockfile、fvm 設定から計算する
+- `baseHash` は、一覧のすべての `pubspec.yaml`、lockfile、`.fvmrc` から計算する
 
 PR の単位とブランチ名は lockfile ごとに決まるので、workspace に対応しても変えなくてよい（workspace 全体で 1 組の PR になる）。lockfile が複数ある構成（独立したプロジェクトが並ぶリポジトリ）に広げる場合は、ブランチ名にディレクトリを入れる（例: `pubreform/<dir>/minor-and-patch`）。
 
@@ -419,5 +418,5 @@ PR の単位とブランチ名は lockfile ごとに決まるので、workspace 
 - [Workflow syntax: on.schedule](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onschedule)（`timezone`）
 - [Deprecation of Node 20 on GitHub Actions runners](https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/)
 - [About commit signature verification: Signature verification for bots](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification#signature-verification-for-bots)
-- [subosito/flutter-action](https://github.com/subosito/flutter-action)（`flutter-version-file` に `.fvmrc` を指定できる）
+- [chika3742/setup-fvm](https://github.com/chika3742/setup-fvm)
 - [FVM Configuration](https://fvm.app/documentation/getting-started/configuration)
