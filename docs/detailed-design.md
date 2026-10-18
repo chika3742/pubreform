@@ -560,11 +560,39 @@ pubreform 自身の CI では、push と pull request のたびに `tsc --noEmit
 
 ### 17.1 E2E
 
-pubreform とは別のテスト用リポジトリで行う。このリポジトリのルートには Action のコードがあり pubspec がないので、v1 の対象（ルートの pubspec とデフォルトブランチ）に合わないためである。
+テスト用リポジトリ [`chika3742/pubreform-e2e`](https://github.com/chika3742/pubreform-e2e)（非公開）で行う。pubreform のルートには Action のコードがあり pubspec がないので、v1 の対象（ルートの pubspec とデフォルトブランチ）に合わないためである。
 
-- テスト用リポジトリ: 古い lockfile を持つ Flutter プロジェクトをルートに置き、`.fvmrc` と `.github/pubreform.yaml` を置く。本番と同じ GitHub App をインストールする
-- ワークフローはテスト用リポジトリに置く（Action は対象のリポジトリを `GITHUB_REPOSITORY` から決めるため）。`workflow_dispatch` で、pubreform のテストしたい ref を入力に受け取る
-- 手順: テスト用リポジトリを checkout → pubreform の指定 ref をサブディレクトリに checkout してビルド → setup-fvm → 前回の実行で残った bot の PR とブランチを片付ける → `uses: ./<サブディレクトリ>` で Action を実行 → 作られた PR（タイトル、ラベル、本文、コミットが Verified か）を確かめる
+前提（利用者が設定する）:
+
+- GitHub App を pubreform-e2e と pubreform の両方にインストールする。pubreform-e2e には本番と同じ権限（Contents と Pull requests の Read and write）が要る。pubreform は非公開なので、E2E のワークフローがコードを取得するために Contents の読み取りが要る
+- pubreform-e2e に、変数 `PUBREFORM_CLIENT_ID` とシークレット `PUBREFORM_PRIVATE_KEY` を設定する
+- トークンは `actions/create-github-app-token@v3` で、`repositories: pubreform-e2e,pubreform` として両方を対象に発行する
+
+テスト用プロジェクト（pubreform-e2e のルート）:
+
+- `.fvmrc` は Flutter 3.47.7
+- `pubspec.yaml` と `pubspec.lock` は、次の更新が起こるように古いバージョンでロックしておく
+  - 制約の範囲内の更新が 1 つ → 変わる直接依存が 1 つのマイナー・パッチグループ（タイトルは単独 PR と同じ形）
+  - メジャー更新が 1 つ → 単独 PR
+- 同時更新グループは、安定して再現できるパッケージの組が見つかるまで対象外とする
+- `.github/pubreform.yaml` の `labels` には、リポジトリにないラベル `pubreform-e2e` を入れる（作成を確かめるため）
+
+ワークフロー `.github/workflows/e2e.yml`（`workflow_dispatch`。入力 `ref` は pubreform の ref）:
+
+1. App のトークンを発行する
+2. pubreform-e2e を checkout し、pubreform の `ref` を `pubreform-src/` に checkout する
+3. setup-bun を入れ、`pubreform-src/` で `bun install --frozen-lockfile` と `bun run build` を行う
+4. setup-fvm を入れる
+5. 前回の実行の後片付け: `pubreform/` で始まるブランチの open の PR を閉じ、そのブランチとラベル `pubreform-e2e` を消す
+6. 1 回目: `uses: ./pubreform-src` で Action を実行する
+7. `gh api` で確かめる。バージョンは pub.dev の状況で変わるので、ブランチ名とタイトルの形だけを見る
+   - 期待した 2 つの PR があり、ブランチ名とタイトルの形が正しい
+   - 両方の PR にラベルが付き、`pubreform-e2e` が作られている
+   - head のコミットが Verified（`commit.verification.verified`）
+   - 本文にメタデータとチェックボックスがある
+   - `mergeable_state` が取得できる（GitHub の計算を待つため、null でなくなるまで数回取り直す）
+8. 2 回目: もう一度実行し、両方の PR の head が変わらないことを確かめる
+9. 3 回目: 片方の PR のチェックボックスにチェックを入れてから実行し、その PR の head が変わり、チェックが外れていることを確かめる（`/` を含むブランチ名で ref を更新する API もここで確かめられる）
 
 ## 18. ビルドとリリース
 
@@ -578,7 +606,7 @@ pubreform とは別のテスト用リポジトリで行う。このリポジト�
 
 | 項目 | 内容 |
 |---|---|
-| E2E の環境 | テスト用のリポジトリは別に作る（作成は利用者が行う）。名前が決まったら §17.1 に書く |
+| E2E の環境 | テスト用リポジトリは `chika3742/pubreform-e2e`。App のインストールと、変数・シークレットの設定は利用者が行う（§17.1） |
 
 ## 20. 基本設計からの変更点
 
