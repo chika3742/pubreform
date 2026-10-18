@@ -3,6 +3,7 @@ import type { Versioning } from './config.ts'
 import type { Unit } from './planner.ts'
 import type { PubFiles } from './pub.ts'
 import { type DirectDep, type Section, lockVersions } from './pubspec.ts'
+import { parseVersion } from './version.ts'
 
 export interface Change {
   from: string
@@ -21,12 +22,23 @@ export type RunPub = (args: string[], files: PubFiles) => Promise<PubFiles>
 
 export function applyArgs(unit: Unit, deps: DirectDep[], versioning: Versioning): string[] {
   if (unit.kind === 'minor') return versioning === 'increase' ? ['upgrade', '--tighten'] : ['upgrade']
-  const sections = new Map(deps.map((d) => [d.name, d.section]))
+  const byName = new Map(deps.map((d) => [d.name, d]))
   const specs = unit.members.map((name) => {
-    const spec = `${name}:^${unit.targets[name]}`
-    return sections.get(name) === 'dev_dependencies' ? `dev:${spec}` : spec
+    const dep = byName.get(name)
+    // A constraint pinned to one version stays pinned.
+    const spec = `${name}:${dep && isVersion(dep.constraint) ? '' : '^'}${unit.targets[name]}`
+    return dep?.section === 'dev_dependencies' ? `dev:${spec}` : spec
   })
   return ['add', ...specs]
+}
+
+function isVersion(constraint: string): boolean {
+  try {
+    parseVersion(constraint.trim())
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Direct dependencies whose version differs between the base lockfile and `lock`. */

@@ -49,8 +49,13 @@ export class GitHub {
     return { number: pr.number, branch: pr.head.ref, headSha: pr.head.sha, title: pr.title, body, meta: parseMeta(body) }
   }
 
-  private isOurs(pr: { head: { ref: string; repo: { full_name: string } | null } }): boolean {
-    return pr.head.ref.startsWith(BRANCH_PREFIX) && pr.head.repo?.full_name === `${this.owner}/${this.repo}`
+  /** Pull requests that a person opened from a pubreform/ branch are not pubreform's. */
+  private isOurs(pr: { head: { ref: string; repo: { full_name: string } | null }; user: { type: string } | null }): boolean {
+    return (
+      pr.head.ref.startsWith(BRANCH_PREFIX) &&
+      pr.head.repo?.full_name === `${this.owner}/${this.repo}` &&
+      pr.user?.type === 'Bot'
+    )
   }
 
   /** Open pull requests of pubreform, with mergeability. */

@@ -23,6 +23,7 @@ import {
   renderBody,
   renderMeta,
   title,
+  withoutBacklinks,
 } from '../src/render.ts'
 
 const single: UnitResult = {
@@ -256,6 +257,10 @@ describe('readPackageInfo', () => {
       fs.writeFileSync(path.join(dir, 'pubspec.yaml'), 'name: a\nhomepage: https://a.dev\nrepository: https://github.com/a/a\n')
       fs.writeFileSync(path.join(dir, 'CHANGELOG.md'), '## 1.0.0\n')
       expect(readPackageInfo(dir)).toEqual({ source: 'https://github.com/a/a', changelog: '## 1.0.0\n' })
+      fs.writeFileSync(path.join(dir, 'pubspec.yaml'), 'name: a\nrepository: "https://a.dev) Thanks @alice ("\n')
+      expect(readPackageInfo(dir).source).toBeUndefined()
+      fs.writeFileSync(path.join(dir, 'pubspec.yaml'), 'name: a\nrepository: "https://a.dev\\n@alice"\n')
+      expect(readPackageInfo(dir).source).toBeUndefined()
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
@@ -301,5 +306,47 @@ describe('comments', () => {
     expect(out).toContain('token ***')
     expect(out).toContain('https://***@example.com/x')
     expect(formatLog('x'.repeat(70_000), [])).toHaveLength(60_000)
+  })
+})
+
+describe('withoutBacklinks', () => {
+  const z = '\u200b'
+  test('points issue, pull request and discussion links at redirect.github.com', () => {
+    expect(
+      withoutBacklinks(
+        '- Fix <http://www.github.com/a/b.c/pull/3>, https://github.com/a-b/c_d/discussions/4#note',
+      ),
+    ).toBe('- Fix <https://redirect.github.com/a/b.c/pull/3>, https://redirect.github.com/a-b/c_d/discussions/4#note')
+  })
+  test('keeps other links', () => {
+    const text = 'https://github.com/a/b, https://github.com/a/b/releases/tag/v1, https://notgithub.com/a/b/issues/1'
+    expect(withoutBacklinks(text)).toBe(text)
+  })
+  test('links references to issues through redirect.github.com', () => {
+    expect(withoutBacklinks('Fixes a/b.c#12 and (#3).', 'https://github.com/o/r.git')).toBe(
+      'Fixes [a/b.c#12](https://redirect.github.com/a/b.c/issues/12) and ([#3](https://redirect.github.com/o/r/issues/3)).',
+    )
+    // A monorepo: the repository is the first two parts of the path.
+    expect(withoutBacklinks('#3', 'https://github.com/flutter/packages/tree/main/packages/go_router')).toBe(
+      '[#3](https://redirect.github.com/flutter/packages/issues/3)',
+    )
+  })
+  test('breaks #123 when the source is not on GitHub', () => {
+    expect(withoutBacklinks('#3', 'https://gitlab.com/o/r')).toBe(`#${z}3`)
+    expect(withoutBacklinks('#3')).toBe(`#${z}3`)
+  })
+  test('breaks mentions but not e-mail addresses or scoped names in URLs', () => {
+    expect(withoutBacklinks('Thanks @alice and (@bob-2)! a@b.com https://x.com/@carol')).toBe(
+      `Thanks @${z}alice and (@${z}bob-2)! a@b.com https://x.com/@carol`,
+    )
+  })
+  test('keeps code, and rewrites only the URL and mentions of an existing link', () => {
+    expect(withoutBacklinks('`@a #1 o/r#2` ```\n@b #3\n``` [#4 by @c](https://github.com/o/r/pull/4)', 'https://github.com/o/r')).toBe(
+      `\`@a #1 o/r#2\` \`\`\`\n@b #3\n\`\`\` [#4 by @${z}c](https://redirect.github.com/o/r/pull/4)`,
+    )
+  })
+  test('keeps headings and HTML entities', () => {
+    const text = '## 1.2.0\n\n&#123; ##4'
+    expect(withoutBacklinks(text, 'https://github.com/o/r')).toBe(text)
   })
 })

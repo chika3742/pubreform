@@ -79,7 +79,8 @@ export function readPackageInfo(dir: string): PackageInfo {
   try {
     const pubspec = parse(fs.readFileSync(path.join(dir, 'pubspec.yaml'), 'utf8'))
     const source = pubspec?.repository ?? pubspec?.homepage
-    if (typeof source === 'string' && /^https?:\/\//.test(source)) info.source = source
+    // Written by the package author: anything that could leave the Markdown link is dropped.
+    if (typeof source === 'string' && /^https?:\/\/[^\s()[\]<>]+$/.test(source)) info.source = source
   } catch {}
   try {
     info.changelog = fs.readFileSync(path.join(dir, 'CHANGELOG.md'), 'utf8')
@@ -112,6 +113,46 @@ export function extractChangelog(text: string, from: string, to: string): string
 }
 
 // ---- Body ----
+
+const GITHUB_REF_URL = /\bhttps?:\/\/(?:www\.)?github\.com\/([\w.-]+\/[\w.-]+\/(?:issues|pull|discussions)\/\d+)/g
+const GITHUB_REPO = /^https?:\/\/(?:www\.)?github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?(?:[/#?]|$)/
+const ZWSP = '\u200b'
+// Code is matched first and kept: GitHub links nothing in it.
+const CHANGELOG_TOKEN = new RegExp(
+  [
+    /(?<code>```[\s\S]*?```|`[^`\n]*`)/,
+    /\[(?<text>[^\]\n]*)\]\((?<href>[^)\s]*)\)/,
+    /(?<url>https?:\/\/[^\s<>()[\]]+)/,
+    /(?<=^|[^\w/.-])(?<repo>[\w.-]+\/[\w.-]+)#(?<repoNumber>\d+)\b/,
+    /(?<=^|[^\w&/#])#(?<number>\d+)\b/,
+    /(?<=^|[^\w`/.@])@(?<name>[A-Za-z0-9][A-Za-z0-9-]*)/,
+  ]
+    .map((r) => r.source)
+    .join('|'),
+  'g',
+)
+
+const noMentions = (text: string) => text.replace(/(?<=^|[^\w`/.@])@(?=[A-Za-z0-9])/g, `@${ZWSP}`)
+const issueLink = (label: string, repo: string, number: string) =>
+  `[${label}](https://redirect.github.com/${repo}/issues/${number})`
+
+/**
+ * The changelog without what would give GitHub items backlinks from the pull request or notify people:
+ * links and references to issues are pointed at redirect.github.com, and mentions are broken.
+ * `#123` refers to the source repository when `source` is on GitHub.
+ */
+export function withoutBacklinks(text: string, source?: string): string {
+  const sourceRepo = source === undefined ? undefined : GITHUB_REPO.exec(source)?.[1]
+  return text.replace(CHANGELOG_TOKEN, (match, ...args) => {
+    const g = args.at(-1) as Record<string, string | undefined>
+    if (g.code !== undefined) return match
+    if (g.href !== undefined) return `[${noMentions(g.text!)}](${g.href.replace(GITHUB_REF_URL, 'https://redirect.github.com/$1')})`
+    if (g.url !== undefined) return match.replace(GITHUB_REF_URL, 'https://redirect.github.com/$1')
+    if (g.repo !== undefined) return issueLink(match, g.repo, g.repoNumber!)
+    if (g.number !== undefined) return sourceRepo ? issueLink(match, sourceRepo, g.number) : `#${ZWSP}${g.number}`
+    return `@${ZWSP}${g.name}`
+  })
+}
 
 const CHANGELOG_BUDGET = 50_000
 const BODY_LIMIT = 65_000
@@ -210,7 +251,7 @@ export function renderBody(result: UnitResult, meta: Meta, infos: Map<string, Pa
       let changelog: string | undefined
       if (withChangelog && info.changelog !== undefined) {
         const extracted = extractChangelog(info.changelog, change.from, change.to)
-        if (extracted !== undefined) changelog = truncate(extracted, budget, name)
+        if (extracted !== undefined) changelog = truncate(withoutBacklinks(extracted, info.source), budget, name)
       }
       return packageSection(name, change, info, changelog)
     })

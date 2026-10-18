@@ -259,4 +259,13 @@ describe.skipIf(!E2E)('local E2E', () => {
     expect(parseMeta(group.body)!.commit).toBe(github.headOf(group))
     expect(github.git(['rev-parse', `${github.headOf(group)}^`])).toBe(github.refSha('main')!)
   })
+
+  test('11. a pull request that a person opened from a pubreform/ branch is left alone', async () => {
+    const pr = github.openPrAsPerson('pubreform/fix-something')
+    const head = github.headOf(pr)
+    await runOk()
+    expect(pr.state).toBe('open')
+    expect(github.refSha(pr.branch)).toBe(head)
+    expect(pr.comments).toEqual([])
+  })
 })
