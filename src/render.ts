@@ -18,6 +18,8 @@ export interface Meta {
   commit: string
   /** The branch head just before the regeneration (§14.4). */
   previous?: string
+  /** Set when pubreform closed the pull request (§14.3). */
+  closed?: true
 }
 
 // ---- Branch names, titles, commit messages (§12.1, §12.2) ----
@@ -165,6 +167,15 @@ export function parseMeta(body: string): Meta | undefined {
   } catch {
     return undefined
   }
+}
+
+/** The body with `closed: true` in its metadata. A body without metadata is returned as is. */
+export function markClosed(body: string): string {
+  const last = [...body.matchAll(META)].pop()
+  const meta = parseMeta(body)
+  if (!last || !meta) return body
+  const index = last.index!
+  return body.slice(0, index) + renderMeta({ ...meta, closed: true }) + body.slice(index + last[0].length)
 }
 
 export function metaOf(

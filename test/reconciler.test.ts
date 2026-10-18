@@ -65,6 +65,12 @@ describe('decide: units without pull requests', () => {
       { op: 'skip', result: http, closedPr: closed },
     ])
   })
+  test('a pull request that pubreform closed does not stop the same update', () => {
+    const closedByPubreform = pr(http, { meta: { closed: true } })
+    expect(decide([http], [], noUncertain, [], [closedByPubreform], ctx)).toEqual([
+      { op: 'create', result: http, branch: 'pubreform/single/http' },
+    ])
+  })
   test('a closed pull request with extra packages is not the same update', () => {
     const closed = pr(result('minor', { lints: ['6.0.0', '6.1.0'], meta: ['1.16.0', '1.17.0'], x: ['1.0.0', '1.1.0'] }))
     expect(decide([minor], [], noUncertain, [], [closed], ctx)[0]!.op).toBe('create')

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { UnitResult } from '../src/applier.ts'
 import type { Comment } from '../src/github.ts'
 import { type ExecuteContext, type Op, type PrState, execute } from '../src/reconciler.ts'
-import { errorComment, parseMeta } from '../src/render.ts'
+import { errorComment, parseMeta, renderMeta } from '../src/render.ts'
 
 const http: UnitResult = {
   unit: { kind: 'single', members: ['http'], targets: { http: '2.0.0' } },
@@ -56,8 +56,8 @@ function fakeGitHub(options: { fail?: string; comments?: Comment[]; heads?: Reco
     async updatePr(n, o) {
       record('updatePr', n, o.title)
     },
-    async closePr(n) {
-      record('closePr', n)
+    async closePr(n, body) {
+      record('closePr', n, parseMeta(body)?.closed === true ? 'meta closed' : 'no meta')
     },
     async ensureLabels(labels) {
       record('ensureLabels', labels)
@@ -96,7 +96,13 @@ describe('execute', () => {
   test('create, then close superseded with the new number', async () => {
     const { github, calls } = fakeGitHub()
     const ops: Op[] = [
-      { op: 'close', pr: prOf(7, 'pubreform/single/a'), supersededBy: 'pubreform/group/a' },
+      {
+        op: 'close',
+        pr: prOf(7, 'pubreform/single/a', {
+          body: `text\n${renderMeta({ v: 1, kind: 'single', packages: { a: ['1.0.0', '2.0.0'] }, baseHash: 'x', configHash: 'y', commit: 'head' })}\n`,
+        }),
+        supersededBy: 'pubreform/group/a',
+      },
       { op: 'create', result: group, branch: 'pubreform/group/a' },
     ]
     const outcomes = await execute(ops, context(github))
@@ -107,7 +113,7 @@ describe('execute', () => {
       'ensureLabels ["dependencies"]',
       'addLabels 100 ["dependencies"]',
       'comment 7 Closing: superseded by #100.',
-      'closePr 7',
+      'closePr 7 meta closed',
       'deleteBranch pubreform/single/a',
     ])
     expect(outcomes).toEqual([

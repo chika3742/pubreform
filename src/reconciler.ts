@@ -16,6 +16,7 @@ import {
   isRebaseChecked,
   manualComment,
   manualMarker,
+  markClosed,
   metaOf,
   renderBody,
   title,
@@ -162,7 +163,12 @@ export function decide(
       continue
     }
     const closed = closedPrs.find(
-      (p) => p.meta && p.meta.kind === result.unit.kind && sameTargets(metaTargets(p.meta), targets(result)),
+      // Only pull requests that a person closed stop the same update; those closed by pubreform do not.
+      (p) =>
+        p.meta &&
+        !p.meta.closed &&
+        p.meta.kind === result.unit.kind &&
+        sameTargets(metaTargets(p.meta), targets(result)),
     )
     ops.push(closed ? { op: 'skip', result, closedPr: closed } : { op: 'create', result, branch: branchName(result.unit) })
   }
@@ -363,7 +369,8 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
         try {
           const supersededBy = op.supersededBy === undefined ? undefined : numbers.get(op.supersededBy)
           await github.comment(pr.number, closeComment(supersededBy))
-          await github.closePr(pr.number)
+          // closed: true tells a later run that pubreform, not a person, closed it (§14.3).
+          await github.closePr(pr.number, markClosed(pr.body))
           await github.deleteBranch(pr.branch)
           outcomes.push({ ...base, action: 'closed' })
         } catch (e) {

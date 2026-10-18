@@ -15,6 +15,7 @@ import {
   formatLog,
   isRebaseChecked,
   manualComment,
+  markClosed,
   type Meta,
   metaOf,
   parseMeta,
@@ -137,6 +138,15 @@ describe('metadata', () => {
     expect(meta.previous).toBe('old')
     expect(parseMeta(renderMeta(meta))).toEqual(meta)
     expect('previous' in metaOf(single, hashes, 'new')).toBe(false)
+  })
+  test('markClosed sets closed in the last metadata only', () => {
+    const meta = metaOf(single, hashes, 'abc')
+    const body = `<!-- pubreform:meta {"v":1,"packages":{}} -->\nbody\n${renderMeta(meta)}\nend\n`
+    const closed = markClosed(body)
+    expect(parseMeta(closed)).toEqual({ ...meta, closed: true })
+    expect(closed).toStartWith('<!-- pubreform:meta {"v":1,"packages":{}} -->\nbody\n')
+    expect(closed).toEndWith(' -->\nend\n')
+    expect(markClosed('no metadata')).toBe('no metadata')
   })
   test('uses the last metadata', () => {
     const meta = metaOf(single, hashes, 'def')

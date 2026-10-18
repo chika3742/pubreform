@@ -146,8 +146,9 @@ export class GitHub {
     await this.octokit.rest.pulls.update({ ...this.r, pull_number: number, ...opts })
   }
 
-  async closePr(number: number): Promise<void> {
-    await this.octokit.rest.pulls.update({ ...this.r, pull_number: number, state: 'closed' })
+  /** Closes the pull request and replaces its body in one request. */
+  async closePr(number: number, body: string): Promise<void> {
+    await this.octokit.rest.pulls.update({ ...this.r, pull_number: number, state: 'closed', body })
   }
 
   /**

@@ -134,7 +134,13 @@ export async function run(): Promise<void> {
   core.info(`slot: ${window.slot.toISOString()}, cutoff: ${window.cutoff.toISOString()}`)
 
   const deps = directDeps(files.pubspec, files.lock)
-  const proxy = new RegistryProxy({ cutoff: window.cutoff, locked: lockVersions(files.lock), ignore: config.ignore })
+  const proxy = new RegistryProxy({
+    cutoff: window.cutoff,
+    locked: lockVersions(files.lock),
+    ignore: config.ignore,
+    // For tests only (§9): fetch from a fixture registry instead of pub.dev.
+    upstream: process.env.PUBREFORM_UPSTREAM || undefined,
+  })
   await proxy.start()
   let thePlan: Plan
   const results: UnitResult[] = []
