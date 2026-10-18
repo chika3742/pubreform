@@ -80,6 +80,8 @@ describe('constraints', () => {
     ['>=1.0.0<2.0.0', '1.5.0', true],
     ['>=1.0.0<2.0.0', '2.0.0', false],
     [' >=1.0.0 <2.0.0 ', '2.0.0', false],
+    ['< 2.0.0 >=1.3.0', '1.3.0', true],
+    ['< 2.0.0 >=1.3.0', '1.2.0', false],
   ]
   for (const [c, v, expected] of cases) {
     test(`${c} ${expected ? 'allows' : 'rejects'} ${v}`, () => expect(allows(c, v)).toBe(expected))
