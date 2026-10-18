@@ -7,6 +7,10 @@
   "additionalProperties": false,
   "required": ["schedule"],
   "properties": {
+    "$schema": {
+      "description": "URL of this schema, for editors. Ignored by pubreform.",
+      "type": "string"
+    },
     "schedule": {
       "description": "When the range of update target versions moves forward.",
       "type": "object",

@@ -316,7 +316,7 @@ Updates the following packages.
 ### 10.2 設定ファイル
 
 ```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/chika3742/pubreform/v1/pubreform.schema.json
+# $schema: https://raw.githubusercontent.com/chika3742/pubreform/v1/pubreform.schema.json
 schedule:
   cron: "0 9 * * 1"         # 必須
   timezone: Asia/Tokyo      # IANA のタイムゾーン名。既定は UTC

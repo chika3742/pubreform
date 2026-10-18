@@ -102,7 +102,7 @@ runs:
 | `versioning` | `increase` \| `lockfile-only` | `increase` | 列挙値 |
 | `ignore` | `{ name, versions? }[]` | `[]` | `name` は必須。`versions` は pub の制約の書式（§6） |
 
-- 知らないキーはエラーにする（綴りの誤りに気づけるようにする）
+- 知らないキーはエラーにする（綴りの誤りに気づけるようにする）。ただし最上位の `$schema`（エディタ用のスキーマの指定。§4.2）は受け付けて無視し、ハッシュにも含めない
 - 設定ファイルがない、YAML として読めない、検証に失敗した場合は全体エラー。エラーメッセージにはキーのパスを含める（例: `schedule.timezone: unknown time zone "Asia/Tokio"`）
 
 ### 4.2 JSON スキーマ
@@ -110,11 +110,19 @@ runs:
 リポジトリのルートに [`pubreform.schema.json`](../pubreform.schema.json)（JSON Schema 2020-12）を置く。エディタで補完と検証が効くように、利用者は設定ファイルの先頭に次の行を書く。
 
 ```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/chika3742/pubreform/v1/pubreform.schema.json
+# $schema: https://raw.githubusercontent.com/chika3742/pubreform/v1/pubreform.schema.json
 ```
 
+スキーマの指定方法は 3 つあり、IntelliJ IDEA（2026-10-17 時点のソースで確認）と yaml-language-server（VS Code の YAML 拡張機能など。README で確認）のどちらもすべてに対応している。
+
+| 書き方 | 扱い |
+|---|---|
+| コメント `# $schema: <URL>` | 推奨。設定の内容に影響しない |
+| コメント `# yaml-language-server: $schema=<URL>` | 使える。IntelliJ IDEA は認識するが、補完の候補には出さない |
+| 最上位のキー `$schema: <URL>` | 使える。設定のキーになるので、スキーマと config.ts で受け付けて無視する（§4.1） |
+
 - 参照先はメジャータグ（`v1`）にする。同じメジャーの間はスキーマを後方互換に保つ
-- yaml-language-server（VS Code の YAML 拡張機能など）は 2020-12 に対応している
+- yaml-language-server は 2020-12 に対応している
 - スキーマが表すのは構造（キー、型、列挙値、書式）だけで、Action の実行時には使わない（ajv をバンドルに含めない）。cron として解釈できるか、タイムゾーンが存在するか、制約が正しいかは、config.ts が検証する
 - スキーマと config.ts の判定がずれないように、同じ設定例をスキーマ（ajv、開発時の依存）と config.ts の両方で判定し、結果が一致することをテストする（§17）
 
