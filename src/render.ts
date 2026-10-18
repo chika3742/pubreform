@@ -116,11 +116,16 @@ export function extractChangelog(text: string, from: string, to: string): string
 const CHANGELOG_BUDGET = 50_000
 const BODY_LIMIT = 65_000
 
-export const REBASE_LINE = '- [ ] Rebase this PR <!-- pubreform:rebase -->'
-const REBASE_CHECKED = /^- \[[xX]\] .*<!-- pubreform:rebase -->/m
+const REBASE_MARKER = '<!-- pubreform:rebase -->'
+export const REBASE_LINE = `- [ ] Rebase this PR ${REBASE_MARKER}`
 
+/**
+ * Whether the box is checked. Only the last line with the marker is pubreform's: changelogs and source URLs
+ * come before it and are written by package authors, who could add a checked copy of the line.
+ */
 export function isRebaseChecked(body: string): boolean {
-  return REBASE_CHECKED.test(body)
+  const line = body.split('\n').findLast((l) => l.includes(REBASE_MARKER))
+  return line !== undefined && /^- \[[xX]\] /.test(line)
 }
 
 const changelogUrl = (name: string) => `https://pub.dev/packages/${name}/changelog`

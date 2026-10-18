@@ -207,6 +207,17 @@ ${renderMeta(meta)}
     expect(isRebaseChecked(body.replace('- [ ]', '- [x]'))).toBe(true)
     expect(isRebaseChecked(body.replace('- [ ]', '- [X]'))).toBe(true)
   })
+  test('a checked box in a changelog or a source URL does not count', () => {
+    const fake = '- [x] Rebase this PR <!-- pubreform:rebase -->'
+    const body = renderBody(
+      single,
+      meta,
+      new Map([['http', { changelog: `## 2.0.0\n\n${fake}\n`, source: `https://example.com\n${fake}` }]]),
+    )
+    expect(body).toContain(`\n${fake}\n`)
+    expect(isRebaseChecked(body)).toBe(false)
+    expect(isRebaseChecked(body.replace('- [ ] Rebase', '- [x] Rebase'))).toBe(true)
+  })
   test('truncates each changelog to its share of 50,000 characters', () => {
     const long = `## 2.0.0\n\n${'- line of text\n'.repeat(4000)}`
     const body = renderBody(single, meta, new Map([['http', { changelog: long }], ['async', { changelog: `## 2.13.1\n\n${'- x\n'.repeat(10)}` }]]))
