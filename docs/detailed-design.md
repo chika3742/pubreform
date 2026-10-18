@@ -197,7 +197,7 @@ withConstraints(pubspecText, Map<name, constraint>): string
 
 ### 8.1 作業ディレクトリ
 
-- ベースは `git clone --depth 1 --single-branch --branch <base>` で `$RUNNER_TEMP/pubreform/base` に取得する。認証は `-c http.extraheader=AUTHORIZATION: basic <base64(x-access-token:<token>)>` で渡し、URL にトークンを入れない
+- ベースは `git clone --depth 1 --single-branch --branch <base>` で `$RUNNER_TEMP/pubreform/base` に取得する。認証は `-c http.extraheader=AUTHORIZATION: basic <base64(x-access-token:<token>)>` で渡し、URL にトークンを入れない。`@actions/exec` はコマンド行をログに出すので、base64 の値も `core.setSecret` でマスクする
 - actions/checkout の状態（どの ref を checkout したか、認証情報を残したか）には依存しない
 - すべての解決を、この 1 つのディレクトリで順に行う。各 pub コマンドの前に、`pubspec.yaml` と `pubspec.lock` をメモリ上のベースの内容（または作業用の書き換え）で上書きする。`.dart_tool/` などの残りものは結果に影響しないので消さない
 
@@ -377,7 +377,7 @@ interface Meta {
 }
 ```
 
-- 読み取りは、本文から `<!-- pubreform:meta (.+?) -->` を探して JSON として解釈する。見つからない、解釈できない、`v` が違う場合は「メタデータなし」とする
+- 読み取りは、本文から `<!-- pubreform:meta (.+?) -->` を探し、最後に現れたものを JSON として解釈する（更新履歴の中に似た文字列があっても、末尾のメタデータを優先するため）。見つからない、解釈できない、`v` が違う場合は「メタデータなし」とする
 - パッケージ名とバージョンには `-->` が現れないので、エスケープは不要
 
 ### 12.5 マーカー
@@ -414,7 +414,7 @@ This PR has commits that pubreform did not create, so pubreform will not update 
 <!-- pubreform:manual <headSha> -->
 ```
 
-エラー:
+エラー（ログに ``` が含まれても壊れないよう、コードブロックの区切りは、ログ中のバッククォートの最長の連続より 1 本長くする）:
 
 ````markdown
 pubreform failed to update this PR.
@@ -451,6 +451,7 @@ pubreform failed to update this PR.
 
 - tree の `content` を使うと blob を別に作らなくてよい
 - ラベルの作成に失敗したら、エラーとして記録して（最後に失敗終了する）、そのラベルを付けずに続ける。ラベルの作成も Pull requests の権限で行える
+- 既存のラベルとは大文字小文字を区別せずに比べる（GitHub のラベル名は大文字小文字を区別しないため）
 - 再試行はしない。どの操作も次の実行でやり直されるため（状態を持たない設計なので、途中で失敗しても次の実行で正しい状態に戻る）
 - bot のコメントは、マーカーを含み、`user.type` が `Bot` のものとして見分ける
 
@@ -476,6 +477,8 @@ type Op =
   | { op: 'commentError'; pr: PrState; log: string }
   | { op: 'close'; pr: PrState; supersededBy?: string } // supersededBy: 引き継ぐ単位のブランチ
   | { op: 'none'; pr: PrState }
+  | { op: 'skip'; result: UnitResult; closedPr: PrState } // 同じ内容のクローズ済み PR があるので作らない（サマリー用）
+  | { op: 'error'; unit: Unit; log: string }              // PR がない単位の適用エラー（ログに出し、失敗の件数に数える）
 
 decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関数
 ```
@@ -536,7 +539,7 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 
 ## 16. ジョブサマリー
 
-`core.summary` に次を書く。
+`core.summary` に次を書く。全体エラーのときはサマリーを書かず、`core.setFailed` だけを行う。
 
 - slot と cutoff（タイムゾーン付き）
 - 更新単位ごとの行: 種類、パッケージ、操作（作成 / 再生成 / 変更なし / クローズ / エラー）、PR のリンク
