@@ -373,6 +373,7 @@ interface Meta {
   baseHash: string
   configHash: string
   commit: string
+  previous?: string   // 再生成の直前のブランチの head（§14.4）
 }
 ```
 
@@ -492,14 +493,15 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 | 単位があり、PR がない | 同じ種類で、内容が同じ未マージの closed PR があれば何もしない。なければ `create`。内容が同じとは、パッケージ名の集合が同じで、それぞれの `to` も同じこと（片方にしかないパッケージがあれば違う） |
 | 単位の適用に失敗し、PR がある | `commentError` |
 | 単位の適用に失敗し、PR がない | なし（ログだけ） |
-| PR があり、単位がない | PR のパッケージのどれかが `uncertain` なら `none`（計画に失敗しただけかもしれないので閉じない）。そうでなければ `close`。PR のパッケージが別の単位に含まれていれば `supersededBy` を付ける |
+| PR があり、単位がない | PR のパッケージのどれかが `uncertain`、または適用に失敗した単位に含まれていれば `none`（計画や適用に失敗しただけかもしれないので閉じない）。そうでなければ `close`。PR のパッケージが別の単位に含まれていれば `supersededBy` を付ける |
 | 両方ある | 下表 |
 
 両方あるとき（上から順に、最初に当てはまるもの）:
 
 | 条件 | 操作 |
 |---|---|
-| 人手のコミットがあり（`headSha != meta.commit`）、チェックボックスが未チェック | `notifyManual` |
+| 人手のコミットがあり（`headSha` が `meta.commit` とも `meta.previous` とも違う）、チェックボックスが未チェック | `notifyManual` |
+| `headSha == meta.previous`（前回の再生成がブランチの更新の前で止まった） | `regenerate` |
 | チェックボックスがチェック済み | `regenerate` |
 | `mergeable == false` かつ `mergeableState == 'dirty'` | `regenerate` |
 | `packages` の `to` の集合がメタデータと違う | `regenerate` |
@@ -517,7 +519,8 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
   - `notifyManual`: PR のコメントを取得し、同じ head の `pubreform:manual` マーカーがあれば何もしない
   - `commentError`: PR のコメントを取得し、最新の bot のエラーコメントと同じハッシュなら何もしない（§15）
 - `create`: コミットを作る → ブランチを作る → PR を作る → ラベルを付ける。メタデータの `commit` には作ったコミットを入れる
-- `regenerate`: コミットを作る → ブランチを強制更新する → タイトルと本文を更新する（チェックボックスは未チェックに戻る）→ ラベルを付ける → `contentChanged` ならコメントする
+- `regenerate`: コミットを作る → タイトルと本文を更新する（メタデータの `commit` は新しいコミット、`previous` は今の head。チェックボックスは未チェックに戻る）→ ブランチを強制更新する → ラベルを付ける → `contentChanged` ならコメントする
+  - 本文を先に更新するのは、途中で失敗しても次の実行が状態を判別できるようにするためである。本文の更新で失敗すれば何も変わらない。ブランチの更新で失敗すれば head は `previous` のままなので、次の実行で再生成する。逆の順序だと、本文の更新だけが失敗したときに head がメタデータの `commit` と違ってしまい、人手のコミットと誤って判定する
 - 操作の順序: `create` / `regenerate` などを先に行い、`close` を最後に行う。統合先の PR の番号を `Closing: superseded by #<n>.` に書くためである。統合先の操作が失敗して番号がなければ、`Closing: this update is no longer needed.` にする。新しく作るブランチが閉じる PR のブランチと重なることは、対応付け（§14.2）で通常は起きない。起きた場合は、ブランチの作成（§13）がその単位のエラーになり、次の実行で直る
 - 1 つの操作が途中で失敗したら、そこで止めて単位のエラーとする（§15）
 
