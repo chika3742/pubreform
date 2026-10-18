@@ -133,11 +133,11 @@ runs:
 ## 5. slot と cutoff（clock.ts）
 
 ```ts
-slot = CronExpressionParser.parse(cron, { tz, currentDate: now + 1秒 }).prev()
+slot = CronExpressionParser.parse(cron, { tz, currentDate: 秒に切り捨てた now + 1秒 }).prev()
 cutoff = slot − min_release_age_days × 24 時間
 ```
 
-- `prev()` は `currentDate` ちょうどの発火時刻を含まない（cron-parser 5.10.2 で確認）。「現在時刻以前で直近」にするため、1 秒足してから呼ぶ
+- `prev()` は `currentDate` ちょうどの発火時刻を含まない（cron-parser 5.10.2 で確認）。「現在時刻以前で直近」にするため、now を秒に切り捨ててから 1 秒足して呼ぶ（切り捨てないと、23:59:59.999 のときに直後の 00:00:00 を返してしまう）
 - 夏時間の扱いは cron-parser に従う
 - 日数の減算は絶対時間で行う（タイムゾーンに依存しない）
 
@@ -149,7 +149,7 @@ pub の書式のうち、必要な分だけを扱う。
 |---|---|
 | `parseVersion(s)` | `major.minor.patch[-pre][+build]` |
 | `compareVersions(a, b)` | semver の順序。pub に合わせて、build 付きは build なしより後ろ |
-| `parseConstraint(s)` | `any`、`^v`、`>=v`、`>v`、`<=v`、`<v`、`v`（完全一致）と、それらを空白で並べた積（例: `>=1.0.0 <2.0.0`） |
+| `parseConstraint(s)` | `any`、`^v`、`>=v`、`>v`、`<=v`、`<v`、`v`（完全一致）と、それらを並べた積（例: `>=1.0.0 <2.0.0`）。pub と同じく、演算子の後の空白（`>= 1.0.0`、`^ 1.0.0`）と、比較の間の空白なし（`>=1.0.0<2.0.0`）も受け付ける（Dart 3.13.5 の pub が受け付けることを確認済み）。設定の `ignore.versions` だけは、JSON スキーマと判定をそろえるため、config.ts で空白区切りの厳密な書式に限る |
 | `allows(constraint, version)` | 制約を満たすか |
 
 - `^v` は pub の規則で展開する。`major > 0` なら `<(major+1).0.0`、`major == 0` なら `<0.(minor+1).0`
@@ -260,6 +260,7 @@ for d in X:
   catch uncertain に d を追加し、ログに出す
 
 groups = 要素が重なる S を併合する。併合した集合ごとに closure をやり直し、重なりがなくなるまで繰り返す
+  （併合した集合の closure が失敗したら、その集合のすべてのパッケージを uncertain に追加し、その単位は作らない）
 
 closure(S):
   loop:
@@ -345,7 +346,7 @@ Update 2 packages
 - ソースへのリンク: その `pubspec.yaml` の `repository`、なければ `homepage`
 - 更新履歴: その `CHANGELOG.md`
 
-この方法では、更新履歴のために別途ダウンロードする必要がない（キャッシュに展開されることは確認済み）。読めなければ、`https://pub.dev/packages/<name>/changelog` へのリンクだけを載せる。
+この方法では、更新履歴のために別途ダウンロードする必要がない（キャッシュに展開されることは確認済み）。読めなければ、`<details>` の代わりに `[Changelog](https://pub.dev/packages/<name>/changelog)` の 1 行だけを載せる。
 
 更新履歴の抜き出し:
 
@@ -354,8 +355,8 @@ Update 2 packages
   （`## 1.6.0`、`## [1.6.0] - 2025-11-10`、`# v1.6.0` などに合う）
 - 見出しから次のバージョンの見出しの直前までを、その版の節とする
 - `from < v ≤ to` の節を、ファイル内の順に連結する。1 つもなければ、抜き出せなかった扱いにする
-- 長さの上限: 更新履歴全体で 50,000 文字とし、パッケージ数で等分する。超えた節は行の境界で切り、`…` と pub.dev へのリンクを付ける
-- 組み立てた本文が 65,000 文字を超えたら、更新履歴をすべて省いてリンクだけにする
+- 長さの上限: 更新履歴全体で 50,000 文字とし、パッケージ数で等分する。超えた節は行の境界で切り、`…` の行と `[Full changelog](https://pub.dev/packages/<name>/changelog)` の行を付ける
+- 組み立てた本文が 65,000 文字を超えたら、更新履歴をすべて省き、各パッケージを読めなかったときと同じ `[Changelog](…)` の 1 行にする
 
 ### 12.4 メタデータ
 
@@ -487,7 +488,7 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 
 | 状況 | 操作 |
 |---|---|
-| 単位があり、PR がない | 同じ種類で、`packages` の `to` がすべて同じ未マージの closed PR があれば何もしない。なければ `create` |
+| 単位があり、PR がない | 同じ種類で、内容が同じ未マージの closed PR があれば何もしない。なければ `create`。内容が同じとは、パッケージ名の集合が同じで、それぞれの `to` も同じこと（片方にしかないパッケージがあれば違う） |
 | 単位の適用に失敗し、PR がある | `commentError` |
 | 単位の適用に失敗し、PR がない | なし（ログだけ） |
 | PR があり、単位がない | PR のパッケージのどれかが `uncertain` なら `none`（計画に失敗しただけかもしれないので閉じない）。そうでなければ `close`。PR のパッケージが別の単位に含まれていれば `supersededBy` を付ける |
@@ -500,12 +501,14 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 | 人手のコミットがあり（`headSha != meta.commit`）、チェックボックスが未チェック | `notifyManual` |
 | チェックボックスがチェック済み | `regenerate` |
 | `mergeable == false` かつ `mergeableState == 'dirty'` | `regenerate` |
-| `packages` の `to` の集合がメタデータと違う | `regenerate`（`contentChanged: true`） |
+| `packages` の `to` の集合がメタデータと違う | `regenerate` |
 | `baseHash` または `configHash` がメタデータと違う | `regenerate` |
 | メタデータがない | `regenerate`（人手のコミットは確認できないので確認しない） |
 | どれでもない | `none` |
 
 `mergeable == null`（GitHub が未計算）のときは、コンフリクトの条件だけを判定しない。
+
+`contentChanged` は、どの条件で再生成する場合も、メタデータがあれば `packages`（名前と `to`）の比較で決める。チェックボックスやコンフリクトが理由の再生成でも、内容が変わっていればコメントする（基本 §7.2）。メタデータがなければ `false` にする。
 
 ### 14.4 実行
 
@@ -514,7 +517,7 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
   - `commentError`: PR のコメントを取得し、最新の bot のエラーコメントと同じハッシュなら何もしない（§15）
 - `create`: コミットを作る → ブランチを作る → PR を作る → ラベルを付ける。メタデータの `commit` には作ったコミットを入れる
 - `regenerate`: コミットを作る → ブランチを強制更新する → タイトルと本文を更新する（チェックボックスは未チェックに戻る）→ ラベルを付ける → `contentChanged` ならコメントする
-- 操作の順序: `close` を先に行う（統合されるブランチを空けるため）。それ以外は決めた順でよい
+- 操作の順序: `create` / `regenerate` などを先に行い、`close` を最後に行う。統合先の PR の番号を `Closing: superseded by #<n>.` に書くためである。統合先の操作が失敗して番号がなければ、`Closing: this update is no longer needed.` にする。新しく作るブランチが閉じる PR のブランチと重なることは、対応付け（§14.2）で通常は起きない。起きた場合は、ブランチの作成（§13）がその単位のエラーになり、次の実行で直る
 - 1 つの操作が途中で失敗したら、そこで止めて単位のエラーとする（§15）
 
 ## 15. エラー処理

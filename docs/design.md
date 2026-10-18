@@ -106,7 +106,7 @@ pub は lockfile の各パッケージにホストの `url` を記録してお�
 
 pub はダウンロードしたパッケージを、ホストごとのディレクトリに保存する。プロキシ経由で取得したパッケージは `~/.pub-cache/hosted/localhost%58<port>/` に入り、setup-fvm が復元する `hosted/pub.dev/` とは別になる。ポートを実行ごとに変えると保存先も変わり、キャッシュが増え続けるため、プロキシのポートは固定にする。
 
-> **検証結果**（2026-10-18、[`prototype/cooldown/`](../prototype/cooldown/)）: Dart 3.13.5 の `dart pub` と、fvm 4.3.2 で入れた Flutter 3.47.7 の `fvm flutter pub` の両方で、次をすべて確認した。
+> **検証結果**（2026-10-18。プロトタイプで確認し、その手順は結合テスト [`test/integration.test.ts`](../test/integration.test.ts) に移した）: Dart 3.13.5 の `dart pub` と、fvm 4.3.2 で入れた Flutter 3.47.7 の `fvm flutter pub` の両方で、次をすべて確認した。
 > - 締切より後に公開されたバージョンは、直接依存（`http` / `dio`）でも推移的依存（`async` / `vector_math`）でも選ばれない（`pub get` / `pub upgrade` / `pub add`）
 > - lockfile の URL を置き換えて実行すると、`pub get` はロックを維持する。元に戻した lockfile は、プロキシなしの pub が書くものとバイト単位で同じになる（`sha256` も同じ）
 > - URL を置き換えないと、pub はロックを無視して解決し直し（`pub get` でも直接依存が上がる）、lockfile にプロキシの URL を書く
