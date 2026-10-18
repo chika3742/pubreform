@@ -321,11 +321,12 @@ interface UnitResult {
 | group | `pubreform/group/<作成時の members を並べ替えた先頭>` | `Update <N> packages` |
 
 - N は `changes` の数
+- N = 1 のときは、minor / group でもタイトルを single と同じ `Update <name> from <from> to <to>` にする（ユーザーの決定）。ブランチ名と種類（`kind`）は変えない
 - single の `changes` に、メンバー以外の直接依存（制約の範囲内で動いたもの）が含まれることがある。タイトルはメンバーだけで書き、表にはすべて載せる
 
 ### 12.2 コミットメッセージ
 
-single はタイトルだけ。minor / group は、タイトル、空行、表。
+single と、N = 1 の minor / group はタイトルだけ。それ以外の minor / group は、タイトル、空行、表。
 
 ```
 Update 2 packages

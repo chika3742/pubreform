@@ -185,7 +185,7 @@ R 自体がこの条件を満たす解なので、この解決は失敗しない
 | マイナー・パッチグループ | `pubreform/minor-and-patch` | `Update <N> packages` |
 | 同時更新グループ | `pubreform/group/<作成時の先頭パッケージ名>` | `Update <N> packages` |
 
-- N はバージョンが変わる直接依存（`dependencies` / `dev_dependencies`）の数
+- N はバージョンが変わる直接依存（`dependencies` / `dev_dependencies`）の数。N = 1 のときは、グループでもタイトルを単独 PR と同じ `Update <package> from <前> to <後>` にし、コミットメッセージもタイトルだけにする
 - コミットはベースの最新コミットの上に 1 つだけ作る。コミットメッセージの 1 行目はタイトルと同じ。グループの場合は本文に、更新した直接依存の表を入れる
 
 ```
