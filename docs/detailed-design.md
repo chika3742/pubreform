@@ -620,7 +620,7 @@ pubreform 自身の CI では、push と pull request のたびに `tsc --noEmit
 
 1. `actions/create-github-app-token@v3` で、`repositories: pubreform-e2e,pubreform` としてトークンを発行する
 2. pubreform-e2e を checkout し、pubreform の `ref` を `pubreform-src/` に checkout する（pubreform 側は push しないので `persist-credentials: false`）
-3. setup-bun を入れ、`pubreform-src/` で `bun install --frozen-lockfile` と `bun run build` を行う。`dart-lang/setup-dart`（Dart 3.13.5）を入れる。setup-fvm は使わない（起動時の `pub get` がフィクスチャーを pub.dev から取ろうとして失敗するため）
+3. setup-bun を入れ、`pubreform-src/` で `bun install --frozen-lockfile` と `bun run build` を行う。`dart-lang/setup-dart`（Dart の stable）を入れる。pub の挙動の変化に早く気づけるよう、Dart は固定しない（ローカル E2E の CI も同じ）。setup-fvm は使わない（起動時の `pub get` がフィクスチャーを pub.dev から取ろうとして失敗するため）
 4. フィクスチャー用サーバーを裏で起動する
 5. テスト用プロジェクト（`pubspec.yaml`、`pubspec.lock`、`.github/pubreform.yaml`）を `pubreform-src/test/e2e/make-project.ts` で生成し、内容が変わっていれば main に push する（コミットの作成者は `pubreform-e2e`）。main のこれらのファイルはこのワークフローが管理する（`.github/workflows/` には触れない）。main にブランチ保護を設定すると、この push が失敗する
 6. 前回の実行の後片付け: `pubreform/` で始まるブランチの open の PR を閉じ、`pubreform/` で始まる ref をすべて（open の PR がないものも）消し、設定のラベルを消す。PR は、pubreform が閉じるときと同じく、本文のメタデータに `closed: true` を入れて閉じる（入れないと利用者が閉じた PR として扱われ、フィクスチャーが毎回同じなので、次の実行で同じ内容の PR が作られなくなる）

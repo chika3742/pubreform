@@ -27,7 +27,7 @@ jobs:
 
       - uses: dart-lang/setup-dart@v1
         with:
-          sdk: 3.13.5
+          sdk: stable
 
       - run: bun install --frozen-lockfile
 

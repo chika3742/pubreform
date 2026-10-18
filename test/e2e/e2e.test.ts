@@ -1,6 +1,6 @@
 // Local E2E test (detailed design §17.1): runs the built dist/main.js against a fixture registry,
 // a fake GitHub API and a local bare repository, with real `dart pub`. Nothing outside this machine is used.
-// Needs `dart` (3.13.5) on PATH and a build (`bun run build`). Runs only with PUBREFORM_E2E=1:
+// Needs `dart` (Dart 3 stable) on PATH and a build (`bun run build`). Runs only with PUBREFORM_E2E=1:
 //   bun run build && PUBREFORM_E2E=1 bun test test/e2e
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { spawn } from 'node:child_process'

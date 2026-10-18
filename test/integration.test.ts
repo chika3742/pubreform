@@ -1,7 +1,7 @@
 // Integration test of the registry proxy with real pub (basic design §4.2, detailed design §17).
 // Needs network access to pub.dev, so it runs only with PUBREFORM_IT=1:
 //   PUBREFORM_IT=1 bun test test/integration.test.ts
-// `dart` (Dart 3.13.5) and `fvm` (with Flutter 3.47.7 installable) must be on PATH.
+// `dart` (Dart 3 stable) and `fvm` (with Flutter 3.47.7 installable) must be on PATH.
 import { afterAll, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
