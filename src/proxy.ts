@@ -3,7 +3,7 @@
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { IgnoreRule } from './config.ts'
-import { allows } from './version.ts'
+import { allows, compareVersions, isStable } from './version.ts'
 
 export const PROXY_PORT = 8471
 const UPSTREAM = 'https://pub.dev'
@@ -75,9 +75,33 @@ export class RegistryProxy {
     return this.filter(name, upstream.listing).versions.map((v) => v.version)
   }
 
+  /**
+   * The newest stable version hidden only because it was published after the cutoff,
+   * when it is newer than every stable version shown. Undefined when the listing cannot be fetched.
+   */
+  async waitingVersion(name: string): Promise<{ version: string; published: Date } | undefined> {
+    const upstream = await this.listing(name).catch(() => undefined)
+    if (!upstream?.ok) return undefined
+    let shown: string | undefined
+    let waiting: { version: string; published: Date } | undefined
+    for (const { version, published } of upstream.listing.versions) {
+      if (!isStable(version)) continue
+      if (!this.isHidden(name, version, published)) {
+        if (shown === undefined || compareVersions(version, shown) > 0) shown = version
+      } else if (published !== undefined && !this.isIgnored(name, version)) {
+        if (waiting === undefined || compareVersions(version, waiting.version) > 0) waiting = { version, published: new Date(published) }
+      }
+    }
+    return waiting && (shown === undefined || compareVersions(waiting.version, shown) > 0) ? waiting : undefined
+  }
+
   private isHidden(name: string, version: string, published: string | undefined): boolean {
     if (this.options.locked.get(name) === version) return false
     if (!(published !== undefined && new Date(published) <= this.options.cutoff)) return true
+    return this.isIgnored(name, version)
+  }
+
+  private isIgnored(name: string, version: string): boolean {
     return this.options.ignore.some(
       (rule) => rule.name === name && (rule.versions === undefined || allows(rule.versions, version)),
     )

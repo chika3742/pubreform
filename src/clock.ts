@@ -10,6 +10,22 @@ export interface Window {
   cutoff: Date
 }
 
+/** The first slot whose cutoff shows a version published at `published`. */
+export function firstSlotShowing(
+  schedule: { cron: string; timezone: string },
+  minReleaseAgeDays: number,
+  published: Date,
+): Date {
+  // The first fire time at or after published + days. next() excludes currentDate, and the cron fires
+  // on whole seconds, so start 1 second before that time rounded up to a second.
+  const from = published.getTime() + minReleaseAgeDays * DAY_MS
+  const expr = CronExpressionParser.parse(schedule.cron, {
+    tz: schedule.timezone,
+    currentDate: new Date(Math.ceil(from / 1000) * 1000 - 1000),
+  })
+  return expr.next().toDate()
+}
+
 export function computeWindow(
   schedule: { cron: string; timezone: string },
   minReleaseAgeDays: number,
