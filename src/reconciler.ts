@@ -120,7 +120,9 @@ function decideBoth(pr: PrState, result: UnitResult, ctx: DecideContext): Op {
   const meta = pr.meta
   const contentChanged = meta !== undefined && !sameTargets(metaTargets(meta), targets(result))
   const regenerate: Op = { op: 'regenerate', pr, result, contentChanged }
-  if (meta && pr.headSha !== meta.commit && !checked) return { op: 'notifyManual', pr }
+  if (meta && pr.headSha !== meta.commit && pr.headSha !== meta.previous && !checked) return { op: 'notifyManual', pr }
+  // The previous regeneration stopped before moving the branch.
+  if (meta && meta.previous !== undefined && pr.headSha === meta.previous) return regenerate
   if (checked) return regenerate
   if (pr.mergeable === false && pr.mergeableState === 'dirty') return regenerate
   if (contentChanged) return regenerate
@@ -166,9 +168,11 @@ export function decide(
   }
 
   const matched = new Set(pairs.values())
+  // Packages of units that failed to apply: their pull requests are kept, as for uncertain ones.
+  const failed = new Set(unitErrors.flatMap((e) => e.unit.members))
   for (const pr of openPrs.filter((p) => !matched.has(p))) {
     const packages = prPackages(pr)
-    if (packages.some((name) => plan.uncertain.has(name))) {
+    if (packages.some((name) => plan.uncertain.has(name) || failed.has(name))) {
       ops.push({ op: 'none', pr })
       continue
     }
@@ -275,9 +279,9 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
       message: commitMessage(result),
     })
 
-  const body = (result: UnitResult, sha: string) => {
+  const body = (result: UnitResult, sha: string, previous?: string) => {
     const infos = new Map(Object.entries(result.changes).map(([name, c]) => [name, ctx.packageInfo(name, c.to)]))
-    return renderBody(result, metaOf(result, ctx.hashes, sha), infos)
+    return renderBody(result, metaOf(result, ctx.hashes, sha, previous), infos)
   }
 
   // close runs last, so that the pull request that supersedes it has a number.
@@ -305,8 +309,9 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
         numbers.set(pr.branch, pr.number)
         try {
           const sha = await commit(result)
+          // The body goes first, so that the next run can tell a partial failure from manual commits.
+          await github.updatePr(pr.number, { title: title(result), body: body(result, sha, pr.headSha) })
           await github.updateBranch(pr.branch, pr.headSha, sha)
-          await github.updatePr(pr.number, { title: title(result), body: body(result, sha) })
           await github.addLabels(pr.number, await labels())
           if (op.contentChanged && pr.meta) await github.comment(pr.number, contentChangedComment(pr.meta.packages, result.changes))
           outcomes.push({ ...base, action: 'regenerated' })

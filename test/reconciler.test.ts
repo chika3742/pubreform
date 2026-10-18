@@ -90,6 +90,18 @@ describe('decide: units with pull requests', () => {
     const p = pr(http, { headSha: 'other' })
     expect(op(http, p)).toEqual([{ op: 'notifyManual', pr: p }])
   })
+  test('head at meta.commit after a regeneration is not a manual commit', () => {
+    const p = pr(http, { headSha: 'c2', meta: { commit: 'c2', previous: 'c1' } })
+    expect(op(http, p)).toEqual([{ op: 'none', pr: p }])
+  })
+  test('head still at meta.previous: the last regeneration stopped before moving the branch', () => {
+    const p = pr(http, { headSha: 'c1', meta: { commit: 'c2', previous: 'c1' } })
+    expect(op(http, p)).toEqual([{ op: 'regenerate', pr: p, result: http, contentChanged: false }])
+  })
+  test('head different from both commit and previous is a manual commit', () => {
+    const p = pr(http, { headSha: 'c3', meta: { commit: 'c2', previous: 'c1' } })
+    expect(op(http, p)).toEqual([{ op: 'notifyManual', pr: p }])
+  })
   test('checked box regenerates even with manual commits', () => {
     const p = pr(http, { headSha: 'other' })
     p.body = p.body.replace('- [ ]', '- [x]')
@@ -163,6 +175,13 @@ describe('decide: pull requests without units', () => {
     expect(decide([group], [], noUncertain, [p], [], ctx)).toEqual([
       { op: 'create', result: group, branch: 'pubreform/group/a' },
       { op: 'close', pr: p, supersededBy: 'pubreform/group/a' },
+    ])
+  })
+  test('not closed when the unit that takes over its package failed to apply', () => {
+    const p = pr(result('single', { b: ['1.0.0', '2.0.0'] }))
+    expect(decide([], [{ unit: group.unit, log: 'boom' }], noUncertain, [p], [], ctx)).toEqual([
+      { op: 'error', unit: group.unit, log: 'boom' },
+      { op: 'none', pr: p },
     ])
   })
   test('not closed when planning of its package failed', () => {

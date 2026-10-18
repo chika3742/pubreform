@@ -129,8 +129,8 @@ describe('execute', () => {
     const outcomes = await execute([{ op: 'regenerate', pr, result: http, contentChanged: true }], context(github))
     expect(calls).toEqual([
       'createCommit Update http from 1.5.0 to 2.0.0',
-      'updateBranch pubreform/single/http head newsha',
       'updatePr',
+      'updateBranch pubreform/single/http head newsha',
       'ensureLabels ["dependencies"]',
       'addLabels 3 ["dependencies"]',
       'comment 3 The update in this PR has changed.',
@@ -142,6 +142,7 @@ describe('execute', () => {
       baseHash: 'bh',
       configHash: 'ch',
       commit: 'newsha',
+      previous: 'head',
     })
     expect(outcomes).toEqual([{ kind: 'single', packages: ['http'], action: 'regenerated', pr: 3 }])
   })
@@ -151,7 +152,11 @@ describe('execute', () => {
     const pr = prOf(3, 'pubreform/single/http')
     const outcomes = await execute([{ op: 'regenerate', pr, result: http, contentChanged: false }], context(github))
     expect(calls).toContain('comment 3 pubreform failed to update this PR.')
-    expect(calls).not.toContain('updatePr 3 "Update http from 1.5.0 to 2.0.0"')
+    expect(calls).toContain('updatePr 3 Update http from 1.5.0 to 2.0.0')
+    // The body is updated first, so the next run sees head == meta.previous and regenerates.
+    expect(calls.indexOf('updatePr 3 Update http from 1.5.0 to 2.0.0')).toBeLessThan(
+      calls.indexOf('updateBranch pubreform/single/http head newsha'),
+    )
     expect(outcomes[0]).toMatchObject({ action: 'error', pr: 3, error: 'branch pubreform/single/http has moved' })
   })
 

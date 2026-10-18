@@ -16,6 +16,8 @@ export interface Meta {
   baseHash: string
   configHash: string
   commit: string
+  /** The branch head just before the regeneration (§14.4). */
+  previous?: string
 }
 
 // ---- Branch names, titles, commit messages (§12.1, §12.2) ----
@@ -165,8 +167,13 @@ export function parseMeta(body: string): Meta | undefined {
   }
 }
 
-export function metaOf(result: UnitResult, hashes: { baseHash: string; configHash: string }, commit: string): Meta {
-  return {
+export function metaOf(
+  result: UnitResult,
+  hashes: { baseHash: string; configHash: string },
+  commit: string,
+  previous?: string,
+): Meta {
+  const meta: Meta = {
     v: 1,
     kind: result.unit.kind,
     packages: Object.fromEntries(sortedChanges(result.changes).map(([name, c]) => [name, [c.from, c.to]])),
@@ -174,6 +181,8 @@ export function metaOf(result: UnitResult, hashes: { baseHash: string; configHas
     configHash: hashes.configHash,
     commit,
   }
+  if (previous !== undefined) meta.previous = previous
+  return meta
 }
 
 export function renderBody(result: UnitResult, meta: Meta, infos: Map<string, PackageInfo>): string {

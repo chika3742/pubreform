@@ -132,6 +132,12 @@ describe('metadata', () => {
     expect(parseMeta('<!-- pubreform:meta {broken} -->')).toBeUndefined()
     expect(parseMeta('<!-- pubreform:meta {"v":2,"packages":{}} -->')).toBeUndefined()
   })
+  test('previous is kept only when given', () => {
+    const meta = metaOf(single, hashes, 'new', 'old')
+    expect(meta.previous).toBe('old')
+    expect(parseMeta(renderMeta(meta))).toEqual(meta)
+    expect('previous' in metaOf(single, hashes, 'new')).toBe(false)
+  })
   test('uses the last metadata', () => {
     const meta = metaOf(single, hashes, 'def')
     expect(parseMeta(`<!-- pubreform:meta {"v":1,"packages":{}} -->\n${renderMeta(meta)}`)).toEqual(meta)
