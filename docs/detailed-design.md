@@ -418,12 +418,14 @@ pubreform failed to update this PR.
 | コミットの作成 | `POST /git/trees`（`base_tree` = ベースの tree、`pubspec.yaml` と `pubspec.lock` を `content` で直接渡す）→ `POST /git/commits`（`parents` = [baseSha]。author / committer は指定しない） |
 | ブランチの作成 | `POST /git/refs`。既にあれば（422）、そのブランチを使う open の PR がないことを確かめてから強制更新する |
 | ブランチの更新 | `GET /git/ref/heads/<branch>` で head が想定どおりかを確かめ、`PATCH /git/refs/heads/<branch>`（`force: true`） |
+| ラベルの用意 | `GET /repos/{owner}/{repo}/labels`（全ページ）で既存のラベルを調べ、ないものを `POST /repos/{owner}/{repo}/labels`（`name`、`color: ededed`）で作る。実行ごとに 1 回、ラベルを付ける操作がある場合だけ行う。存在しないラベルは自動では作られないため |
 | PR の作成 | `POST /pulls` → `POST /issues/{n}/labels`（設定のラベル。空なら呼ばない） |
 | PR の更新 | `PATCH /pulls/{n}`（`title`、`body`）→ `POST /issues/{n}/labels` |
 | コメント | `GET /issues/{n}/comments`（必要なときだけ、全ページ）、`POST /issues/{n}/comments` |
 | クローズ | `POST /issues/{n}/comments` → `PATCH /pulls/{n}`（`state: closed`）→ `DELETE /git/refs/heads/<branch>` |
 
 - tree の `content` を使うと blob を別に作らなくてよい
+- ラベルの作成に失敗したら、エラーとして記録して（最後に失敗終了する）、そのラベルを付けずに続ける。ラベルの作成も Pull requests の権限で行える
 - 再試行はしない。どの操作も次の実行でやり直されるため（状態を持たない設計なので、途中で失敗しても次の実行で正しい状態に戻る）
 - bot のコメントは、マーカーを含み、`user.type` が `Bot` のものとして見分ける
 
@@ -535,7 +537,6 @@ pubreform 自身の CI では、push と pull request のたびに `tsc --noEmit
 
 | 項目 | 内容 |
 |---|---|
-| ラベル | `POST /issues/{n}/labels` に、リポジトリにないラベルを渡したときの挙動（作られるか、エラーになるか）。エラーになるなら、ないラベルは警告を出して飛ばす |
 | E2E の環境 | テスト用のリポジトリと、そこに入れる GitHub App を用意する必要がある |
 
 ## 20. 基本設計からの変更点
