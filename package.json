@@ -1,0 +1,22 @@
+{
+  "name": "pubreform",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "bun build --target=node --outdir=dist --minify ./src/main.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@actions/core": "^3.0.1",
+    "@actions/exec": "^3.0.0",
+    "@actions/github": "^9.1.1",
+    "cron-parser": "^5.10.2",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "ajv": "^8.20.0",
+    "typescript": "^7.0.2"
+  }
+}

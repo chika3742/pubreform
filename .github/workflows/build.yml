@@ -1,0 +1,51 @@
+name: Build and Commit
+
+on:
+  push:
+    tags:
+      - v*
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Run build
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+
+          git switch main
+
+          git add .
+
+          # Commit and push only when the build output changed.
+          if ! git diff-index --quiet HEAD; then
+            git commit -m "chore: update build outputs [skip ci]"
+            git tag ${{ github.ref_name }} --force
+            git tag $(echo "${{ github.ref_name }}" | cut -d '.' -f 1) --force
+            git push origin HEAD:main
+            git push --force --tags
+          else
+            echo "No changes to commit."
+          fi
