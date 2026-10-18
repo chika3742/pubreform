@@ -7,6 +7,7 @@ import { RegistryProxy } from '../src/proxy.ts'
 let upstream: http.Server
 let upstreamUrl: string
 const requests: string[] = []
+let flakyFailures = 0
 const listing = (name: string) => ({
   name,
   latest: { version: '3.0.0' },
@@ -21,7 +22,10 @@ const listing = (name: string) => ({
 beforeAll(async () => {
   upstream = http.createServer((req, res) => {
     requests.push(req.url!)
-    if (req.url === '/api/packages/missing') {
+    if (req.url === '/api/packages/flaky' && flakyFailures > 0) {
+      flakyFailures--
+      res.writeHead(500, { 'content-type': 'text/plain' }).end('server error')
+    } else if (req.url === '/api/packages/missing') {
       res.writeHead(404, { 'content-type': 'application/json' }).end('{"error":"not found"}')
     } else if (/^\/api\/packages\/[a-z_]+$/.test(req.url!)) {
       res.writeHead(200, { 'content-type': 'application/vnd.pub.v2+json' })
@@ -85,6 +89,16 @@ describe('RegistryProxy', () => {
       await versionsOf(`${proxy.url}/api/packages/once`)
       await proxy.visibleVersions('once')
       expect(requests).toEqual(['/api/packages/once'])
+    })
+  })
+  test('fetches a listing again after an error response', async () => {
+    await withProxy({}, async (proxy) => {
+      requests.length = 0
+      flakyFailures = 1
+      expect((await fetch(`${proxy.url}/api/packages/flaky`)).status).toBe(500)
+      expect(await proxy.visibleVersions('flaky')).toEqual(['1.0.0', '1.1.0', '2.0.0'])
+      await proxy.visibleVersions('flaky')
+      expect(requests).toEqual(['/api/packages/flaky', '/api/packages/flaky'])
     })
   })
   test('passes errors and other paths through', async () => {

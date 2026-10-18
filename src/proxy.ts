@@ -93,7 +93,10 @@ export class RegistryProxy {
       cached = this.fetchListing(name)
       this.listings.set(name, cached)
       // Do not keep failures, so that a later request can try again.
-      cached.catch(() => this.listings.delete(name))
+      const forget = () => this.listings.delete(name)
+      cached.then((upstream) => {
+        if (!upstream.ok) forget()
+      }, forget)
     }
     return cached
   }

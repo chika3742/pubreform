@@ -76,7 +76,7 @@ export class GitHub {
     return result
   }
 
-  /** The latest 100 closed pull requests of pubreform that were not merged. */
+  /** Pull requests of pubreform closed without merging, among the 100 most recently updated closed ones. */
   async closedPrs(base: string): Promise<PrState[]> {
     const { data } = await this.octokit.rest.pulls.list({
       ...this.r,
