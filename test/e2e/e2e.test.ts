@@ -140,8 +140,12 @@ describe.skipIf(!E2E)('local E2E', () => {
     expect(github.labels).toEqual(['dependencies'])
     // No pull requests for fresh, ignored or unresolvable updates.
     expect(github.prs.some((pr) => /fx_(fresh|ignored|sdk)/.test(pr.body))).toBe(false)
-    expect(summary).toContain('Unresolvable updates')
-    expect(summary).toContain('<td>fx_sdk</td><td>1.0.0</td><td>2.0.0</td>')
+    expect(summary).toContain('Cannot update to the latest version')
+    expect(summary).toContain('<td>fx_sdk</td><td>direct</td><td>1.0.0</td><td>1.0.0</td><td>2.0.0</td>')
+    // fx_fresh 1.1.0 was published a day ago, and min_release_age_days is 3.
+    expect(summary).toContain('Waiting for the release age')
+    expect(summary).toContain('<td>fx_fresh</td><td>direct</td><td>1.0.0</td><td>1.1.0</td>')
+    expect(summary).not.toContain('<td>fx_ignored</td>')
   })
 
   test('2. a second run changes nothing', async () => {

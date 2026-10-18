@@ -48,7 +48,9 @@ describe('plan', () => {
       { kind: 'group', members: ['e', 'f'], targets: { e: '0.2.0', f: '2.0.0' } },
     ])
     expect(result.uncertain).toEqual(new Set())
-    expect(result.unresolvable).toEqual([{ name: 'c', resolvable: '2.0.0', latest: '3.0.0' }])
+    expect(result.unresolvable).toEqual([
+      { name: 'c', section: 'dependencies', current: deps.find((d) => d.name === 'c')!.current, resolvable: '2.0.0', latest: '3.0.0' },
+    ])
   })
 
   test('ignores pre-releases for unresolvable', async () => {

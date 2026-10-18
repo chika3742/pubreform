@@ -1,5 +1,5 @@
 // Planning update units.
-import { type DirectDep, withConstraints } from './pubspec.ts'
+import { type DirectDep, type Section, withConstraints } from './pubspec.ts'
 import { allows, compareVersions, isStable, maxVersion } from './version.ts'
 
 /** Resolves with pub and returns name -> version from the resulting lockfile. */
@@ -17,6 +17,8 @@ export interface Unit {
 
 export interface Unresolvable {
   name: string
+  section: Section
+  current: string
   resolvable: string
   latest: string
 }
@@ -126,7 +128,7 @@ export async function plan(input: PlanInput): Promise<Plan> {
       const latest = maxVersion((await input.visibleVersions(d.name)).filter(isStable))
       const resolvable = R.get(d.name)!
       if (latest !== undefined && compareVersions(latest, resolvable) > 0) {
-        unresolvable.push({ name: d.name, resolvable, latest })
+        unresolvable.push({ name: d.name, section: d.section, current: d.current, resolvable, latest })
       }
     } catch (e) {
       log(`Failed to get the versions of ${d.name}: ${(e as Error).message}`)

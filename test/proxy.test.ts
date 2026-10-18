@@ -82,6 +82,21 @@ describe('RegistryProxy', () => {
       },
     )
   })
+  test('waitingVersion is the newest stable version hidden only by the cutoff', async () => {
+    await withProxy({}, async (proxy) => {
+      expect(await proxy.waitingVersion('foo')).toEqual({ version: '3.0.0', published: new Date('2026-05-01T00:00:00Z') })
+      expect(await proxy.waitingVersion('missing')).toBeUndefined()
+    })
+    await withProxy({ locked: new Map([['foo', '3.0.0']]) }, async (proxy) => {
+      expect(await proxy.waitingVersion('foo')).toBeUndefined()
+    })
+    await withProxy({ ignore: [{ name: 'foo', versions: '>=3.0.0' }] }, async (proxy) => {
+      expect(await proxy.waitingVersion('foo')).toBeUndefined()
+    })
+    await withProxy({ cutoff: new Date('2026-06-01T00:00:00Z') }, async (proxy) => {
+      expect(await proxy.waitingVersion('foo')).toBeUndefined()
+    })
+  })
   test('fetches a listing once per run', async () => {
     await withProxy({}, async (proxy) => {
       requests.length = 0

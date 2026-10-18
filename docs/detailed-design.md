@@ -233,6 +233,7 @@ pub(args: string[], opts: { pubspec: string; lock: string }): Promise<{ pubspec:
 - pub.dev への取得は 30 秒で打ち切る。失敗したら 502 を返す（pub が失敗し、その解決のエラーになる）
 - テストのために、環境変数 `PUBREFORM_UPSTREAM` があれば、pub.dev の代わりにその URL から取得する（E2E でフィクスチャー用サーバーに向けるため。利用者向けの設定ではないので、README には書かない）
 - 計画のために `visibleVersions(name)`（絞り込み後のバージョン一覧）を公開する
+- ジョブサマリーのために `waitingVersion(name)` を公開する。cutoff より後に公開されたことだけが理由で隠した安定版のうち最新のもの（バージョンと公開日時）を返す。見せている安定版のどれよりも新しいときだけ返し、`ignore` に該当するものは含めない。一覧を取得できなければ返さない
 
 `ignore` は、制約を書き換えるのではなく、ここで隠すことで実現する。U / R / S / 適用のすべての解決に同じように効き、制約の補集合を計算する必要がない。名前だけを指定したパッケージは、ロック済みのバージョンしか見えなくなるので、現在のバージョンに留まる。
 
@@ -284,7 +285,7 @@ interface Unit {
 interface Plan {
   units: Unit[]
   uncertain: Set<string>                                         // 計画に失敗したパッケージ
-  unresolvable: { name: string; resolvable: string; latest: string }[]
+  unresolvable: { name: string; section: Section; current: string; resolvable: string; latest: string }[]
 }
 ```
 
@@ -543,11 +544,12 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 
 ## 16. ジョブサマリー
 
-`core.summary` に次を書く。全体エラーのときはサマリーを書かず、`core.setFailed` だけを行う。
+`core.summary` に次を書く。全体エラーのときはサマリーを書かず、`core.setFailed` だけを行う。時刻はすべて設定のタイムゾーンで書く。
 
-- slot と cutoff（タイムゾーン付き）
+- slot と cutoff
 - 更新単位ごとの行: 種類、パッケージ、操作（作成 / 再生成 / 変更なし / クローズ / エラー）、PR のリンク
-- 解決不能だった更新: パッケージ、解決できるバージョン、最新の対象バージョン
+- 待機期間で待っている更新（Waiting for the release age）: 直接依存ごとに `waitingVersion` があれば、パッケージ、種類（direct / dev）、今のバージョン、待っているバージョン、公開日時、使われ始める時刻。使われ始める時刻は、公開日時に `min_release_age_days` を足した時刻以降で、最初に cron が発火する時刻（その slot の cutoff で初めて見えるようになる）
+- 最新版に上げられない直接依存（Cannot update to the latest version）: `unresolvable` の、パッケージ、種類、今のバージョン、解決できるバージョン、最新の対象バージョン。最新の対象バージョンは待機期間を過ぎたものの中で決める（待機期間中のバージョンは、待っている更新の表に出る）
 - 計画に失敗したパッケージ（uncertain）
 - エラーの一覧
 

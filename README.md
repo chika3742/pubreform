@@ -17,7 +17,7 @@ Each run compares the dependencies in `pubspec.yaml` with pub.dev and keeps thes
 - A pull request that updates only one package is titled like a major update
 - The description links each package to pub.dev, its source, and its changelog
 - When an update changes, for example because a newer version is released, the pull request is updated and a comment describes the change. When it is no longer needed, it is closed
-- Updates that do not resolve with the other dependencies are skipped and listed in the job summary
+- The job summary lists the newer versions that are still in the waiting period, with the time they will be used, and the dependencies that cannot be updated to the latest version because it does not resolve with the other dependencies
 
 ## Setup
 

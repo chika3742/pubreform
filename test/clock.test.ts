@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { computeWindow } from '../src/clock.ts'
+import { computeWindow, firstSlotShowing } from '../src/clock.ts'
 
 const weekly = { cron: '0 9 * * 1', timezone: 'Asia/Tokyo' } // Mondays 09:00 JST = 00:00 UTC
 
@@ -35,5 +35,23 @@ describe('computeWindow', () => {
     )
     expect(slot.toISOString()).toBe('2026-11-02T14:00:00.000Z')
     expect(cutoff.toISOString()).toBe('2026-10-31T14:00:00.000Z')
+  })
+})
+
+describe('firstSlotShowing', () => {
+  const schedule = { cron: '0 9 * * 1', timezone: 'UTC' }
+  test('is the first fire time at or after the publication plus the days', () => {
+    // Wednesday 10:00 + 3 days = Saturday 10:00 -> Monday 09:00.
+    expect(firstSlotShowing(schedule, 3, new Date('2026-10-14T10:00:00Z'))).toEqual(new Date('2026-10-19T09:00:00Z'))
+  })
+  test('a fire time equal to the publication plus the days shows the version', () => {
+    expect(firstSlotShowing(schedule, 3, new Date('2026-10-16T09:00:00Z'))).toEqual(new Date('2026-10-19T09:00:00Z'))
+    expect(firstSlotShowing(schedule, 3, new Date('2026-10-16T09:00:00.001Z'))).toEqual(new Date('2026-10-26T09:00:00Z'))
+  })
+  test('the slot shows the version', () => {
+    const published = new Date('2026-10-14T10:00:00Z')
+    const slot = firstSlotShowing(schedule, 3, published)
+    expect(computeWindow(schedule, 3, slot).cutoff >= published).toBe(true)
+    expect(computeWindow(schedule, 3, new Date(slot.getTime() - 1)).cutoff >= published).toBe(false)
   })
 })

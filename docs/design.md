@@ -60,7 +60,7 @@ TypeScript の JavaScript Action（`runs.using: node24`）として実装する�
 5. Planner で更新単位の集合を求める（§5）
 6. 各更新単位を Applier で適用し、変更内容（pubspec の差分とバージョン変更の一覧）を得る
 7. Reconciler で既存 PR（open と closed）と突き合わせ、必要な操作を実行する（§7）
-8. ジョブサマリーに slot、cutoff、各 PR への操作、解決不能だった更新、エラーを書く。エラーが 1 件でもあれば失敗終了する
+8. ジョブサマリーに slot、cutoff、各 PR への操作、待機期間のために使わなかった新しいバージョン、解決できるバージョンがなく最新版に上げられない直接依存、エラーを書く。エラーが 1 件でもあれば失敗終了する
 
 ### 3.2 Flutter SDK
 

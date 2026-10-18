@@ -5,13 +5,13 @@ import path from 'node:path'
 import * as core from '@actions/core'
 import * as exec from '@actions/exec'
 import { type UnitResult, applyUnit } from './applier.ts'
-import { type Window, computeWindow } from './clock.ts'
+import { type Window, computeWindow, firstSlotShowing } from './clock.ts'
 import { type Config, configHash, parseConfig } from './config.ts'
 import { GitHub } from './github.ts'
 import { type Plan, plan } from './planner.ts'
 import { RegistryProxy } from './proxy.ts'
 import { Pub, cachedPackageDir, cloneBase } from './pub.ts'
-import { baseHash, directDeps, hasWorkspace, isFlutter, lockVersions } from './pubspec.ts'
+import { type Section, baseHash, directDeps, hasWorkspace, isFlutter, lockVersions } from './pubspec.ts'
 import { type Outcome, type UnitError, decide, execute } from './reconciler.ts'
 import { formatLog, readPackageInfo } from './render.ts'
 
@@ -30,6 +30,19 @@ async function readRequired(file: string, label: string): Promise<string> {
   return text
 }
 
+/** A newer version of a direct dependency that the release age hides in this run. */
+interface Waiting {
+  name: string
+  section: Section
+  current: string
+  version: string
+  published: Date
+  /** The first slot that shows the version. */
+  shownFrom: Date
+}
+
+const typeOf = (section: Section) => (section === 'dev_dependencies' ? 'dev' : 'direct')
+
 function formatTime(date: Date, timeZone: string): string {
   return `${date.toLocaleString('sv-SE', { timeZone })} (${timeZone})`
 }
@@ -38,6 +51,7 @@ async function writeSummary(opts: {
   window: Window
   config: Config
   plan?: Plan
+  waiting: Waiting[]
   outcomes: Outcome[]
   prUrl: (n: number) => string
 }) {
@@ -73,15 +87,27 @@ async function writeSummary(opts: {
       ]),
     ])
   }
-  if (opts.plan && opts.plan.unresolvable.length > 0) {
-    s.addHeading('Unresolvable updates', 3)
+  const tz = config.schedule.timezone
+  if (opts.waiting.length > 0) {
+    s.addHeading('Waiting for the release age', 3)
     s.addTable([
-      [
-        { data: 'Package', header: true },
-        { data: 'Resolvable', header: true },
-        { data: 'Latest', header: true },
-      ],
-      ...opts.plan.unresolvable.map((u) => [u.name, u.resolvable, u.latest]),
+      ['Package', 'Type', 'Current', 'Version', 'Published', 'Used from'].map((data) => ({ data, header: true })),
+      ...opts.waiting.map((w) => [
+        w.name,
+        typeOf(w.section),
+        w.current,
+        w.version,
+        formatTime(w.published, tz),
+        formatTime(w.shownFrom, tz),
+      ]),
+    ])
+  }
+  if (opts.plan && opts.plan.unresolvable.length > 0) {
+    s.addHeading('Cannot update to the latest version', 3)
+    s.addRaw('<p>No version of the other dependencies resolves with the latest version.</p>', true)
+    s.addTable([
+      ['Package', 'Type', 'Current', 'Resolvable', 'Latest'].map((data) => ({ data, header: true })),
+      ...opts.plan.unresolvable.map((u) => [u.name, typeOf(u.section), u.current, u.resolvable, u.latest]),
     ])
   }
   if (opts.plan && opts.plan.uncertain.size > 0) {
@@ -145,6 +171,7 @@ export async function run(): Promise<void> {
   let thePlan: Plan
   const results: UnitResult[] = []
   const unitErrors: UnitError[] = []
+  const waiting: Waiting[] = []
   try {
     const pub = new Pub({ dir, flutter: isFlutter(files.pubspec), fvm: fvmrc !== undefined, hostedUrl: proxy.url })
     thePlan = await core.group('Plan', () =>
@@ -156,6 +183,12 @@ export async function run(): Promise<void> {
         log: (m) => core.warning(m),
       }),
     )
+    for (const d of deps) {
+      const w = await proxy.waitingVersion(d.name)
+      if (w === undefined) continue
+      const shownFrom = firstSlotShowing(config.schedule, config.min_release_age_days, w.published)
+      waiting.push({ name: d.name, section: d.section, current: d.current, ...w, shownFrom })
+    }
     for (const unit of thePlan.units) {
       await core.group(`Apply ${unit.kind}: ${unit.members.join(', ')}`, async () => {
         try {
@@ -195,6 +228,7 @@ export async function run(): Promise<void> {
     window,
     config,
     plan: thePlan,
+    waiting,
     outcomes,
     prUrl: (n) => `${serverUrl}/${repository}/pull/${n}`,
   })
