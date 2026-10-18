@@ -623,7 +623,7 @@ pubreform 自身の CI では、push と pull request のたびに `tsc --noEmit
 3. setup-bun を入れ、`pubreform-src/` で `bun install --frozen-lockfile` と `bun run build` を行う。`dart-lang/setup-dart`（Dart 3.13.5）を入れる。setup-fvm は使わない（起動時の `pub get` がフィクスチャーを pub.dev から取ろうとして失敗するため）
 4. フィクスチャー用サーバーを裏で起動する
 5. テスト用プロジェクト（`pubspec.yaml`、`pubspec.lock`、`.github/pubreform.yaml`）を `pubreform-src/` のスクリプトで生成し、内容が変わっていれば main に push する。main のこれらのファイルはこのワークフローが管理する（`.github/workflows/` には触れない）
-6. 前回の実行の後片付け: `pubreform/` で始まるブランチの open の PR を閉じ、そのブランチと、設定のラベルを消す
+6. 前回の実行の後片付け: `pubreform/` で始まるブランチの open の PR を閉じ、そのブランチと、設定のラベルを消す。PR は、pubreform が閉じるときと同じく、本文のメタデータに `closed: true` を入れて閉じる（入れないと利用者が閉じた PR として扱われ、フィクスチャーが毎回同じなので、次の実行で同じ内容の PR が作られなくなる）
 7. 1 回目: `PUBREFORM_UPSTREAM` を付けて `uses: ./pubreform-src` で実行し、上の 4 点のうち、Verified、`mergeable_state`、ラベルを確かめる
 8. 2 回目: PR のどれかのチェックボックスにチェックを入れてから実行し、その PR の head が変わったこと（`/` を含むブランチ名での ref の取得と更新）を確かめる
 
