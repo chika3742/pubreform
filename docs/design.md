@@ -52,7 +52,7 @@ TypeScript の JavaScript Action（`runs.using: node24`）として実装する�
 
 ### 3.1 実行フロー
 
-1. ベースブランチ（リポジトリのデフォルトブランチ）の最新コミットを fetch し、作業用の worktree を作る
+1. ベースブランチ（リポジトリのデフォルトブランチ）の最新コミットを fetch し、作業用の worktree を `RUNNER_TEMP` の下に作る。`GITHUB_WORKSPACE` の中に作ると、setup-fvm の post 処理が pub キャッシュのキー（`**/pubspec.lock` のハッシュ）を計算するときに worktree の lockfile まで含まれてキーが変わり、毎回キャッシュが保存されてしまう
 2. 設定ファイルをベースブランチから読む（起動元の ref にある設定は使わない）
 3. Clock で slot と cutoff を求める（§4）
 4. RegistryProxy を起動する。以降の pub コマンドはすべてプロキシ経由で、作業用 worktree の中で実行する（§3.2）
