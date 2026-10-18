@@ -316,7 +316,7 @@ Updates the following packages.
 ### 10.2 設定ファイル
 
 ```yaml
-# .github/pubreform.yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/chika3742/pubreform/v1/pubreform.schema.json
 schedule:
   cron: "0 9 * * 1"         # 必須
   timezone: Asia/Tokyo      # IANA のタイムゾーン名。既定は UTC
@@ -328,6 +328,8 @@ ignore:
   - name: other_package
     versions: ">=3.0.0"     # この範囲のバージョンへの更新を対象外にする
 ```
+
+設定ファイルの置き場所は `.github/pubreform.yaml`（入力 `config` で変えられる）。先頭の行で JSON スキーマ（[`pubreform.schema.json`](../pubreform.schema.json)）を指定すると、エディタで補完と検証が効く（詳細 §4.2）。
 
 `versioning` と `ignore` は要件にはない追加項目。不要なら削除する。
 

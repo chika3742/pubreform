@@ -39,6 +39,7 @@ src/
   github.ts      GitHub API の操作（§13）
   reconciler.ts  計画と既存 PR の突き合わせと操作の決定（§14）
 test/            bun test（§17）
+pubreform.schema.json  設定ファイルの JSON スキーマ（§4.2）
 dist/            ビルド結果（リリース時に生成してコミットする。§18）
 ```
 
@@ -97,14 +98,27 @@ runs:
 | `schedule.cron` | string | （必須） | 5 フィールドの cron。`cron-parser` で解釈できること |
 | `schedule.timezone` | string | `UTC` | `Intl.DateTimeFormat(undefined, { timeZone })` が例外を出さないこと |
 | `min_release_age_days` | integer | `0` | 0 以上の整数 |
-| `labels` | string[] | `[]` | 空文字列を含まない |
+| `labels` | string[] | `[]` | 空文字列を含まず、重複しない |
 | `versioning` | `increase` \| `lockfile-only` | `increase` | 列挙値 |
 | `ignore` | `{ name, versions? }[]` | `[]` | `name` は必須。`versions` は pub の制約の書式（§6） |
 
 - 知らないキーはエラーにする（綴りの誤りに気づけるようにする）
 - 設定ファイルがない、YAML として読めない、検証に失敗した場合は全体エラー。エラーメッセージにはキーのパスを含める（例: `schedule.timezone: unknown time zone "Asia/Tokio"`）
 
-### 4.2 ハッシュ
+### 4.2 JSON スキーマ
+
+リポジトリのルートに [`pubreform.schema.json`](../pubreform.schema.json)（JSON Schema 2020-12）を置く。エディタで補完と検証が効くように、利用者は設定ファイルの先頭に次の行を書く。
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/chika3742/pubreform/v1/pubreform.schema.json
+```
+
+- 参照先はメジャータグ（`v1`）にする。同じメジャーの間はスキーマを後方互換に保つ
+- yaml-language-server（VS Code の YAML 拡張機能など）は 2020-12 に対応している
+- スキーマが表すのは構造（キー、型、列挙値、書式）だけで、Action の実行時には使わない（ajv をバンドルに含めない）。cron として解釈できるか、タイムゾーンが存在するか、制約が正しいかは、config.ts が検証する
+- スキーマと config.ts の判定がずれないように、同じ設定例をスキーマ（ajv、開発時の依存）と config.ts の両方で判定し、結果が一致することをテストする（§17）
+
+### 4.3 ハッシュ
 
 `configHash` = 既定値を補った設定を、キーを並べ替えた JSON にして SHA-256（16 進）。コメントや空白だけの変更では変わらない。ラベルの変更でも変わる（基本 §7.2 のとおり、設定の変更はすべて再生成の対象）。
 
@@ -521,9 +535,18 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 |---|---|---|
 | 単体 | version、clock、config、changelog の抜き出し、render（メタデータの往復、本文の長さの上限）、reconciler の `decide`、planner（`closure` と併合） | `bun test`。planner は偽の `resolve` を渡す。ネットワークは使わない |
 | 結合 | 中継サーバーと pub | プロトタイプの検証（基本 §4.2）を `bun test` に移す。pub.dev へのネットワークと Dart / fvm が必要なので、環境変数 `PUBREFORM_IT=1` のときだけ動かす |
-| E2E | Action 全体 | テスト用のリポジトリに App を入れ、古い lockfile を持つ Flutter プロジェクトを置いて、`workflow_dispatch` で Action を動かし、PR が作られることを確かめる（→ §19） |
+| 設定のスキーマ | `pubreform.schema.json` と config.ts | 同じ設定例を両方で判定し、結果が一致することを確かめる（§4.2） |
+| E2E | Action 全体 | テスト用の別リポジトリで行う（§17.1） |
 
 pubreform 自身の CI では、push と pull request のたびに `tsc --noEmit` と単体テストを動かす。
+
+### 17.1 E2E
+
+pubreform とは別のテスト用リポジトリで行う。このリポジトリのルートには Action のコードがあり pubspec がないので、v1 の対象（ルートの pubspec とデフォルトブランチ）に合わないためである。
+
+- テスト用リポジトリ: 古い lockfile を持つ Flutter プロジェクトをルートに置き、`.fvmrc` と `.github/pubreform.yaml` を置く。本番と同じ GitHub App をインストールする
+- ワークフローはテスト用リポジトリに置く（Action は対象のリポジトリを `GITHUB_REPOSITORY` から決めるため）。`workflow_dispatch` で、pubreform のテストしたい ref を入力に受け取る
+- 手順: テスト用リポジトリを checkout → pubreform の指定 ref をサブディレクトリに checkout してビルド → setup-fvm → 前回の実行で残った bot の PR とブランチを片付ける → `uses: ./<サブディレクトリ>` で Action を実行 → 作られた PR（タイトル、ラベル、本文、コミットが Verified か）を確かめる
 
 ## 18. ビルドとリリース
 
@@ -537,7 +560,7 @@ pubreform 自身の CI では、push と pull request のたびに `tsc --noEmit
 
 | 項目 | 内容 |
 |---|---|
-| E2E の環境 | テスト用のリポジトリと、そこに入れる GitHub App を用意する必要がある |
+| E2E の環境 | テスト用のリポジトリは別に作る（作成は利用者が行う）。名前が決まったら §17.1 に書く |
 
 ## 20. 基本設計からの変更点
 

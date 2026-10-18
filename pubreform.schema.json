@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/chika3742/pubreform/v1/pubreform.schema.json",
+  "title": "pubreform configuration",
+  "description": "Configuration for pubreform (.github/pubreform.yaml).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schedule"],
+  "properties": {
+    "schedule": {
+      "description": "When the range of update target versions moves forward.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cron"],
+      "properties": {
+        "cron": {
+          "description": "Cron expression with 5 fields (minute hour day-of-month month day-of-week), evaluated in `timezone`.",
+          "type": "string",
+          "pattern": "^\\s*\\S+(\\s+\\S+){4}\\s*$",
+          "examples": ["0 9 * * 1"]
+        },
+        "timezone": {
+          "description": "IANA time zone name for `cron`.",
+          "type": "string",
+          "minLength": 1,
+          "default": "UTC",
+          "examples": ["Asia/Tokyo"]
+        }
+      }
+    },
+    "min_release_age_days": {
+      "description": "Only versions published at least this many days before the schedule time are used.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "labels": {
+      "description": "Labels added to pull requests. Missing labels are created.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true,
+      "default": []
+    },
+    "versioning": {
+      "description": "Whether the minor and patch group also raises lower bounds in pubspec.yaml (`increase`) or only updates pubspec.lock (`lockfile-only`).",
+      "enum": ["increase", "lockfile-only"],
+      "default": "increase"
+    },
+    "ignore": {
+      "description": "Updates to skip.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "description": "Package name.",
+            "type": "string",
+            "pattern": "^[a-z_][a-z0-9_]*$"
+          },
+          "versions": {
+            "description": "Versions to skip, in pub version constraint syntax (for example `>=3.0.0` or `^2.0.0`). If omitted, all updates of the package are skipped.",
+            "type": "string",
+            "pattern": "^(any|(\\^|>=|>|<=|<)?\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?(\\s+(\\^|>=|>|<=|<)?\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?)*)$"
+          }
+        }
+      }
+    }
+  }
+}
