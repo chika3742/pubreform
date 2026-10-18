@@ -2,6 +2,7 @@
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import * as core from '@actions/core'
 import * as exec from '@actions/exec'
 import { PUB_DEV } from './pubspec.ts'
 
@@ -96,6 +97,8 @@ export async function cloneBase(opts: {
   await fs.rm(opts.dir, { recursive: true, force: true })
   await fs.mkdir(path.dirname(opts.dir), { recursive: true })
   const auth = Buffer.from(`x-access-token:${opts.token}`).toString('base64')
+  // The command line is logged, so mask the encoded token as well.
+  core.setSecret(auth)
   await exec.exec('git', [
     '-c',
     `http.extraheader=AUTHORIZATION: basic ${auth}`,
