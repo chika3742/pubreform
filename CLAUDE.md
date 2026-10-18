@@ -29,4 +29,4 @@ pub の依存を更新する PR を作成・保守する GitHub Action。TypeScr
 
 ## 未確認のこと
 
-- README のワークフロー例（トリガーと `if` の条件）と、setup-fvm と組み合わせた Flutter プロジェクトでの実行は、実際の GitHub ではまだ確かめていない。GitHub E2E は Dart だけで、`workflow_dispatch` から直接実行している
+- README のワークフロー例（トリガーと `if` の条件）と、setup-fvm と組み合わせた Flutter プロジェクトでの実行は、実際の GitHub ではまだ確かめていない。GitHub E2E は Dart だけで、ビルドした `dist/main.js` を直接実行している（`action.yml` も確かめていない）
