@@ -119,7 +119,12 @@ async function checkBox() {
 
 async function checkSecond(previous: string | undefined) {
   if (!previous) throw new Error('usage: check-second <previous head>')
-  const pr = await single()
+  // GitHub updates the head of a pull request in the background after the ref moves.
+  let pr = await single()
+  for (let i = 0; i < 10 && pr.head.sha === previous; i++) {
+    await sleep(3000)
+    pr = await single()
+  }
   const ref = (await api<{ object: { sha: string } }>('GET', `/git/ref/heads/${SINGLE}`))!
   check(pr.head.sha !== previous, `#${pr.number}: head moved from ${previous} to ${pr.head.sha}`)
   check(ref.object.sha === pr.head.sha, `${SINGLE}: the ref has the new head`)
