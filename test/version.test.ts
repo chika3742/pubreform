@@ -74,12 +74,18 @@ describe('constraints', () => {
     ['>=1.0.0 <2.0.0', '2.0.0', false],
     ['>=1.0.0  <2.0.0', '1.5.0', true],
     ['>=3.0.0', '3.0.0', true],
+    // Forms pub accepts in pubspec.yaml.
+    ['>= 1.0.0', '1.0.0', true],
+    ['^ 1.0.0', '2.0.0', false],
+    ['>=1.0.0<2.0.0', '1.5.0', true],
+    ['>=1.0.0<2.0.0', '2.0.0', false],
+    [' >=1.0.0 <2.0.0 ', '2.0.0', false],
   ]
   for (const [c, v, expected] of cases) {
     test(`${c} ${expected ? 'allows' : 'rejects'} ${v}`, () => expect(allows(c, v)).toBe(expected))
   }
   test('rejects invalid constraints', () => {
-    for (const s of ['', ' ^1.0.0', '^1.0', '>=1.0.0 any', 'latest', '=>1.0.0', '~1.0.0']) {
+    for (const s of ['', ' ', '^1.0', '>=1.0.0 any', 'latest', '=>1.0.0', '~1.0.0', '1.0.0.4', '1.2.3-', '>=', '1.0.0abc']) {
       expect(() => parseConstraint(s)).toThrow()
     }
   })

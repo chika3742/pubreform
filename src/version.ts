@@ -68,21 +68,21 @@ interface Comparison {
 /** Intersection of comparisons. Empty means `any`. */
 export type Constraint = Comparison[]
 
-const TOKEN = /^(\^|>=|>|<=|<)?(.+)$/
+const COMPARISON = /^(\^|>=|>|<=|<)?\s*(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/
 
-/** Parses `any`, `^v`, `>=v`, `>v`, `<=v`, `<v`, `v`, and intersections of them separated by whitespace. */
+/**
+ * Parses `any`, `^v`, `>=v`, `>v`, `<=v`, `<v`, `v`, and intersections of them.
+ * As in pub, whitespace after an operator and between comparisons is optional (`>= 1.0.0`, `>=1.0.0<2.0.0`).
+ */
 export function parseConstraint(s: string): Constraint {
-  if (s === 'any') return []
+  let rest = s.trim()
+  if (rest === 'any') return []
   const result: Constraint = []
-  for (const token of s.split(/\s+/)) {
-    const m = TOKEN.exec(token)
+  while (rest !== '') {
+    const m = COMPARISON.exec(rest)
     if (!m) throw new Error(`invalid version constraint "${s}"`)
-    let version: Version
-    try {
-      version = parseVersion(m[2]!)
-    } catch {
-      throw new Error(`invalid version constraint "${s}"`)
-    }
+    rest = rest.slice(m[0].length).trimStart()
+    const version = parseVersion(m[2]!)
     const op = m[1]
     if (op === '^') {
       const upper =
@@ -94,6 +94,7 @@ export function parseConstraint(s: string): Constraint {
       result.push({ op: (op as Op | undefined) ?? '=', version })
     }
   }
+  if (result.length === 0) throw new Error(`invalid version constraint "${s}"`)
   return result
 }
 

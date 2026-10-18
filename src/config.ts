@@ -26,6 +26,9 @@ export class ConfigError extends Error {
 
 const CRON_FIELDS = /^\s*\S+(\s+\S+){4}\s*$/
 const PACKAGE_NAME = /^[a-z_][a-z0-9_]*$/
+// The strict form of pubreform.schema.json: comparisons separated by whitespace, no whitespace after operators.
+const COMPARISON = String.raw`(\^|>=|>|<=|<)?\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?`
+const STRICT_CONSTRAINT = new RegExp(String.raw`^(any|${COMPARISON}(\s+${COMPARISON})*)$`)
 
 type Obj = Record<string, unknown>
 
@@ -96,6 +99,7 @@ function parseIgnore(v: unknown): IgnoreRule[] {
     const rule: IgnoreRule = { name }
     if (item.versions !== undefined) {
       const versions = requireString(item.versions, `${path}.versions`)
+      if (!STRICT_CONSTRAINT.test(versions)) fail(`${path}.versions`, `invalid version constraint "${versions}"`)
       try {
         parseConstraint(versions)
       } catch (e) {
