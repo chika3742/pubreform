@@ -165,7 +165,7 @@ R 自体がこの条件を満たす解なので、この解決は失敗しない
 | マイナー・パッチグループ | `pub upgrade`。`versioning: increase` なら `--tighten` を付けて下限も上げる |
 | 単独 / 同時更新グループ | `pub add a:^R(a) dev:b:^R(b) …`。既存の依存の制約を書き換える。`pubspec.yaml` の書式は pub が維持する |
 
-変更されるのは `pubspec.yaml` と `pubspec.lock` だけ。PR の内容（どの直接依存を何から何へ）は、計画値ではなく適用後の lockfile の差分から求める。推移的依存の変化は lockfile には入るが、PR の内容には含めない。
+変更されるのは `pubspec.yaml` と `pubspec.lock` だけ。PR の内容（どの直接依存を何から何へ）は、計画値ではなく適用後の lockfile の差分から求める。推移的依存の変化は、どの更新単位でも lockfile にそのまま入れ、PR の内容（本文、表、コメント）では触れない。
 
 ## 6. PR の種類と識別
 
