@@ -469,11 +469,11 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 | PR があり、単位がない | PR のパッケージのどれかが `uncertain` なら `none`（計画に失敗しただけかもしれないので閉じない）。そうでなければ `close`。PR のパッケージが別の単位に含まれていれば `supersededBy` を付ける |
 | 両方ある | 下表 |
 
-両方あるとき:
+両方あるとき（上から順に、最初に当てはまるもの）:
 
 | 条件 | 操作 |
 |---|---|
-| 人手のコミットがあり（`headSha != meta.commit`）、チェックボックスが未チェック | `notifyManual`（同じ head への通知が済んでいれば `none`） |
+| 人手のコミットがあり（`headSha != meta.commit`）、チェックボックスが未チェック | `notifyManual` |
 | チェックボックスがチェック済み | `regenerate` |
 | `mergeable == false` かつ `mergeableState == 'dirty'` | `regenerate` |
 | `packages` の `to` の集合がメタデータと違う | `regenerate`（`contentChanged: true`） |
@@ -485,6 +485,9 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 
 ### 14.4 実行
 
+- `decide` はコメントを読まない。コメントの重複の確認は実行時に行う
+  - `notifyManual`: PR のコメントを取得し、同じ head の `pubreform:manual` マーカーがあれば何もしない
+  - `commentError`: PR のコメントを取得し、最新の bot のエラーコメントと同じハッシュなら何もしない（§15）
 - `create`: コミットを作る → ブランチを作る → PR を作る → ラベルを付ける。メタデータの `commit` には作ったコミットを入れる
 - `regenerate`: コミットを作る → ブランチを強制更新する → タイトルと本文を更新する（チェックボックスは未チェックに戻る）→ ラベルを付ける → `contentChanged` ならコメントする
 - 操作の順序: `close` を先に行う（統合されるブランチを空けるため）。それ以外は決めた順でよい
