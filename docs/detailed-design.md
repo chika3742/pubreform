@@ -346,7 +346,7 @@ Update minor and patch (2 packages)
 基本 §8 のテンプレートに従う。各パッケージの節に使う情報は、適用時に pub がキャッシュに展開したパッケージから読む。
 
 - 場所: `$PUB_CACHE/hosted/localhost%588471/<name>-<to>/`（`PUB_CACHE` がなければ `~/.pub-cache`）
-- ソースへのリンク: その `pubspec.yaml` の `repository`、なければ `homepage`
+- ソースへのリンク: その `pubspec.yaml` の `repository`、なければ `homepage`。`http://` か `https://` で始まり、空白、括弧（`()[]`）、`<>` を含まないものだけを使い、そうでなければソースへのリンクを載せない。値はパッケージの作者が書くもので、`)` や改行で Markdown のリンクの外に文字を出せる（メンションで人に通知を送れる）ため
 - 更新履歴: その `CHANGELOG.md`
 
 この方法では、更新履歴のために別途ダウンロードする必要がない（キャッシュに展開されることは確認済み）。読めなければ、`<details>` の代わりに `[Changelog](https://pub.dev/packages/<name>/changelog)` の 1 行だけを載せる。
@@ -446,7 +446,7 @@ pubreform failed to update this PR.
 | 操作 | API |
 |---|---|
 | ベースの取得 | `GET /repos/{owner}/{repo}`（`default_branch`） |
-| open の PR | `GET /repos/{owner}/{repo}/pulls?state=open&base=<base>&per_page=100`（全ページ）。`head.ref` が `pubreform/` で始まり、`head.repo.full_name` が同じリポジトリのもの |
+| open の PR | `GET /repos/{owner}/{repo}/pulls?state=open&base=<base>&per_page=100`（全ページ）。`head.ref` が `pubreform/` で始まり、`head.repo.full_name` が同じリポジトリで、`user.type` が `Bot` のもの（closed の PR も同じ） |
 | mergeable | `GET /repos/{owner}/{repo}/pulls/{n}`（`mergeable`、`mergeable_state`）。対象の PR ごとに 1 回 |
 | PR の head | `GET /git/ref/heads/<branch>`。対象の PR ごとに 1 回。PR の `head.sha` は使わない。ref を更新した直後は、ref はすでに新しいコミットを返すが、PR の `head.sha` は数秒のあいだ前のコミットを返すため（§17.2 で確認済み）。前の実行が PR を作り直した直後に次の実行が読むと、前の head を見て、作り直しが途中で止まったと誤って判断する |
 | closed の PR | `GET /repos/{owner}/{repo}/pulls?state=closed&base=<base>&sort=updated&direction=desc&per_page=100`（1 ページだけ）。`merged_at` が null のもの |
@@ -609,6 +609,7 @@ pubreform 自身の CI では、main への push と pull request のたびに�
 8. 設定を戻す: `ignore` から `fx_major` を外して実行すると、単独 PR が作り直される（pubreform が閉じた PR は、作り直しを止めない）
 9. 利用者がクローズ: 8 の単独 PR を、利用者の操作として（メタデータを変えずに）マージせずに閉じて実行すると、同じ内容の PR は作られない
 10. 途中の失敗: 偽の API でブランチの更新を 1 回だけ失敗させると、その PR にエラーコメントが出て、ジョブは失敗する。次の実行で再生成され、成功する
+11. 人の PR: 人が `pubreform/` で始まるブランチから作った PR（作成者が bot でない）は、計画と対応しなくても閉じず、ブランチも消さず、コメントもしない
 
 ### 17.2 GitHub E2E
 

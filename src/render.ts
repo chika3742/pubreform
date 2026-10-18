@@ -79,7 +79,8 @@ export function readPackageInfo(dir: string): PackageInfo {
   try {
     const pubspec = parse(fs.readFileSync(path.join(dir, 'pubspec.yaml'), 'utf8'))
     const source = pubspec?.repository ?? pubspec?.homepage
-    if (typeof source === 'string' && /^https?:\/\//.test(source)) info.source = source
+    // Written by the package author: anything that could leave the Markdown link is dropped.
+    if (typeof source === 'string' && /^https?:\/\/[^\s()[\]<>]+$/.test(source)) info.source = source
   } catch {}
   try {
     info.changelog = fs.readFileSync(path.join(dir, 'CHANGELOG.md'), 'utf8')

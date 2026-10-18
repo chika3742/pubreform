@@ -257,6 +257,10 @@ describe('readPackageInfo', () => {
       fs.writeFileSync(path.join(dir, 'pubspec.yaml'), 'name: a\nhomepage: https://a.dev\nrepository: https://github.com/a/a\n')
       fs.writeFileSync(path.join(dir, 'CHANGELOG.md'), '## 1.0.0\n')
       expect(readPackageInfo(dir)).toEqual({ source: 'https://github.com/a/a', changelog: '## 1.0.0\n' })
+      fs.writeFileSync(path.join(dir, 'pubspec.yaml'), 'name: a\nrepository: "https://a.dev) Thanks @alice ("\n')
+      expect(readPackageInfo(dir).source).toBeUndefined()
+      fs.writeFileSync(path.join(dir, 'pubspec.yaml'), 'name: a\nrepository: "https://a.dev\\n@alice"\n')
+      expect(readPackageInfo(dir).source).toBeUndefined()
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

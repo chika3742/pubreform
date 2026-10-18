@@ -26,6 +26,8 @@ export interface FakePr {
   labels: string[]
   comments: FakeComment[]
   updated: number
+  /** `user.type` of the author: pubreform's pull requests are opened by a bot. */
+  author: 'Bot' | 'User'
 }
 
 const BOT_ENV = {
@@ -155,6 +157,30 @@ export class FakeGitHub {
     return sha
   }
 
+  /** Opens a pull request as a person, from a new branch with one commit on the default branch. */
+  openPrAsPerson(branch: string): FakePr {
+    const parent = this.refSha(this.defaultBranch)!
+    const tree = this.writeTree(`${parent}^{tree}`, { 'NOTES.md': 'a change by a person\n' })
+    const sha = this.commitTree(tree, [parent], 'A change', { GIT_AUTHOR_NAME: 'Someone', GIT_COMMITTER_NAME: 'Someone' })
+    this.git(['update-ref', `refs/heads/${branch}`, sha])
+    const pr: FakePr = {
+      number: this.prs.length + 1,
+      title: 'A change by a person',
+      body: '',
+      state: 'open',
+      base: this.defaultBranch,
+      branch,
+      lastSha: sha,
+      merged_at: null,
+      labels: [],
+      comments: [],
+      updated: ++this.clock,
+      author: 'User',
+    }
+    this.prs.push(pr)
+    return pr
+  }
+
   /** Closes the pull request without merging, as a person (the body is not changed). */
   closeAsUser(number: number) {
     const pr = this.pr(number)
@@ -220,6 +246,7 @@ export class FakeGitHub {
       head: { ref: pr.branch, sha: this.staleHeads.get(pr.number) ?? this.headOf(pr), repo: { full_name: `${this.owner}/${this.repo}` } },
       base: { ref: pr.base },
       labels: pr.labels.map((name) => ({ name })),
+      user: { type: pr.author },
     }
   }
 
@@ -262,6 +289,7 @@ export class FakeGitHub {
         labels: [],
         comments: [],
         updated: ++this.clock,
+        author: 'Bot',
       }
       this.prs.push(pr)
       return ok(this.prJson(pr), 201)
