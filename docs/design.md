@@ -30,7 +30,9 @@ pubreform は、Dart / Flutter プロジェクトの pub 依存を更新する P
 
 前提:
 
-- Dart / Flutter SDK はワークフロー側でセットアップする。解決結果はこの SDK のバージョンに依存し、より新しい SDK を要求するバージョンは「解決不能」として扱われる。プロジェクトと同じ SDK バージョンを指定すること。
+- PR の作成、コミット、コメントは GitHub App のインストールトークンで行う（§11）
+- Dart / Flutter SDK はワークフロー側でセットアップする。解決結果はこの SDK のバージョンに依存し、より新しい SDK を要求するバージョンは「解決不能」として扱われる
+- Flutter のバージョンは fvm の設定（`.fvmrc`、旧形式の `.fvm/fvm_config.json`）から取る（§3.2）
 
 ## 3. 全体構成
 
@@ -47,16 +49,26 @@ TypeScript の JavaScript Action（`runs.using: node24`）として実装する�
 | Renderer | タイトル、本文、コミットメッセージ、コメントを生成する（CHANGELOG の抽出を含む） |
 | GitHub | PR、コメント、ラベル、ブランチを操作する |
 
-### 実行フロー
+### 3.1 実行フロー
 
 1. ベースブランチ（リポジトリのデフォルトブランチ）の最新コミットを fetch し、作業用の worktree を作る
 2. 設定ファイルをベースブランチから読む（起動元の ref にある設定は使わない）
-3. Clock で slot と cutoff を求める（§4）
-4. RegistryProxy を起動する。以降の pub コマンドはすべてプロキシ経由で実行する
-5. Planner で更新単位の集合を求める（§5）
-6. 各更新単位を Applier で適用し、変更内容（pubspec の差分とバージョン変更の一覧）を得る
-7. Reconciler で既存 PR（open と closed）と突き合わせ、必要な操作を実行する（§7）
-8. ジョブサマリーに slot、cutoff、各 PR への操作、解決不能だった更新、エラーを書く。エラーが 1 件でもあれば失敗終了する
+3. ベースの fvm 設定と、PATH 上の Flutter SDK のバージョンを照合する（§3.2）
+4. Clock で slot と cutoff を求める（§4）
+5. RegistryProxy を起動する。以降の pub コマンドはすべてプロキシ経由で実行する
+6. Planner で更新単位の集合を求める（§5）
+7. 各更新単位を Applier で適用し、変更内容（pubspec の差分とバージョン変更の一覧）を得る
+8. Reconciler で既存 PR（open と closed）と突き合わせ、必要な操作を実行する（§7）
+9. ジョブサマリーに slot、cutoff、各 PR への操作、解決不能だった更新、エラーを書く。エラーが 1 件でもあれば失敗終了する
+
+### 3.2 Flutter SDK のバージョン
+
+- ワークフローでは、fvm の設定ファイルを `subosito/flutter-action` の `flutter-version-file` に渡して SDK を入れる（§10.3）
+- Action は、ベースブランチの fvm 設定の `flutter` を読み、`flutter --version --machine` の `frameworkVersion` と比べる。一致しなければ、何も変更せずに失敗終了する。ワークフローがベース以外の ref を checkout した場合などに、違う SDK で解決してしまうのを防ぐためである
+- fvm 設定は、fvm と同じく `directory` から親ディレクトリへ順に探す。`.fvmrc` を優先し、なければ `.fvm/fvm_config.json` を使う
+- fvm 設定がなければ、PATH 上の SDK をそのまま使う（Dart だけのプロジェクトなど）
+- `flutter` の値は正確なバージョン（例: `3.35.0`）であること。`flutter-action` が扱えないため、チャンネル名（`stable`）、`3.35.0@beta`、フォークの指定には対応しない
+- fvm 設定はベースのハッシュ（§6.1）に含める。Flutter のバージョンが変わると、すべての PR を再生成する
 
 ## 4. スケジュールとリリース後の待機期間
 
@@ -107,6 +119,8 @@ pub は lockfile の各パッケージにホストの `url` を記録してお�
 | R（resolvable） | すべての直接依存を `>=c(d)` に | lockfile なしで解決 | 全パッケージを最新安定版まで上げてよい場合の解決。`pub outdated` の Resolvable 列とほぼ同じ（下限を現在のバージョンにしてダウングレードを禁じる点が違う） |
 
 一時的な書き換えは作業用コピーに対して行い、コミットには含めない。
+
+pub の `get` / `upgrade` / `add` にはすべて `--no-example` を付ける（既定では `example/` も解決され、その lockfile も変わるため）。
 
 ### 5.3 分類
 
@@ -180,7 +194,7 @@ Update 3 packages
 | キー | 用途 |
 |---|---|
 | `kind`, `packages` | 計画との突き合わせ、内容の変更の検出、クローズ済み PR の再作成の抑止 |
-| `baseHash` | 生成時のベースの `pubspec.yaml` と `pubspec.lock` のハッシュ。ベースの更新を検出する |
+| `baseHash` | 生成時のベースの `pubspec.yaml`、`pubspec.lock`、fvm 設定のハッシュ。ベースの更新と Flutter のバージョン変更を検出する |
 | `configHash` | 設定の変更を検出する |
 | `commit` | 生成したコミットの SHA。PR の head と違えば、人手のコミットがある |
 
@@ -208,15 +222,15 @@ PR の識別にはブランチ名の接頭辞とメタデータを使い、ラ�
 | 本文のチェックボックスがチェックされた | 本文中のマーカー付きチェックボックスが `[x]` |
 | ベースとコンフリクトしている | PR の `mergeable_state` が `dirty`。`mergeable` が未計算なら今回は判定しない |
 | 更新内容が変わった | 適用結果の `packages` がメタデータと違う |
-| ベースの `pubspec.yaml` / `pubspec.lock` が更新された | ベースのハッシュがメタデータの `baseHash` と違う |
+| ベースの `pubspec.yaml` / `pubspec.lock`（と fvm 設定）が更新された | ベースのハッシュがメタデータの `baseHash` と違う |
 | 設定が変わった | 設定のハッシュがメタデータの `configHash` と違う |
 
 PR が変更するのは pubspec の 2 ファイルだけなので、コンフリクトはほぼ `baseHash` の比較で検出できる。`mergeable_state` は念のために見る。
 
 再生成の手順:
 
-1. ベースの最新コミットの上でコミットを作り直す（1 コミットのまま。amend と同じ結果になる）
-2. 同じブランチに `--force-with-lease=<branch>:<確認した head>` で force push する。別の実行や人手の push があれば上書きしない
+1. ベースの最新コミットを親にして、コミットを作り直す（1 コミットのまま。amend と同じ結果になる）
+2. 同じブランチを新しいコミットへ強制的に更新する（force push に当たる。方法は §11）。直前にブランチの head が想定どおりかを確かめ、違えば更新しない
 3. タイトル、本文、メタデータを更新し、チェックボックスを未チェックに戻す
 4. **更新内容が変わった場合だけ**、変更点をコメントする（追加・削除・更新後のバージョンの変更を表にする）。更新前のバージョンだけが変わった場合（例: マイナー・パッチグループのマージで From が変わる）は、内容の変更に含めない
 
@@ -225,7 +239,7 @@ PR が変更するのは pubspec の 2 ファイルだけなので、コンフ�
 ### 7.3 同時実行
 
 - ワークフローの `concurrency` で実行を直列にする（§10.3）
-- それでも重なった場合は、§7.2 の `--force-with-lease` で後から来た push が失敗する。失敗した更新単位はエラーとして扱う（§9）
+- ブランチを更新する直前に head を確認し、想定と違えば更新せずにエラーとして扱う（§9）。確認してから更新するまでの間に入った push は検出できないが、直列化していれば通常は起きない
 
 ## 8. PR 本文
 
@@ -268,7 +282,7 @@ Updates the following packages.
 
 | 発生箇所 | 扱い |
 |---|---|
-| 既存 PR がある更新単位の処理中（適用、push、PR 操作） | その PR にエラーログをコメントする。ブランチは変更しない。他の更新単位の処理は続ける |
+| 既存 PR がある更新単位の処理中（適用、ブランチの更新、PR 操作） | その PR にエラーログをコメントする。ブランチは変更しない。他の更新単位の処理は続ける |
 | まだ PR がない更新単位の処理中 | ジョブのログとサマリーに出す（→ Q4） |
 | 全体（設定の誤り、pub.dev に到達できない、SDK がない） | 何も変更せずに失敗終了する |
 | 更新履歴やソースリンクの取得 | エラーにしない。本文に取得できなかった旨と pub.dev へのリンクを載せる |
@@ -283,7 +297,7 @@ Updates the following packages.
 
 | 入力 | 既定値 | 説明 |
 |---|---|---|
-| `token` | `${{ github.token }}` | PR の作成と push に使うトークン（§11） |
+| `token` | （必須） | GitHub App のインストールトークン（§11） |
 | `config` | `.github/pubreform.yaml` | 設定ファイルのパス。ベースブランチから読む |
 
 ### 10.2 設定ファイル
@@ -316,7 +330,7 @@ on:
       timezone: Asia/Tokyo
   push:
     branches: [main]
-    paths: [pubspec.yaml, pubspec.lock, .github/pubreform.yaml]
+    paths: [pubspec.yaml, pubspec.lock, .fvmrc, .github/pubreform.yaml]
   pull_request:
     types: [edited]          # チェックボックスへの即時対応
   workflow_dispatch:
@@ -327,7 +341,10 @@ concurrency:
 
 jobs:
   pubreform:
-    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'pubreform/')
+    # pull_request は bot の PR だけ。App 自身による本文の更新では起動しない
+    if: >-
+      github.event_name != 'pull_request' ||
+      (startsWith(github.head_ref, 'pubreform/') && github.event.sender.type != 'Bot')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/create-github-app-token@v3
@@ -338,7 +355,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: subosito/flutter-action@v2    # Dart だけなら dart-lang/setup-dart@v1
         with:
-          channel: stable                   # プロジェクトと同じバージョンを指定する
+          flutter-version-file: .fvmrc      # fvm の設定からバージョンを取る
       - uses: chika3742/pubreform@v1
         with:
           token: ${{ steps.app-token.outputs.token }}
@@ -346,9 +363,11 @@ jobs:
 
 ## 11. トークンと権限
 
-- `GITHUB_TOKEN` で作成・更新した PR では、`pull_request` で起動する CI が承認待ちの状態で作られ、書き込み権限のあるユーザーが承認するまで実行されない。
-- CI を自動で実行させるには、GitHub App のインストールトークン（推奨）か PAT を `token` に渡す。
-- 必要な権限: Contents（write）、Pull requests（write）。
+- PR の作成、コミット、コメント、ラベル付けは、`token` に渡した GitHub App のインストールトークンで行う。`GITHUB_TOKEN` は使わない（`GITHUB_TOKEN` で作った PR では、`pull_request` で起動する CI が承認待ちになるため）
+- App に必要な権限（Repository permissions）: Contents（Read and write）、Pull requests（Read and write）。コメントとラベルの API は Pull requests の権限で使える
+- コミットは git の push ではなく、GitHub API（blob → tree → commit → ref の更新）で作る。App として認証し author / committer を指定しなければ、コミットは App の bot ユーザーの名義になり、GitHub の署名で Verified と表示される。変更するのは 2 ファイルだけなので、API の呼び出しは数回で済む
+- ref を更新する REST API には「head が想定どおりなら更新する」という条件を付けられないため、§7.3 のとおり直前に確認する
+- App による push や PR の作成では、通常どおり CI などの他のワークフローが起動する。App 自身が本文を更新したときも `pull_request: edited` で起動するので、ワークフロー側で除外する（§10.3）
 
 ## 12. 要件との対応
 
@@ -385,6 +404,8 @@ jobs:
 - プレリリース版は対象外
 - セキュリティアドバイザリがあっても待機期間は短縮しない（pub.dev の advisories API を使って後から対応できる）
 - 本文とコメントは英語
+- コミットは API で作る（Verified になり、git の認証設定も要らない。代わりに、head の確認から ref の更新までの間に入った push は検出できない）（§11）
+- Flutter SDK はワークフローで fvm の設定から入れ、Action はバージョンの照合だけを行う。Action の中で fvm を実行する方式にはしない（§3.2）
 
 ## 参考
 
@@ -394,3 +415,6 @@ jobs:
 - [Triggering a workflow](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)（`GITHUB_TOKEN` によるイベント）
 - [Workflow syntax: on.schedule](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onschedule)（`timezone`）
 - [Deprecation of Node 20 on GitHub Actions runners](https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/)
+- [About commit signature verification: Signature verification for bots](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification#signature-verification-for-bots)
+- [subosito/flutter-action](https://github.com/subosito/flutter-action)（`flutter-version-file` に `.fvmrc` を指定できる）
+- [FVM Configuration](https://fvm.app/documentation/getting-started/configuration)
