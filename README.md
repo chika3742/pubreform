@@ -41,6 +41,8 @@ min_release_age_days: 3
 labels: [dependencies]
 ```
 
+To regenerate code such as build_runner outputs in the pull requests, add [post-update commands](#post-update-commands).
+
 **3. Add the workflow**, for example as `.github/workflows/pubreform.yml`:
 
 ```yaml
@@ -93,6 +95,10 @@ The workflow decides when the action runs. This one runs it every Monday, after 
 | `labels` | `[]` | Labels added to the pull requests. Missing labels are created |
 | `versioning` | `increase` | `increase` also raises the lower bounds in `pubspec.yaml` for minor and patch updates. `lockfile-only` changes only `pubspec.lock` for them |
 | `ignore` | `[]` | Updates to skip. `{ name }` skips the package, `{ name, versions }` skips the versions in a constraint such as `">=3.0.0"` |
+| `post_update` | `[]` | Commands to run before each pull request is committed, such as code generation. See [Post-update commands](#post-update-commands) |
+| `post_update[].run` | (required) | The command, run with `sh -c` at the repository root |
+| `post_update[].network` | `false` | Whether the command can use the network |
+| `post_update[].env` | `[]` | Names of more environment variables to pass, with their values from the workflow. Names starting with `INPUT_` or `ACTIONS_` are not allowed |
 
 The `# $schema:` line enables completion and validation in IntelliJ IDEA and in VS Code with the YAML extension.
 
@@ -112,6 +118,24 @@ Check "Rebase this PR" in the description to rebuild a pull request on the lates
 - A pull request you close without merging is not opened again for the same versions
 - If an update fails, the error is posted to its pull request, and the job fails
 - Branches are named `pubreform/...`. Transitive dependencies are updated in `pubspec.lock` as needed, but are not listed
+
+### Post-update commands
+
+When pubreform creates or rebuilds a pull request, it can first run commands on the updated project, and commit the files they change (except files ignored by `.gitignore`) together with `pubspec.yaml` and `pubspec.lock`:
+
+```yaml
+post_update:
+  - run: dart run build_runner build
+  - run: ./tool/generate_api.sh
+    network: true
+    env: [API_SPEC_URL]
+```
+
+- Linux runners only, such as `ubuntu-latest`: the commands need password-less `sudo`, `unshare` and `runuser`. Dart projects only: Flutter projects are not supported yet, because the `flutter` command writes to the Flutter SDK
+- The commands run code from your dependencies, so pubreform runs them in a copy of the repository without `.git`, as a separate user (`pubreform-run`) that cannot read the tokens or write to the SDK and the pub cache, with only a few environment variables (`PATH`, `HOME`, `PUB_CACHE`, `LANG`, `LC_ALL`, `CI`, and those in `env`), and without the network unless `network: true`. Dependencies are already fetched, so `dart run` works without the network
+- Bring the generated code on the default branch up to date first. Otherwise, the changes that are already due on the default branch show up in every pull request
+- The commands run only when a pull request is created or rebuilt, once per pull request. Changing `post_update` rebuilds every pull request
+- If a command fails, the pull request is not created, or is left as it is with the error posted to it, and the job fails
 
 ## Limitations
 

@@ -85,7 +85,7 @@
             "description": "Command run with `sh -c` in a copy of the repository, as a separate user.",
             "type": "string",
             "minLength": 1,
-            "examples": ["dart run build_runner build --delete-conflicting-outputs"]
+            "examples": ["dart run build_runner build"]
           },
           "network": {
             "description": "Whether the command can use the network.",

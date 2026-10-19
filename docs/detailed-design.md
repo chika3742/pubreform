@@ -1,6 +1,6 @@
 # pubreform 詳細設計
 
-> ステータス: 実装済み（2026-10-18。v1 は未リリース）。ローカル E2E と GitHub E2E で確かめた（§17）。挙動を変えるときは、先にこの設計書を直す。[基本設計](design.md)を前提に、実装に必要な決定を書く。節番号の「基本 §n」は基本設計の節を指す。
+> ステータス: 実装済み（2026-10-18。v1 は未リリース）。ローカル E2E と GitHub E2E で確かめた（§17）。更新後のコマンド（§19）は 2026-10-19 に実装し、ローカル E2E で確かめた（GitHub E2E は未実行）。挙動を変えるときは、先にこの設計書を直す。[基本設計](design.md)を前提に、実装に必要な決定を書く。節番号の「基本 §n」は基本設計の節を指す。
 
 ## 1. 技術スタック
 
@@ -38,6 +38,7 @@ src/
   render.ts      タイトル、本文、コミットメッセージ、コメント、メタデータ（§12）
   github.ts      GitHub API の操作（§13）
   reconciler.ts  計画と既存 PR の突き合わせと操作の決定（§14）
+  generate.ts    更新後のコマンドの実行と、変わったファイルの取り出し（§19）
 test/            bun test（§17）
 pubreform.schema.json  設定ファイルの JSON スキーマ（§4.2）
 dist/            ビルド結果（リリース時に生成してコミットする。§18）
@@ -71,13 +72,14 @@ runs:
 4. 設定を clone から読み、検証する（§4）。configHash を計算する
 5. pubspec.yaml / pubspec.lock / .fvmrc を読む（§7）。baseHash を計算する
    ルートの pubspec に workspace: があれば全体エラー
+   post_update があれば、Flutter のプロジェクトなら全体エラー。実行できる環境かを確かめる（§19.1）
 6. slot と cutoff を求める（§5）
 7. 中継サーバーを起動する（§9）
 8. 計画する（§10）→ 更新単位と、計画に失敗したパッケージ（uncertain）
 9. 各更新単位を適用する（§11）→ 結果、または単位ごとのエラー
 10. 既存 PR を集める（open と、直近 100 件の closed）（§13）
 11. 操作を決める（§14）。純粋関数で、テストできる形にする
-12. 操作を 1 つずつ実行する。失敗はその操作のエラーとして記録し、次へ進む（ジョブのログでは `Pull requests` のグループにまとめる）
+12. 操作を 1 つずつ実行する。create と regenerate では、コミットの前に post_update のコマンドを実行する（§19）。失敗はその操作のエラーとして記録し、次へ進む（ジョブのログでは `Pull requests` のグループにまとめる。post_update があるときはまとめない）
 13. ジョブサマリーを書く（§16）。エラーが 1 件でもあれば core.setFailed
 （finally）中継サーバーを止める
 ```
@@ -86,8 +88,8 @@ runs:
 
 | 種類 | 例 | 扱い |
 |---|---|---|
-| 全体エラー | 設定の誤り、clone の失敗、U / R の解決の失敗、workspace | 手順 10 以降に進まず、PR を一切変更せずに失敗終了する |
-| 単位のエラー | 1 つの更新単位の S の計算・適用・コミット・PR 操作の失敗 | その単位だけを止め、他は続ける（§15） |
+| 全体エラー | 設定の誤り、clone の失敗、U / R の解決の失敗、workspace、post_update を実行できない環境 | 手順 10 以降に進まず、PR を一切変更せずに失敗終了する |
+| 単位のエラー | 1 つの更新単位の S の計算・適用・post_update のコマンド・コミット・PR 操作の失敗 | その単位だけを止め、他は続ける（§15） |
 
 ## 4. 設定（config.ts）
 
@@ -101,6 +103,10 @@ runs:
 | `labels` | string[] | `[]` | 空文字列を含まず、重複しない |
 | `versioning` | `increase` \| `lockfile-only` | `increase` | 列挙値 |
 | `ignore` | `{ name, versions? }[]` | `[]` | `name` は必須。`versions` は pub の制約の書式（§6） |
+| `post_update` | `{ run, network?, env? }[]` | `[]` | 上から順に実行するコマンド（§19） |
+| `post_update[].run` | string | （必須） | 空でないこと。`sh -c` で実行する |
+| `post_update[].network` | boolean | `false` | ネットワークを使えるようにする |
+| `post_update[].env` | string[] | `[]` | 追加で渡す環境変数の名前。`^[A-Za-z_][A-Za-z0-9_]*$` に合い、重複せず、`INPUT_` と `ACTIONS_` で始まらないこと（§19.2） |
 
 - 知らないキーはエラーにする（綴りの誤りに気づけるようにする）。ただし最上位の `$schema`（エディタ用のスキーマの指定。§4.2）は受け付けて無視し、ハッシュにも含めない
 - 設定ファイルがない、YAML として読めない、検証に失敗した場合は全体エラー。エラーメッセージにはキーのパスを含める（例: `schedule.timezone: unknown time zone "Asia/Tokio"`）
@@ -370,6 +376,7 @@ Update minor and patch (2 packages)
 - 抜き出した更新履歴（切り詰めたものを含む）の最後でフェンス（```` ``` ```` か `~~~`）のコードブロックが閉じていなければ、開いたフェンスと同じ字下げと文字列で閉じる。行の境界で切ると、コードブロックの途中で切れることがある。閉じていないコードブロックは本文の最後まで続き、`</details>` とチェックボックスもコードとして表示されるため。字下げをそろえるのは、リストの項目の中（1〜3 文字の字下げ）のブロックを項目の中で閉じるためで、字下げなしで閉じると、項目を終わらせたうえでトップレベルに新しいブロックを開いてしまう
   - フェンスとみなすのは、CommonMark と同じく、3 文字までの字下げの後に 3 つ以上の `` ` `` か `~` が続く行。`` ` `` のフェンスは、後ろに `` ` `` を含まないものだけ（`` ```foo``` `` で始まる行はインラインコード）
   - 扱わないもの: 4 文字以上字下げしたフェンス（入れ子のリストの中など）と、リストの項目が終わったことで閉じるフェンスのないブロック（例: リストの項目の中で開いたブロックが、閉じるフェンスのないまま、字下げのない次の段落で終わっている場合。開いたままとみなして閉じるフェンスを付ける）。どちらもまれなため
+- post_update のコマンドで変わったファイルがあれば、表の下に `` Files changed by the `post_update` commands: <n> `` の 1 行を入れる。ファイルの一覧は載せない（PR の差分で見られるため）。メタデータとコミットメッセージは変えない
 - 組み立てた本文が 65,000 文字を超えたら、更新履歴をすべて省き、各パッケージを読めなかったときと同じ `[Changelog](…)` の 1 行にする
 
 ### 12.4 メタデータ
@@ -455,7 +462,7 @@ pubreform failed to update this PR.
 | mergeable | `GET /repos/{owner}/{repo}/pulls/{n}`（`mergeable`、`mergeable_state`）。対象の PR ごとに 1 回 |
 | PR の head | `GET /git/ref/heads/<branch>`。対象の PR ごとに 1 回。PR の `head.sha` は使わない。ref を更新した直後は、ref はすでに新しいコミットを返すが、PR の `head.sha` は数秒のあいだ前のコミットを返すため（§17.2 で確認済み）。前の実行が PR を作り直した直後に次の実行が読むと、前の head を見て、作り直しが途中で止まったと誤って判断する |
 | closed の PR | `GET /repos/{owner}/{repo}/pulls?state=closed&base=<base>&sort=updated&direction=desc&per_page=100`（1 ページだけ）。`merged_at` が null のもの |
-| コミットの作成 | `POST /git/trees`（`base_tree` = ベースの tree、`pubspec.yaml` と `pubspec.lock` を `content` で直接渡す）→ `POST /git/commits`（`parents` = [baseSha]。author / committer は指定しない） |
+| コミットの作成 | `POST /git/trees`（`base_tree` = ベースの tree、`pubspec.yaml` と `pubspec.lock` を `content` で直接渡す。post_update のコマンドで変わったファイルも同じ tree に入れる。§19.7）→ `POST /git/commits`（`parents` = [baseSha]。author / committer は指定しない）。UTF-8 でないファイルは、その前に `POST /git/blobs` で blob を作る |
 | ブランチの作成 | `POST /git/refs`。既にあれば（422）、そのブランチを使う open の PR がないことを確かめてから強制更新する |
 | ブランチの更新 | `GET /git/ref/heads/<branch>` で head が想定どおりかを確かめ、`PATCH /git/refs/heads/<branch>`（`force: true`） |
 | ラベルの用意 | `GET /repos/{owner}/{repo}/labels`（全ページ）で既存のラベルを調べ、ないものを `POST /repos/{owner}/{repo}/labels`（`name`、`color: ededed`）で作る。実行ごとに 1 回、ラベルを付ける操作がある場合だけ行う。存在しないラベルは自動では作られないため |
@@ -536,8 +543,8 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 - `decide` はコメントを読まない。コメントの重複の確認は実行時に行う
   - `notifyManual`: PR のコメントを取得し、同じ head の `pubreform:manual` マーカーがあれば何もしない
   - `commentError`: PR のコメントを取得し、最新の bot のエラーコメントと同じハッシュなら何もしない（§15）
-- `create`: コミットを作る → ブランチを作る → PR を作る → ラベルを付ける。メタデータの `commit` には作ったコミットを入れる
-- `regenerate`: コミットを作る → タイトルと本文を更新する（メタデータの `commit` は新しいコミット、`previous` は今の head。チェックボックスは未チェックに戻る）→ ブランチを強制更新する → ラベルを付ける → `contentChanged` ならコメントする
+- `create`: post_update のコマンドを実行する（§19。なければ飛ばす）→ コミットを作る → ブランチを作る → PR を作る → ラベルを付ける。メタデータの `commit` には作ったコミットを入れる
+- `regenerate`: post_update のコマンドを実行する → コミットを作る → タイトルと本文を更新する（メタデータの `commit` は新しいコミット、`previous` は今の head。チェックボックスは未チェックに戻る）→ ブランチを強制更新する → ラベルを付ける → `contentChanged` ならコメントする
   - 本文を先に更新するのは、途中で失敗しても次の実行が状態を判別できるようにするためである。本文の更新で失敗すれば何も変わらない。ブランチの更新で失敗すれば head は `previous` のままなので、次の実行で再生成する。逆の順序だと、本文の更新だけが失敗したときに head がメタデータの `commit` と違ってしまい、人手のコミットと誤って判定する
 - 操作の順序: `create` / `regenerate` などを先に行い、`close` を最後に行う。統合先の PR の番号を `Closing: superseded by #<n>.` に書くためである。統合先の操作が失敗して番号がなければ、`Closing: this update is no longer needed.` にする。新しく作るブランチが閉じる PR のブランチと重なることは、対応付け（§14.2）で通常は起きない。起きた場合は、ブランチの作成（§13）がその単位のエラーになり、次の実行で直る
 - 1 つの操作が途中で失敗したら、そこで止めて単位のエラーとする（§15）
@@ -568,7 +575,7 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 
 | 種類 | 対象 | 方法 |
 |---|---|---|
-| 単体 | version、clock、config、changelog の抜き出し、render（メタデータの往復、本文の長さの上限）、reconciler の `decide`、planner（`closure` と併合） | `bun test`。planner は偽の `resolve` を渡す。ネットワークは使わない |
+| 単体 | version、clock、config、changelog の抜き出し、render（メタデータの往復、本文の長さの上限）、reconciler の `decide` と `execute`（`generate` を呼ぶのが `create` と `regenerate` だけであること、失敗の扱い）、planner（`closure` と併合）、generate（`git status -z` の解釈、tree の項目への変換、渡す環境変数、`sudo` の引数） | `bun test`。planner は偽の `resolve` を渡す。ネットワークは使わない |
 | 結合 | 中継サーバーと pub | プロトタイプの検証（基本 §4.2）を `bun test` に移す。pub.dev へのネットワークと Dart / fvm が必要なので、環境変数 `PUBREFORM_IT=1` のときだけ動かす |
 | 設定のスキーマ | `pubreform.schema.json` と config.ts | 同じ設定例を両方で判定し、結果が一致することを確かめる（§4.2） |
 | ローカル E2E | Action 全体（ビルドした `dist/main.js`） | フィクスチャー用サーバー、偽の GitHub API、bare リポジトリで、場面ごとに動かす（§17.1） |
@@ -618,6 +625,20 @@ pubreform 自身の CI では、main への push と pull request のたびに�
 10. 途中の失敗: 偽の API でブランチの更新を 1 回だけ失敗させると、その PR にエラーコメントが出て、ジョブは失敗する。次の実行で再生成され、成功する
 11. 人の PR: 人が `pubreform/` で始まるブランチから作った PR（作成者が bot でない）は、計画と対応しなくても閉じず、ブランチも消さず、コメントもしない
 
+更新後のコマンド（§19）は、別のテスト（`test/e2e/post-update.test.ts`）で、同じ構成の別のリポジトリに対して動かす。`sudo -n true` が通る環境だけで動かす（GitHub Actions の CI では動く。`setfacl` も要る）。テスト用プロジェクトは `makeProject({ postUpdate: true })` で作り、設定に次のコマンドを入れる（`make-project.ts` の `POST_UPDATE_CONFIG` と `POST_UPDATE_FILES`）。
+
+| コマンド | 内容 |
+|---|---|
+| `dart run tool/gen.dart` | lockfile のバージョンを `lib/versions.g.dart` に書く（ネットワークなしで `dart run` が動き、PR ごとの内容になることを見る） |
+| `sh tool/probe.sh` | 読めてはいけないものを試し、結果を `probe.txt` に書く: `INPUT_TOKEN` の値、読める `/proc/*/environ` に `INPUT_TOKEN`・`ACTIONS_RUNTIME_TOKEN`・`GH_TOKEN` があるか、pubreform のプロセスの `/proc/<pid>/environ`、GitHub の API への接続、`.git` があるか、ベースの clone の `.git/config`・pub のキャッシュ・SDK に書き込めるか、`GITHUB_WORKSPACE/.git` と `RUNNER_TEMP` の下に認証情報（`authorization` を含むファイル）があるか。あわせて、バイナリのファイル、実行権限のあるファイル、リンク、追跡しているファイルの削除、`.gitignore` で除外したファイル、`pubspec.yaml` の変更を作り、`sleep` を後ろに残す |
+| `sh tool/network.sh`（`network: true`） | 同じ接続がネットワークありでは成功することを `network-on.txt` に書く（`probe.txt` の失敗が接続の誤りでないことの確認） |
+
+場面:
+
+1. 作成: 3 つの PR のコミットに、`lib/versions.g.dart`（その PR のバージョン）、`probe.txt`（どれも読めない・書けない・接続できない）、`network-on.txt`（`ok`）、`run.sh`（`100755`）、リンク（`120000`、リンク先の文字列）、バイナリ、削除が入る。`.gitignore` で除外したもの、`.dart_tool/`、コマンドが書いた `pubspec.yaml` は入らない。本文に `` Files changed by the `post_update` commands: 7 `` が入る。`pubreform-run` のプロセスが残っていない（止まったプロセスがゾンビとして残る環境があるので、ゾンビは数えない）
+2. 何も変わらない: もう一度実行すると、コマンドは実行されず、どの PR の head も変わらない
+3. 失敗: ベースの設定を、終了コード 3 で失敗するコマンドに変えて実行すると、ジョブは失敗し、どの PR の head も変わらず、各 PR に失敗したコマンドと出力を含むエラーコメントが出る
+
 ### 17.2 GitHub E2E
 
 本物の GitHub でしか分からない次の 4 点を、テスト用リポジトリ [`chika3742/pubreform-e2e`](https://github.com/chika3742/pubreform-e2e)（非公開）で確かめる。pub.dev の代わりに、17.1 と同じフィクスチャー用サーバーを使う。
@@ -626,6 +647,16 @@ pubreform 自身の CI では、main への push と pull request のたびに�
 - `mergeable_state` が取得できる（GitHub の計算を待つため、null でなくなるまで数回取り直す）
 - App のトークンで、ないラベルを作れる
 - `/` を含むブランチ名で、ref の取得と更新ができる
+
+あわせて、更新後のコマンド（§19）を本物のランナーで確かめる。テスト用プロジェクトにはローカル E2E と同じコマンド（§17.1）を入れ、1 回目の実行の後に、各 PR のコミットについて次を確かめる。
+
+- `probe.txt` がローカル E2E と同じ内容になる（`sudo`、`unshare`、`runuser`、`setfacl` が使え、トークンと `actions/checkout` の認証情報を読めず、ネットワークに接続できず、SDK・pub のキャッシュ・ベースの `.git` に書き込めない）。`network-on.txt` は `ok`
+- 本物の API で、`mode: 100755` と `120000`、`POST /git/blobs` の blob、`sha: null` の削除が tree に入る
+- 本文の行と `lib/versions.g.dart` の内容
+
+ワークフローの `run:` のステップに `ACTIONS_RUNTIME_TOKEN` がなければ、`probe.txt` のその確認は意味を持たない。スクリプトは、自分の環境にあるかをログに出す。
+
+ワークフロー（下記）は変えなくてよい見込み。pubreform-e2e の checkout は、main への push のために認証情報を残す（`persist-credentials` の既定）ので、認証情報の確認の対象になる。ランナーに `setfacl` がなければ、`sudo apt-get install -y acl` のステップを足す。
 
 2026-10-18 に実行し、4 点とも確認済み（[run #2](https://github.com/chika3742/pubreform-e2e/actions/runs/39103097609)、1 つのスクリプトにした後の [run #3](https://github.com/chika3742/pubreform-e2e/actions/runs/39104022006)）。`mergeable_state` は `clean` と `unstable` が返った。ref を更新した直後は、`GET /git/ref` はすでに新しいコミットを返すが、PR の `head.sha` はまだ前の head を返す（GitHub が裏で反映する。最初の実行では、更新の 4 秒後に読んでも前の head が返った）。そのため 2 回目の確認では、`head.sha` が変わるまで数回取り直す。
 
@@ -644,9 +675,9 @@ pubreform 自身の CI では、main への push と pull request のたびに�
 `github-e2e.ts` の手順:
 
 1. フィクスチャー用サーバーを同じプロセスで起動する
-2. テスト用プロジェクト（`pubspec.yaml`、`pubspec.lock`、`.github/pubreform.yaml`）を `make-project.ts` の `makeProject` で生成し、内容が変わっていれば main に push する（コミットの作成者は `pubreform-e2e`）。main のこれらのファイルはこのワークフローが管理する（`.github/workflows/` には触れない）。main にブランチ保護を設定すると、この push が失敗する
+2. テスト用プロジェクト（`pubspec.yaml`、`pubspec.lock`、`.github/pubreform.yaml` と、更新後のコマンドが使うファイル）を `make-project.ts` の `makeProject({ postUpdate: true })` で生成し、内容が変わっていれば main に push する（コミットの作成者は `pubreform-e2e`）。main のこれらのファイルはこのワークフローが管理する（`.github/workflows/` には触れない）。main にブランチ保護を設定すると、この push が失敗する
 3. 前回の実行の後片付け: `pubreform/` で始まるブランチの open の PR を閉じ、`pubreform/` で始まる ref をすべて（open の PR がないものも）消し、設定のラベルを消す。PR は、pubreform が閉じるときと同じく、本文のメタデータに `closed: true` を入れて閉じる（入れないと利用者が閉じた PR として扱われ、フィクスチャーが毎回同じなので、次の実行で同じ内容の PR が作られなくなる）。`closed: true` を入れる処理には、本体と同じ `markClosed`（src/render.ts）を使う
-4. 1 回目: ビルドした `dist/main.js` を `node` で実行し、上の 4 点のうち、Verified、`mergeable_state`、ラベルを確かめる。入力はローカル E2E と同じく環境変数（`INPUT_TOKEN`、`INPUT_CONFIG`）で渡し、`PUBREFORM_UPSTREAM` を付ける。ランナーの環境変数（`GITHUB_REPOSITORY`、`RUNNER_TEMP` など）はそのまま渡す
+4. 1 回目: ビルドした `dist/main.js` を `node` で実行し、上の 4 点のうち、Verified、`mergeable_state`、ラベルと、更新後のコマンドの結果を確かめる。入力はローカル E2E と同じく環境変数（`INPUT_TOKEN`、`INPUT_CONFIG`）で渡し、`PUBREFORM_UPSTREAM` を付ける。ランナーの環境変数（`GITHUB_REPOSITORY`、`RUNNER_TEMP` など）はそのまま渡す
 5. 2 回目: 単独 PR のチェックボックスにチェックを入れてから実行し、その PR が作り直されたこと（`/` を含むブランチ名での ref の取得と更新）を確かめる。実行の直後に待たずに ref を読み、PR のメタデータの `commit` と一致することを確かめる（ref が更新の直後から新しいコミットを返すかを見るため）。PR の `head.sha` は、変わるまで数回取り直す
 
 `uses:` でアクションを呼ぶと、その前後の操作や確認がワークフローのステップに分かれるため、`dist/main.js` を直接実行して 1 つのスクリプトにまとめる。このため `action.yml`（`main` のパスと入力の既定値）は確かめない。`action.yml` は短く、誤っていれば実際に使った最初の実行で失敗して分かるためである。失敗したときは、失敗した手順の名前をエラーの注釈（`::error::`）に出す。
@@ -664,7 +695,138 @@ pubreform 自身の CI では、main への push と pull request のたびに�
   4. 差分の有無にかかわらず、タグとメジャータグ（`v1` など）を main の先頭に付け直す。`dist/` が変わらないリリース（`action.yml` や README だけの変更）も `@v1` に届けるため
 - ワークフローで使うアクションは、コミットの SHA で固定する（バージョンはコメントに書く）。ビルドしたものは利用者の App のトークンで動くので、タグの付け替えでアクションが差し替えられても影響を受けないようにする。更新は Dependabot が行う
 
-## 19. 未確認のこと
+## 19. 更新後のコマンド（generate.ts）
+
+PR を作るときと作り直すときに、その更新単位のコミットを作る前に、設定した `post_update` のコマンド（基本 §14.3）を実行し、変わったファイルも同じコミットに入れる。コマンドは依存パッケージのコード（build_runner の builder など）を実行するので、信頼できないコードとして扱い、次の 3 つを守る。
+
+- App のトークン、ランナーのトークン、ランナーのユーザーのファイルを読ませない（別のユーザーで実行する）
+- pubreform がこのあと実行するもの・信頼して読むもの（SDK、pub のキャッシュ、ベースの clone とその `.git`）を書き換えさせない
+- 既定ではネットワークを使わせない
+
+### 19.1 前提
+
+- Linux のランナーで、パスワードなしの `sudo`、`unshare`、`runuser`（util-linux）が使えること。GitHub のホストランナー（ubuntu）を想定する。pub のキャッシュがランナーのホームの下にある場合は `setfacl`（acl）も要る（§19.4）
+- 条件を満たさない環境で `post_update` があれば、全体エラーにする（何も変更しない）。確認は設定を読んだ直後に 1 回だけ行う（`process.platform`、`sudo -n true`、`command -v unshare && command -v runuser`）
+- Flutter のプロジェクト（§7.1）で `post_update` があれば、全体エラーにする。`flutter` コマンドが起動のたびに SDK に書き込むため（§19.9）
+
+### 19.2 設定
+
+キーと検証は §4.1 のとおり。
+
+- `env` に `INPUT_` で始まる名前と `ACTIONS_` で始まる名前は書けない（設定エラー）。pubreform の入力（App のトークン）とランナーのトークンを、うっかり渡さないため。スキーマでは先読み（`^(?!INPUT_|ACTIONS_)…`）で同じ判定にする
+- `env` の値は pubreform のプロセスの環境から取り、なければ渡さない。既定で渡す `HOME` と `PUB_CACHE`（§19.5）は、`env` に書いても上書きしない
+- `configHash` は既定値を補った設定全体から計算するので（§4.3）、`post_update` を変えるとすべての PR が作り直される。`post_update` のキーを足す前の設定とはハッシュが変わるので、このバージョンに上げた最初の実行では、すべての PR が 1 回作り直される
+
+### 19.3 流れの変更
+
+コマンドは PR の操作（§14.4 の `create` と `regenerate`）の中で、コミットを作る直前に実行する。中継サーバーは止まったままでよい（§19.6）。
+
+```
+execute
+  create / regenerate のたびに:
+    generated = post_update があれば generate(result)
+    commit(result.files + generated)
+    （以降は今と同じ）
+```
+
+- `post_update` が空なら、今とまったく同じ動きにする
+- 実行のたびに行う適用のやり直しや、`none`（変化なし）の PR では実行しない。作り直すかどうかの判断に生成結果を使わないため
+- 更新単位は 1 つずつ順に処理する
+- `execute` には `ExecuteContext` の関数（`generate?: (result) => Promise<TreeEntry[]>`）として渡し、テストでは差し替える
+- `post_update` があるときは、ジョブのログに `Pull requests` のグループを作らない。コマンドごとのグループ（§19.5）と入れ子にしないため
+
+### 19.4 生成の手順
+
+更新単位ごとに、次を行う。
+
+1. `/tmp` の下に生成用ディレクトリと HOME 用のディレクトリを作る（`mkdtemp`）。`RUNNER_TEMP` は使わない。ランナーのホームの下にあり、別のユーザーがたどれないことがあるため
+2. ベースの clone の `.git`（信頼できる）から、追跡しているファイルを生成用ディレクトリに書き出す（`git --git-dir=<base>/.git --work-tree=<base> checkout-index --all --prefix=<dir>/`）。`.git` は渡さない。生成のコードが `.git/config`（`core.fsmonitor` など）やフックを書き換えると、あとで pubreform が実行する `git` がそのコマンドを実行してしまうため。作業ツリーをコピーしないのは、解決で残ったもの（`.dart_tool/` など）を持ち込まないため
+3. ランナーのユーザーのまま、`Pub.run`（§8.2）で、その更新単位の `pubspec.yaml` と、URL を中継サーバーのものにした `pubspec.lock` を書き、`pub get --offline --no-example` を実行する。`.dart_tool/package_config.json` ができる。パッケージは適用のときにキャッシュに入っているので、中継サーバーもネットワークも要らない
+4. 生成用ディレクトリと HOME 用のディレクトリの持ち主を別のユーザーにする（`sudo -n chown -R pubreform-run: <dir> <home>`）
+5. コマンドを順に実行する（§19.5）
+6. 失敗しても次を行う。別のユーザーのプロセスをすべて止める（`sudo -n pkill -KILL -u pubreform-run`）。コマンドが後ろで動かし続けたプロセスが、このあと読むファイルや次の更新単位のディレクトリに触れないようにするため。そのあと、持ち主をランナーのユーザーに戻す（`sudo -n chown -R <uid>:<gid> <dir>`）
+7. 変わったファイルを取り出す（§19.7）
+8. 生成用ディレクトリと HOME 用のディレクトリを消す（`sudo -n rm -rf`）
+
+別のユーザーの準備は、最初の更新単位の前に 1 回だけ行う。
+
+- 名前は `pubreform-run`。`id -u pubreform-run` が失敗すれば、`sudo -n useradd --system --no-create-home --shell /usr/sbin/nologin pubreform-run` で作る
+- SDK と pub のキャッシュには、書き込み権限を与えない。書き換えられると、あとで pubreform が実行する pub が改ざんされるため。対象は、pub のキャッシュ（`PUB_CACHE`、なければ `~/.pub-cache`）、PATH 上の `dart`（fvm なら `fvm`）の実体の 2 つ上のディレクトリ（`<sdk>/bin/dart` の `<sdk>`）、`FVM_CACHE_PATH` と `FLUTTER_ROOT`（あれば）
+- そのユーザーが対象を読めない（`runuser -u pubreform-run -- test -r` / `test -x` が失敗する）場合は、ACL でそのユーザーに読み取りとたどる権限だけを与える。対象の上のディレクトリのうちたどれないものには `x` だけを（`setfacl -m u:pubreform-run:x`）、対象には `rX` を再帰的に（`setfacl -R -m u:pubreform-run:rX`）与える
+- 上のディレクトリにたどる権限を与えると、その下の、ほかの利用者に読める権限のファイルは、パスを知っていれば読める。ローカル E2E では、pub のキャッシュと同じ一時ディレクトリにあるベースの clone が読めた（書き込みはできない）。ランナーのホームの下にある認証情報（`actions/checkout` が残すもの）が読めないことは、GitHub E2E で確かめる（§17.2）
+
+### 19.5 コマンドの実行
+
+コマンドごとに、生成用ディレクトリで次を実行する。
+
+```
+sudo -n [unshare --net --] runuser -u pubreform-run -- env -i <環境変数> sh -c <run>
+```
+
+- `network: false` なら `unshare --net` を付ける。`unshare` を root で実行してから `runuser` でユーザーを切り替える（利用者権限の名前空間は、ランナーの設定で禁止されていることがあるため）
+- 渡す環境変数: `PATH`、`LANG`、`LC_ALL`、`CI`、`FVM_CACHE_PATH`、`FLUTTER_ROOT`（それぞれ pubreform のプロセスにあるものだけ）、`env` で指定したもの、`HOME`（§19.4 のディレクトリ）、`PUB_CACHE`（ランナーと同じ場所。`PUB_CACHE` がなければ `~/.pub-cache` を展開した値。`HOME` が変わるので明示する）
+- `sudo` 自体には `PATH` だけを渡す
+- 出力はジョブのログにそのまま出す（`core.group` で「Post update: <run>」にまとめる）。コマンド行はログに出さない（`env` で渡す値が含まれるため）
+- 終了コードが 0 でなければ、そこで止めて §19.8 の失敗にする
+
+### 19.6 確認済みのこと
+
+2026-10-19 に Dart 3.13.5 で確認した（フィクスチャー用サーバーを中継サーバーの代わりにし、コンテナの root から別のユーザーを作って実行。ローカル E2E（§17.1）でも同じことを確かめている）。GitHub のランナーでは未確認。
+
+- 中継サーバーの URL の lockfile なら、サーバーを止めたあとでも `pub get --offline` が成功し、`package_config.json` ができる
+- その後、ネットワークのない名前空間（`unshare -n`）で `dart run` が動く。暗黙の `pub get` は始まらない。`PUB_HOSTED_URL` を渡さなくても、lockfile を pub.dev の URL に戻した後でも同じ
+- 別のユーザー（`runuser -u`）が、環境変数を `env -i` で絞り、ネットワークなしで `dart run` を実行し、生成用ディレクトリにファイルを書けた。SDK と pub のキャッシュは読み取りだけで足りた
+- そのユーザーから、root のプロセスの `/proc/<pid>/environ` は読めず（`Permission denied`）、外部に接続できなかった（`curl` が名前解決できずに失敗）
+- 同じユーザーのプロセスどうしでは、環境変数をすべて外したプロセスからでも、ほかのプロセスの `/proc/<pid>/environ` を読めた（環境変数を絞るだけでは足りない根拠）
+- コマンドが `&` で後ろに残したプロセスは、コマンドが終わっても動き続けた。§19.4 の手順 6 で止める
+
+### 19.7 変わったファイルの取り出し
+
+生成用ディレクトリの中身は信頼できないデータとして扱う。
+
+1. 変わったファイルは、ベースの clone の `.git` を使って調べる。`.gitignore` に従い、追跡していないファイルも含める
+
+   ```
+   git -c core.fsmonitor=false -c core.untrackedCache=false -c status.relativePaths=false \
+     --git-dir=<base>/.git --work-tree=<dir> status --porcelain=v1 -z --untracked-files=all --no-renames --ignore-submodules=all
+   ```
+
+   インデックスは書き換えないよう、ベースのインデックスをコピーしたものを `GIT_INDEX_FILE` で使う。設定は信頼できる `.git` のものなので、作業ツリーの `.gitattributes` があっても、ベースで設定していない外部のフィルターは動かない
+2. `pubspec.yaml` と `pubspec.lock` は除く。この 2 つは適用の結果（`result.files`、pub.dev の URL）を使う
+3. パスは作業ツリーの中に限る（空の要素、`.`、`..`、絶対パスを含むものは捨てる）。途中のディレクトリがシンボリックリンクなら捨てる。ファイルは `lstat` で調べ、シンボリックリンクはたどらない。リンクはリンクとして（`mode: 120000`、内容はリンク先の文字列）コミットする。生成のコードが、ランナーのファイルを指すリンクを置いて、その内容をコミットさせることを防ぐため。通常のファイルでもリンクでもないもの（git がまとめて表示した入れ子のリポジトリなど）は捨てる
+4. tree の項目にする
+
+| 状態 | 項目 |
+|---|---|
+| 変更・追加（UTF-8 として読め、NUL を含まない） | `content` に内容を入れる（BOM と改行はそのまま）。所有者の実行権限があれば `mode: 100755`、なければ `100644` |
+| 変更・追加（それ以外） | `POST /git/blobs`（`encoding: base64`）で blob を作り、その `sha` を入れる |
+| 削除 | `sha: null` |
+
+- 項目は `createCommit` に渡し、2 ファイルと一緒に 1 つの tree にする（`base_tree` はベースの tree。§13）
+- 変わったファイルがなければ、今と同じ 2 ファイルだけのコミットになる
+
+### 19.8 失敗
+
+コマンドが失敗した（終了コードが 0 でない）、または §19.4 の準備に失敗したら、その更新単位のエラーにする（§15 の単位のエラーと同じ）。
+
+- `create` なら PR を作らない。ジョブのログとサマリーに残す
+- `regenerate` なら PR を今のままにして、エラーをコメントする（同じ内容なら繰り返さない）
+- ログには、失敗したコマンドと、その出力の末尾（100 行）を入れる（`post_update command failed with exit code <n>: <run>`）
+
+生成なしで PR を作る方式は採らない。生成コードが古いまま CI で落ちる PR を作ることになるため。
+
+### 19.9 Flutter
+
+2026-10-19 に Flutter 3.47.7（fvm 4.3.2 で入れたもの）で、別のユーザーから、読み取りだけの SDK と pub のキャッシュで試した（ACL で読み取りとたどる権限だけを与え、`unshare --net` の中で実行）。
+
+| コマンド | 結果 |
+|---|---|
+| `flutter pub get --offline`、`flutter gen-l10n`、`<SDK>/bin/dart run build_runner build` | 失敗する。まず SDK の git の確認が `fatal: detected dubious ownership in repository` で失敗する（`safe.directory` を環境変数の `GIT_CONFIG_*` で渡すと通る）。その後、起動スクリプト（`bin/internal/update_engine_version.sh`）が起動のたびに `bin/cache/engine.stamp`（一時ファイルを作って `mv`）と `bin/cache/engine.realm` を書き込もうとし、`Permission denied` で終了コード 1 になる |
+| `<SDK>/bin/cache/dart-sdk/bin/dart run build_runner build`（起動スクリプトを通らない） | 成功する（json_serializable の出力を書けた） |
+
+`flutter` は SDK への書き込みが要るので、SDK に書き込み権限を与えない方針（§19.4）では使えない。そのため、Flutter のプロジェクトでは `post_update` を全体エラーにする（§19.1）。Dart のプロジェクト（`.fvmrc` で fvm の Dart を使うものを含む）だけを対象にする。
+
+## 20. 未確認のこと
 
 | 項目 | 内容 |
 |---|---|
@@ -672,8 +834,10 @@ pubreform 自身の CI では、main への push と pull request のたびに�
 | Flutter プロジェクト | setup-fvm と組み合わせた実行を、実際の GitHub で確かめていない。GitHub E2E は Dart だけ（§17.2） |
 | `action.yml` | GitHub E2E は `dist/main.js` を直接実行するため、確かめていない（§17.2） |
 | 長いタイトル | GitHub が保存時に切り詰めるか（§12.1） |
+| 更新後のコマンド | GitHub E2E（§17.2）をまだ実行していない。GitHub のランナーで、`sudo`・`unshare`・`runuser`・`setfacl` が使えるか、ランナーのホームのディレクトリにたどる権限を与えたときに `actions/checkout` の認証情報が読めないか、`ACTIONS_RUNTIME_TOKEN` を読めないか |
+| 更新後のコマンドの実行時間 | PR ごとに生成が走るので、コマンドと PR が多く、作り直しが重なると長くなる。測っていない |
 
-## 20. 基本設計からの変更点
+## 21. 基本設計からの変更点
 
 この詳細設計で、基本設計の次の点を具体化・変更した。どれも基本設計に反映済み。
 
@@ -684,3 +848,5 @@ pubreform 自身の CI では、main への push と pull request のたびに�
 | `ignore` | すべての解決で除外する | 中継サーバーで該当バージョンを隠す（§9） |
 | 更新履歴とソースリンク | アーカイブから抜き出す | pub がキャッシュに展開したパッケージから読む（§12.3） |
 | 計画に失敗したパッケージ | 記述なし | そのパッケージを含む PR は閉じない（§14.3） |
+| 更新後のコマンドの作業場所 | 作業ディレクトリで実行し、次の更新単位の前にベースの状態に戻す | 更新単位ごとに、`.git` のない生成用ディレクトリを `/tmp` に作り、使い終わったら消す（§19.4） |
+| 更新後のコマンドと Flutter | 記述なし | Flutter のプロジェクトでは使えない（全体エラー）。`flutter` が SDK に書き込むため（§19.9） |
