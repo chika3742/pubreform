@@ -323,9 +323,11 @@ describe('closeFence', () => {
     expect(closeFence('~~~~\n```\nb')).toBe('~~~~\n```\nb\n~~~~')
     // A shorter fence, or one followed by text, does not close the block.
     expect(closeFence('````\n```\n```` x')).toBe('````\n```\n```` x\n````')
+    // In a list item, with the indentation of the opening fence.
+    expect(closeFence('- a:\n  ```dart\n  b')).toBe('- a:\n  ```dart\n  b\n  ```')
   })
   test('keeps closed blocks and text without fences', () => {
-    for (const text of ['a\n```\nb\n```', '```\nb\n`````', '  ~~~\nb\n~~~', 'a `b` c', '    ```\nindented']) {
+    for (const text of ['a\n```\nb\n```', '```\nb\n`````', '  ~~~\nb\n~~~', 'a `b` c', '    ```\nindented', '```foo``` is now bar']) {
       expect(closeFence(text)).toBe(text)
     }
   })

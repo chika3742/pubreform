@@ -175,22 +175,24 @@ export function isRebaseChecked(body: string): boolean {
 
 const changelogUrl = (name: string) => `https://pub.dev/packages/${name}/changelog`
 
-const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
+// A backtick fence cannot be followed by a backtick: a line like ```foo``` starts with inline code.
+const FENCE = /^( {0,3})(`{3,}(?=[^`]*$)|~{3,})(.*)$/
 
 /**
  * The text with a closing fence added when it ends inside a fenced code block. Otherwise the block would run
  * to the end of the body, and the checkbox would be shown as code.
  */
 export function closeFence(text: string): string {
-  let open: string | undefined
+  let open: { indent: string; fence: string } | undefined
   for (const line of text.split('\n')) {
     const m = FENCE.exec(line)
     if (!m) continue
-    const fence = m[1]!
-    if (open === undefined) open = fence
-    else if (fence[0] === open[0] && fence.length >= open.length && m[2]!.trim() === '') open = undefined
+    const fence = m[2]!
+    if (open === undefined) open = { indent: m[1]!, fence }
+    else if (fence[0] === open.fence[0] && fence.length >= open.fence.length && m[3]!.trim() === '') open = undefined
   }
-  return open === undefined ? text : `${text}\n${open}`
+  // The same indentation closes a block in a list item inside the item.
+  return open === undefined ? text : `${text}\n${open.indent}${open.fence}`
 }
 
 function truncate(text: string, budget: number, name: string): string {
