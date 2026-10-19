@@ -54,7 +54,7 @@ out=probe.txt
 echo "token: \${INPUT_TOKEN:-unset}" > "$out"
 hits=0
 for f in /proc/[0-9]*/environ; do
-  if (tr '\\000' '\\n' < "$f") 2> /dev/null | grep -q -e '^INPUT_TOKEN=' -e '^ACTIONS_RUNTIME_TOKEN='; then hits=$((hits + 1)); fi
+  if (tr '\\000' '\\n' < "$f") 2> /dev/null | grep -q -e '^INPUT_TOKEN=' -e '^ACTIONS_RUNTIME_TOKEN=' -e '^GH_TOKEN='; then hits=$((hits + 1)); fi
 done
 echo "environ with tokens: $hits" >> "$out"
 pids=$(pgrep -f dist/main.js)

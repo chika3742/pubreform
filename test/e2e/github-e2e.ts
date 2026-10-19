@@ -1,5 +1,6 @@
 // GitHub E2E: runs pubreform twice against the real GitHub API and checks
-// what only the real GitHub shows. Run by the workflow of chika3742/pubreform-e2e, in its checkout,
+// what only the real GitHub and its runners show, including the post_update commands (POST_UPDATE_CONFIG).
+// Run by the workflow of chika3742/pubreform-e2e, in its checkout,
 // after pubreform is built, with GH_TOKEN (the App token) and the environment of the runner:
 //   bun pubreform-src/test/e2e/github-e2e.ts
 import { spawn, spawnSync } from 'node:child_process'
@@ -7,13 +8,25 @@ import path from 'node:path'
 import { parseConfig } from '../../src/config.ts'
 import { BRANCH_PREFIX, isRebaseChecked, markClosed, parseMeta } from '../../src/render.ts'
 import { startFixtureServer } from './fixtures.ts'
-import { CONFIG, makeProject, writeProject } from './make-project.ts'
+import { POST_UPDATE_CONFIG, makeProject, writeProject } from './make-project.ts'
 
 const API = process.env.GITHUB_API_URL || 'https://api.github.com'
 const TOKEN = process.env.GH_TOKEN
 const REPO = process.env.GITHUB_REPOSITORY
 const SINGLE = `${BRANCH_PREFIX}single/fx_major`
-const LABELS = parseConfig(CONFIG).labels
+const LABELS = parseConfig(POST_UPDATE_CONFIG).labels
+/** What tool/probe.sh records: the post_update commands reach neither the tokens, the network, nor the credentials. */
+const PROBE = [
+  'token: unset',
+  'environ with tokens: 0',
+  'pubreform environ: denied',
+  'network: failed',
+  '.git: absent',
+  'base .git: read-only',
+  'pub cache: read-only',
+  'sdk: read-only',
+  'readable credentials: 0',
+].join('\n')
 const MAIN = path.join(import.meta.dir, '../../dist/main.js')
 
 interface Pull {
@@ -100,7 +113,36 @@ async function checkFirst() {
       await sleep(3000)
     }
     check(!!state && state !== 'unknown', `#${pr.number}: mergeable_state is "${state}"`)
+    await checkGenerated(pr)
   }
+}
+
+async function readFile(sha: string, file: string): Promise<string | undefined> {
+  const data = await api<{ content: string }>('GET', `/contents/${file}?ref=${sha}`, undefined, true)
+  return data && Buffer.from(data.content, 'base64').toString('utf8')
+}
+
+/** Checks the files that the post_update commands changed in the commit of the pull request. */
+async function checkGenerated(pr: Pull) {
+  const sha = pr.head.sha
+  const probe = (await readFile(sha, 'probe.txt'))?.trimEnd()
+  console.log(`#${pr.number}: probe.txt\n${probe}`)
+  check(probe === PROBE, `#${pr.number}: the commands reach neither the tokens, the network nor the credentials`)
+  check((await readFile(sha, 'network-on.txt')) === 'ok\n', `#${pr.number}: a command with network: true reaches GitHub`)
+  const versions = (await readFile(sha, 'lib/versions.g.dart')) ?? ''
+  const meta = parseMeta(pr.body ?? '')!
+  check(
+    Object.entries(meta.packages).every(([name, [, to]]) => versions.includes(`'${name}': '${to}',`)),
+    `#${pr.number}: lib/versions.g.dart has the versions of the pull request`,
+  )
+  const { tree } = (await api<{ tree: { path: string; mode: string }[] }>('GET', `/git/trees/${sha}?recursive=1`))!
+  const mode = (file: string) => tree.find((e) => e.path === file)?.mode
+  check(mode('run.sh') === '100755', `#${pr.number}: run.sh is executable`)
+  check(mode('passwd-link') === '120000', `#${pr.number}: passwd-link is a link`)
+  check(mode('blob.bin') === '100644', `#${pr.number}: blob.bin (binary) is committed`)
+  check(mode('obsolete.g.dart') === undefined, `#${pr.number}: obsolete.g.dart is deleted`)
+  check(!tree.some((e) => e.path.startsWith('build/')), `#${pr.number}: ignored files are not committed`)
+  check((pr.body ?? '').includes('Files changed by the `post_update` commands: 7'), `#${pr.number}: the body counts the files`)
 }
 
 async function single(): Promise<Pull> {
@@ -143,8 +185,9 @@ function git(...args: string[]): number {
 
 /** Writes the test project, and pushes it to main when it changed. */
 async function updateProject() {
-  writeProject('.', await makeProject())
-  if (git('add', 'pubspec.yaml', 'pubspec.lock', '.github/pubreform.yaml') !== 0) throw new Error('git add failed')
+  const project = await makeProject({ postUpdate: true })
+  writeProject('.', project)
+  if (git('add', ...Object.keys(project)) !== 0) throw new Error('git add failed')
   if (git('diff', '--cached', '--quiet') === 0) {
     console.log('The test project is up to date.')
     return
@@ -166,6 +209,8 @@ async function runPubreform(upstream: string) {
 }
 
 if (!TOKEN || !REPO) throw new Error('GH_TOKEN and GITHUB_REPOSITORY are required')
+// The probe looks for ACTIONS_RUNTIME_TOKEN, which a run step may not have at all.
+console.log(`ACTIONS_RUNTIME_TOKEN is ${process.env.ACTIONS_RUNTIME_TOKEN ? 'set' : 'not set'} in this step`)
 let step = ''
 const registry = await startFixtureServer()
 try {
