@@ -17,7 +17,7 @@ pub の依存を更新する PR を作成・保守する GitHub Action。TypeScr
 - 結合テスト: `PUBREFORM_IT=1 bun test test/integration.test.ts`。pub.dev への接続と、PATH 上の `dart`（Dart 3 の stable）と `fvm`（Flutter 3.47.7 を入れられること）が必要
 - ローカル E2E: `bun run build && PUBREFORM_E2E=1 bun test test/e2e`。PATH 上の `dart`（Dart 3 の stable）が必要。外部には接続しない（フィクスチャー用サーバー、偽の GitHub API、bare リポジトリを使う。詳細 §17.1）
 - GitHub E2E: `chika3742/pubreform-e2e` の E2E ワークフローを `workflow_dispatch` で実行する（入力 `ref` に pubreform のブランチ。詳細 §17.2）
-- `dist/` はコミットしない。`v*` タグを push すると `.github/workflows/build.yml` が生成してコミットし、タグとメジャータグを付け直す
+- `dist/` はコミットしない。`v*` タグを main の先頭のコミットに付けて push すると、`.github/workflows/build.yml` が CI と同じ検査を通してから生成してコミットし、タグとメジャータグを付け直す（詳細 §18）
 
 ## 開発環境（クラウドのセッション）
 
