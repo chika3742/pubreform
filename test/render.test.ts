@@ -6,6 +6,7 @@ import type { UnitResult } from '../src/applier.ts'
 import {
   branchName,
   closeComment,
+  closeFence,
   commitMessage,
   contentChangedComment,
   errorComment,
@@ -215,7 +216,8 @@ ${renderMeta(meta)}
       meta,
       new Map([['http', { changelog: `## 2.0.0\n\n${fake}\n`, source: `https://example.com\n${fake}` }]]),
     )
-    expect(body).toContain(`\n${fake}\n`)
+    // The copy in the source URL is kept as is; the one in the changelog has its comment shown as text.
+    expect(body).toContain(`\n${fake})`)
     expect(isRebaseChecked(body)).toBe(false)
     expect(isRebaseChecked(body.replace('- [ ] Rebase', '- [x] Rebase'))).toBe(true)
   })
@@ -228,6 +230,12 @@ ${renderMeta(meta)}
     expect(changelog).toEndWith('…\n\n[Full changelog](https://pub.dev/packages/http/changelog)')
     expect(body).toContain('## 2.13.1\n\n- x\n')
     expect(body.length).toBeLessThan(65_000)
+  })
+  test('closes a code block that truncation cuts', () => {
+    const long = `## 2.0.0\n\n\`\`\`dart\n${'final x = 1;\n'.repeat(5000)}\`\`\`\n`
+    const body = renderBody(single, meta, new Map([['http', { changelog: long }]]))
+    expect(body).toContain('final x = 1;\n```\n…\n\n[Full changelog](https://pub.dev/packages/http/changelog)')
+    expect(body.split('\n').filter((l) => l.startsWith('```')).length % 2).toBe(0)
   })
   test('drops all changelogs when the body exceeds 65,000 characters', () => {
     const many: UnitResult = {
@@ -309,6 +317,22 @@ describe('comments', () => {
   })
 })
 
+describe('closeFence', () => {
+  test('closes an open block with its own fence', () => {
+    expect(closeFence('a\n```dart\nb')).toBe('a\n```dart\nb\n```')
+    expect(closeFence('~~~~\n```\nb')).toBe('~~~~\n```\nb\n~~~~')
+    // A shorter fence, or one followed by text, does not close the block.
+    expect(closeFence('````\n```\n```` x')).toBe('````\n```\n```` x\n````')
+    // In a list item, with the indentation of the opening fence.
+    expect(closeFence('- a:\n  ```dart\n  b')).toBe('- a:\n  ```dart\n  b\n  ```')
+  })
+  test('keeps closed blocks and text without fences', () => {
+    for (const text of ['a\n```\nb\n```', '```\nb\n`````', '  ~~~\nb\n~~~', 'a `b` c', '    ```\nindented', '```foo``` is now bar']) {
+      expect(closeFence(text)).toBe(text)
+    }
+  })
+})
+
 describe('withoutBacklinks', () => {
   const z = '\u200b'
   test('points issue, pull request and discussion links at redirect.github.com', () => {
@@ -344,6 +368,9 @@ describe('withoutBacklinks', () => {
     expect(withoutBacklinks('`@a #1 o/r#2` ```\n@b #3\n``` [#4 by @c](https://github.com/o/r/pull/4)', 'https://github.com/o/r')).toBe(
       `\`@a #1 o/r#2\` \`\`\`\n@b #3\n\`\`\` [#4 by @${z}c](https://redirect.github.com/o/r/pull/4)`,
     )
+  })
+  test('shows HTML comments as text, except in code', () => {
+    expect(withoutBacklinks('a <!-- b\n`<!-- c -->`')).toBe('a &lt;!-- b\n`<!-- c -->`')
   })
   test('keeps headings and HTML entities', () => {
     const text = '## 1.2.0\n\n&#123; ##4'

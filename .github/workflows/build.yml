@@ -10,20 +10,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
+      # The build output is committed on top of main, so the tag must point at the head of main.
+      - name: Check that the tag is at the head of main
+        run: |
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+            echo "::error::$TAG is not at the head of main"
+            exit 1
+          fi
+        env:
+          TAG: ${{ github.ref_name }}
+
       - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
       - name: Run build
         run: |
@@ -39,13 +55,17 @@ jobs:
 
           git add .
 
-          # Commit and push only when the build output changed.
+          # Commit only when the build output changed.
           if ! git diff-index --quiet HEAD; then
             git commit -m "chore: update build outputs [skip ci]"
-            git tag ${{ github.ref_name }} --force
-            git tag $(echo "${{ github.ref_name }}" | cut -d '.' -f 1) --force
             git push origin HEAD:main
-            git push --force --tags
           else
             echo "No changes to commit."
           fi
+
+          # Move the tags even without changes, so that the major tag gets every release.
+          git tag "$TAG" --force
+          git tag "$(echo "$TAG" | cut -d '.' -f 1)" --force
+          git push --force --tags
+        env:
+          TAG: ${{ github.ref_name }}
