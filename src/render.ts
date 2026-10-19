@@ -266,7 +266,10 @@ export function metaOf(
   return meta
 }
 
-export function renderBody(result: UnitResult, meta: Meta, infos: Map<string, PackageInfo>): string {
+/**
+ * `generated` is the number of files that the post_update commands changed.
+ */
+export function renderBody(result: UnitResult, meta: Meta, infos: Map<string, PackageInfo>, generated = 0): string {
   const changes = sortedChanges(result.changes)
   const build = (withChangelog: boolean) => {
     const budget = Math.floor(CHANGELOG_BUDGET / changes.length)
@@ -282,6 +285,7 @@ export function renderBody(result: UnitResult, meta: Meta, infos: Map<string, Pa
     return [
       'Updates the following packages.',
       changeTable(result.changes, true),
+      ...(generated > 0 ? [`Files changed by the \`post_update\` commands: ${generated}`] : []),
       ...sections,
       '---',
       REBASE_LINE,

@@ -1,5 +1,6 @@
 // Matching planned units with existing pull requests and deciding operations.
 import type { UnitResult } from './applier.ts'
+import type { TreeEntry } from './generate.ts'
 import type { Plan, Unit } from './planner.ts'
 import type { GitHub } from './github.ts'
 import {
@@ -229,6 +230,8 @@ export interface ExecuteContext {
   log: (message: string) => void
   /** Logs an operation on a pull request. */
   info: (message: string) => void
+  /** Runs the post_update commands on a unit to be committed, and returns the files that they changed. */
+  generate?: (result: UnitResult) => Promise<TreeEntry[]>
 }
 
 function errorText(e: unknown): string {
@@ -280,17 +283,22 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
     outcomes.push({ ...outcome, action: 'error', error: error + comment })
   }
 
-  const commit = (result: UnitResult) =>
-    github.createCommit({
+  /** Commits the unit, with the files that the post_update commands changed. */
+  const commit = async (result: UnitResult) => {
+    const generated = ctx.generate ? await ctx.generate(result) : []
+    const sha = await github.createCommit({
       baseSha: ctx.baseSha,
       baseTree: ctx.baseTree,
       files: result.files,
+      generated,
       message: commitMessage(result),
     })
+    return { sha, generated: generated.length }
+  }
 
-  const body = (result: UnitResult, sha: string, previous?: string) => {
+  const body = (result: UnitResult, sha: string, generated: number, previous?: string) => {
     const infos = new Map(Object.entries(result.changes).map(([name, c]) => [name, ctx.packageInfo(name, c.to)]))
-    return renderBody(result, metaOf(result, ctx.hashes, sha, previous), infos)
+    return renderBody(result, metaOf(result, ctx.hashes, sha, previous), infos, generated)
   }
 
   // close runs last, so that the pull request that supersedes it has a number.
@@ -302,9 +310,14 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
         let pr: number | undefined
         ctx.info(`Create a pull request (${base.kind}: ${base.packages.join(', ')}) on ${op.branch}`)
         try {
-          const sha = await commit(op.result)
+          const { sha, generated } = await commit(op.result)
           await github.createBranch(op.branch, sha)
-          pr = await github.createPr({ base: ctx.base, branch: op.branch, title: title(op.result), body: body(op.result, sha) })
+          pr = await github.createPr({
+            base: ctx.base,
+            branch: op.branch,
+            title: title(op.result),
+            body: body(op.result, sha, generated),
+          })
           numbers.set(op.branch, pr)
           ctx.info(`Created #${pr}`)
           await github.addLabels(pr, await labels())
@@ -320,9 +333,9 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
         numbers.set(pr.branch, pr.number)
         ctx.info(`Regenerate #${pr.number} (${base.packages.join(', ')})`)
         try {
-          const sha = await commit(result)
+          const { sha, generated } = await commit(result)
           // The body goes first, so that the next run can tell a partial failure from manual commits.
-          await github.updatePr(pr.number, { title: title(result), body: body(result, sha, pr.headSha) })
+          await github.updatePr(pr.number, { title: title(result), body: body(result, sha, generated, pr.headSha) })
           await github.updateBranch(pr.branch, pr.headSha, sha)
           await github.addLabels(pr.number, await labels())
           if (op.contentChanged && pr.meta) {

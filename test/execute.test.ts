@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { UnitResult } from '../src/applier.ts'
+import type { TreeEntry } from '../src/generate.ts'
 import type { Comment } from '../src/github.ts'
 import { type ExecuteContext, type Op, type PrState, execute } from '../src/reconciler.ts'
 import { errorComment, parseMeta, renderMeta } from '../src/render.ts'
@@ -36,7 +37,7 @@ function fakeGitHub(options: { fail?: string; comments?: Comment[]; heads?: Reco
   }
   const github: ExecuteContext['github'] = {
     async createCommit(o) {
-      record('createCommit', o.message.split('\n')[0])
+      record('createCommit', o.message.split('\n')[0], ...(o.generated?.length ? [o.generated] : []))
       return 'newsha'
     },
     async createBranch(branch, sha) {
@@ -203,5 +204,82 @@ describe('execute', () => {
     expect(outcomes).toEqual([
       { kind: 'single', packages: ['http'], pr: undefined, action: 'error', error: 'createBranch failed' },
     ])
+  })
+
+  describe('post_update', () => {
+    const generated: TreeEntry[] = [
+      { path: 'lib/a.g.dart', mode: '100644', content: 'a' },
+      { path: 'old.g.dart', deleted: true },
+    ]
+    const withGenerate = (github: ExecuteContext['github'], generate: ExecuteContext['generate']) => ({
+      ...context(github),
+      generate,
+    })
+
+    test('runs before the commit of a create and a regenerate, and the body counts the files', async () => {
+      const { github, calls } = fakeGitHub({ heads: { 'pubreform/single/http': 'head' } })
+      const bodies: string[] = []
+      github.createPr = async (o) => {
+        calls.push('createPr')
+        bodies.push(o.body)
+        return 100
+      }
+      github.updatePr = async (_n, o) => {
+        calls.push('updatePr')
+        bodies.push(o.body)
+      }
+      const generate = async (result: UnitResult) => {
+        calls.push(`generate ${Object.keys(result.changes).join(',')}`)
+        return generated
+      }
+      const pr = prOf(3, 'pubreform/single/http')
+      const ops: Op[] = [
+        { op: 'create', result: group, branch: 'pubreform/group/a' },
+        { op: 'regenerate', pr, result: http, contentChanged: false },
+        { op: 'none', pr: prOf(4, 'pubreform/minor-and-patch') },
+      ]
+      await execute(ops, withGenerate(github, generate))
+      expect(calls.filter((c) => /^(generate|createCommit)/.test(c))).toEqual([
+        'generate a,b',
+        `createCommit Update a to 2.0.0, b to 2.0.0 ${JSON.stringify(generated)}`,
+        'generate http',
+        `createCommit Update http from 1.5.0 to 2.0.0 ${JSON.stringify(generated)}`,
+      ])
+      for (const body of bodies) {
+        expect(body).toContain('|\n\nFiles changed by the `post_update` commands: 2\n\n')
+      }
+    })
+
+    test('no line in the body when nothing changed', async () => {
+      const { github } = fakeGitHub()
+      let body = ''
+      github.createPr = async (o) => {
+        body = o.body
+        return 100
+      }
+      await execute([{ op: 'create', result: http, branch: 'pubreform/single/http' }], withGenerate(github, async () => []))
+      expect(body).not.toContain('post_update')
+    })
+
+    test('a failure is an error of the unit: no pull request, or the pull request is left as it is', async () => {
+      const { github, calls } = fakeGitHub()
+      const generate = async () => {
+        throw new Error('post_update command failed with exit code 1: dart run build_runner build\nboom')
+      }
+      const pr = prOf(3, 'pubreform/single/http')
+      const outcomes = await execute(
+        [
+          { op: 'create', result: group, branch: 'pubreform/group/a' },
+          { op: 'regenerate', pr, result: http, contentChanged: true },
+        ],
+        withGenerate(github, generate),
+      )
+      expect(calls).toEqual(['comments 3', 'comment 3 pubreform failed to update this PR.'])
+      expect(outcomes.map((o) => [o.action, o.pr])).toEqual([
+        ['error', undefined],
+        ['error', 3],
+      ])
+      expect(outcomes[1]!.error).toContain('dart run build_runner build\nboom')
+    })
   })
 })

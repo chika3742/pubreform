@@ -77,9 +77,14 @@ export class Pub {
   }
 }
 
+/** The pub cache that pub uses, also when PUB_CACHE is not set. */
+export function pubCacheDir(env = process.env): string {
+  return env.PUB_CACHE || path.join(os.homedir(), '.pub-cache')
+}
+
 /** Where pub extracts a package fetched through the proxy. */
 export function cachedPackageDir(hostedUrl: string, name: string, version: string, env = process.env): string {
-  const cache = env.PUB_CACHE || path.join(os.homedir(), '.pub-cache')
+  const cache = pubCacheDir(env)
   const host = new URL(hostedUrl)
   // pub escapes ':' in the host directory name as %58.
   const hostDir = host.port ? `${host.hostname === '127.0.0.1' ? 'localhost' : host.hostname}%58${host.port}` : host.hostname

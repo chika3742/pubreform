@@ -68,7 +68,7 @@ export class FakeGitHub {
 
   // ---- git ----
 
-  git(args: string[], opts: { input?: string; env?: Record<string, string> } = {}): string {
+  git(args: string[], opts: { input?: string | Buffer; env?: Record<string, string> } = {}): string {
     return execFileSync('git', args, {
       cwd: this.repoDir,
       input: opts.input,
@@ -87,13 +87,25 @@ export class FakeGitHub {
 
   /** Writes a tree from `baseTree` with the files replaced. */
   writeTree(baseTree: string, files: Record<string, string>): string {
+    return this.writeTreeEntries(
+      baseTree,
+      Object.entries(files).map(([file, content]) => ({ path: file, mode: '100644', content })),
+    )
+  }
+
+  /** Writes a tree from `baseTree` with entries of POST /git/trees: `content`, a blob `sha`, or `sha: null` to delete. */
+  writeTreeEntries(baseTree: string, entries: { path: string; mode: string; content?: string; sha?: string | null }[]): string {
     const index = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fake-github-index-')), 'index')
     const env = { GIT_INDEX_FILE: index }
     try {
       this.git(['read-tree', baseTree], { env })
-      for (const [file, content] of Object.entries(files)) {
-        const blob = this.git(['hash-object', '-w', '--stdin'], { input: content })
-        this.git(['update-index', '--add', '--cacheinfo', `100644,${blob},${file}`], { env })
+      for (const entry of entries) {
+        if (entry.sha === null) {
+          this.git(['update-index', '--index-info'], { env, input: `0 ${'0'.repeat(40)}\t${entry.path}\n` })
+          continue
+        }
+        const blob = entry.sha ?? this.git(['hash-object', '-w', '--stdin'], { input: entry.content ?? '' })
+        this.git(['update-index', '--add', '--cacheinfo', `${entry.mode},${blob},${entry.path}`], { env })
       }
       return this.git(['write-tree'], { env })
     } finally {
@@ -303,9 +315,12 @@ export class FakeGitHub {
       return ok(this.prJson(pr))
     }
 
+    if (p === '/git/blobs' && method === 'POST') {
+      if (body.encoding !== 'base64') throw new HttpError(422, 'only base64 is implemented')
+      return ok({ sha: this.git(['hash-object', '-w', '--stdin'], { input: Buffer.from(body.content, 'base64') }) }, 201)
+    }
     if (p === '/git/trees' && method === 'POST') {
-      const files = Object.fromEntries((body.tree as { path: string; content: string }[]).map((e) => [e.path, e.content]))
-      return ok({ sha: this.writeTree(body.base_tree, files) }, 201)
+      return ok({ sha: this.writeTreeEntries(body.base_tree, body.tree) }, 201)
     }
     if (p === '/git/commits' && method === 'POST') {
       return ok({ sha: this.commitTree(body.tree, body.parents, body.message) }, 201)

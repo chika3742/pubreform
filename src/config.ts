@@ -12,12 +12,20 @@ export interface IgnoreRule {
   versions?: string
 }
 
+export interface PostUpdate {
+  run: string
+  network: boolean
+  /** Names of more environment variables to pass. */
+  env: string[]
+}
+
 export interface Config {
   schedule: { cron: string; timezone: string }
   min_release_age_days: number
   labels: string[]
   versioning: Versioning
   ignore: IgnoreRule[]
+  post_update: PostUpdate[]
 }
 
 export class ConfigError extends Error {
@@ -29,6 +37,9 @@ const PACKAGE_NAME = /^[a-z_][a-z0-9_]*$/
 // The strict form of pubreform.schema.json: comparisons separated by whitespace, no whitespace after operators.
 const COMPARISON = String.raw`(\^|>=|>|<=|<)?\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?`
 const STRICT_CONSTRAINT = new RegExp(String.raw`^(any|${COMPARISON}(\s+${COMPARISON})*)$`)
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
+// The inputs of pubreform (the App token) and the tokens of the runner.
+const RESERVED_ENV = /^(INPUT_|ACTIONS_)/
 
 type Obj = Record<string, unknown>
 
@@ -111,10 +122,50 @@ function parseIgnore(v: unknown): IgnoreRule[] {
   })
 }
 
+function parsePostUpdate(v: unknown): PostUpdate[] {
+  if (!Array.isArray(v)) fail('post_update', 'must be a list')
+  return v.map((item, i) => {
+    const path = `post_update[${i}]`
+    if (!isObject(item)) fail(path, 'must be a map')
+    checkKeys(item, path, ['run', 'network', 'env'])
+    if (item.run === undefined) fail(`${path}.run`, 'is required')
+    const run = requireString(item.run, `${path}.run`)
+    if (run === '') fail(`${path}.run`, 'must not be empty')
+    let network = false
+    if (item.network !== undefined) {
+      if (typeof item.network !== 'boolean') fail(`${path}.network`, 'must be true or false')
+      network = item.network
+    }
+    let env: string[] = []
+    if (item.env !== undefined) {
+      if (!Array.isArray(item.env)) fail(`${path}.env`, 'must be a list')
+      env = item.env.map((name, j) => {
+        const p = `${path}.env[${j}]`
+        const s = requireString(name, p)
+        if (!ENV_NAME.test(s)) fail(p, `invalid environment variable name "${s}"`)
+        if (RESERVED_ENV.test(s)) fail(p, `"${s}" must not be passed: names starting with INPUT_ or ACTIONS_ are reserved`)
+        return s
+      })
+      env.forEach((name, j) => {
+        if (env.indexOf(name) !== j) fail(`${path}.env[${j}]`, `duplicate name "${name}"`)
+      })
+    }
+    return { run, network, env }
+  })
+}
+
 /** Validates a parsed config and fills in defaults. Throws ConfigError. */
 export function validateConfig(raw: unknown): Config {
   if (!isObject(raw)) fail('', 'the config must be a map')
-  checkKeys(raw, '', ['$schema', 'schedule', 'min_release_age_days', 'labels', 'versioning', 'ignore'])
+  checkKeys(raw, '', [
+    '$schema',
+    'schedule',
+    'min_release_age_days',
+    'labels',
+    'versioning',
+    'ignore',
+    'post_update',
+  ])
   if (raw.$schema !== undefined) requireString(raw.$schema, '$schema')
   if (raw.schedule === undefined) fail('schedule', 'is required')
   const schedule = parseSchedule(raw.schedule)
@@ -142,6 +193,7 @@ export function validateConfig(raw: unknown): Config {
     labels: raw.labels === undefined ? [] : parseLabels(raw.labels),
     versioning,
     ignore: raw.ignore === undefined ? [] : parseIgnore(raw.ignore),
+    post_update: raw.post_update === undefined ? [] : parsePostUpdate(raw.post_update),
   }
 }
 

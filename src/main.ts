@@ -7,6 +7,7 @@ import * as exec from '@actions/exec'
 import { type UnitResult, applyUnit } from './applier.ts'
 import { type Window, computeWindow, firstSlotShowing } from './clock.ts'
 import { type Config, configHash, parseConfig } from './config.ts'
+import { Generator, checkEnvironment } from './generate.ts'
 import { GitHub } from './github.ts'
 import { type Plan, plan } from './planner.ts'
 import { RegistryProxy } from './proxy.ts'
@@ -154,6 +155,13 @@ export async function run(): Promise<void> {
   }
   const fvmrc = await readOptional(path.join(dir, '.fvmrc'))
   if (hasWorkspace(files.pubspec)) throw new Error('pub workspaces are not supported')
+  const postUpdate = config.post_update.length > 0
+  if (postUpdate) {
+    if (isFlutter(files.pubspec)) {
+      throw new Error('post_update is not supported for Flutter projects yet: the flutter command writes to the Flutter SDK')
+    }
+    await checkEnvironment()
+  }
   const hashes = { baseHash: baseHash({ ...files, fvmrc }), configHash: configHash(config) }
 
   const window = computeWindow(config.schedule, config.min_release_age_days, new Date())
@@ -212,7 +220,18 @@ export async function run(): Promise<void> {
   const openPrs = await github.openPrs(base)
   const closedPrs = await github.closedPrs(base)
   const ops = decide(results, unitErrors, thePlan, openPrs, closedPrs, hashes)
-  const outcomes = await core.group('Pull requests', () =>
+  const generator = postUpdate
+    ? new Generator({
+        baseDir: dir,
+        commands: config.post_update,
+        flutter: isFlutter(files.pubspec),
+        fvm: fvmrc !== undefined,
+        hostedUrl: proxy.url,
+      })
+    : undefined
+  // The post_update commands have their own groups, and groups are not nested.
+  const inGroup = <T>(f: () => Promise<T>) => (generator ? f() : core.group('Pull requests', f))
+  const outcomes = await inGroup(() =>
     execute(ops, {
       github,
       base,
@@ -224,6 +243,7 @@ export async function run(): Promise<void> {
       formatLog: format,
       log: (m) => core.error(m),
       info: (m) => core.info(m),
+      generate: generator && ((result) => generator.generate(result)),
     }),
   )
 
