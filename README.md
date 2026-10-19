@@ -2,9 +2,7 @@
 
 A GitHub Action that opens pull requests to update the pub dependencies of a Dart or Flutter project.
 
-pub itself chooses the versions, so each pull request contains only versions that resolve together. New releases are used only after they have been out for a few days.
-
-## What you get
+## What it does
 
 Each run compares the dependencies in `pubspec.yaml` with pub.dev and keeps these pull requests open:
 
@@ -99,8 +97,6 @@ The workflow decides when the action runs. This one runs it every Monday, after 
 | `post_update[].run` | (required) | The command, run with `sh -c` at the repository root |
 | `post_update[].network` | `false` | Whether the command can use the network |
 | `post_update[].env` | `[]` | Names of more environment variables to pass, with their values from the workflow. Names starting with `INPUT_` or `ACTIONS_` are not allowed. The values can reach the pull request, through files the command writes or through the output in an error comment, so take care with secrets |
-
-The `# $schema:` line enables completion and validation in IntelliJ IDEA and in VS Code with the YAML extension.
 
 The action has two inputs: `token` (required), and `config`, the path to the config file on the default branch (default `.github/pubreform.yaml`).
 
