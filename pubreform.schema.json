@@ -71,6 +71,39 @@
           }
         }
       }
+    },
+    "post_update": {
+      "description": "Commands run, in order, before each pull request is created or regenerated. Files they change are committed with the update. Linux runners only.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["run"],
+        "properties": {
+          "run": {
+            "description": "Command run with `sh -c` in a Docker container, in a copy of the repository without `.git`.",
+            "type": "string",
+            "minLength": 1,
+            "examples": ["dart run build_runner build"]
+          },
+          "network": {
+            "description": "Whether the command can use the network.",
+            "type": "boolean",
+            "default": false
+          },
+          "env": {
+            "description": "Names of more environment variables to pass to the command, with their values in the workflow. Names starting with `INPUT_` or `ACTIONS_` are not allowed.",
+            "type": "array",
+            "default": [],
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^(?!INPUT_|ACTIONS_)[A-Za-z_][A-Za-z0-9_]*$"
+            }
+          }
+        }
+      }
     }
   }
 }

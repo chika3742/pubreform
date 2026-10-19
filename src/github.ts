@@ -1,10 +1,12 @@
 // GitHub API operations.
 import { getOctokit } from '@actions/github'
+import type { TreeEntry } from './generate.ts'
 import type { PubFiles } from './pub.ts'
 import { BRANCH_PREFIX, parseMeta } from './render.ts'
 import type { PrState } from './reconciler.ts'
 
 type Octokit = ReturnType<typeof getOctokit>
+type TreeItem = NonNullable<Parameters<Octokit['rest']['git']['createTree']>[0]>['tree'][number]
 
 export interface Comment {
   body: string
@@ -94,20 +96,33 @@ export class GitHub {
     return data.filter((p) => p.merged_at === null && this.isOurs(p)).map((p) => this.toState(p))
   }
 
-  /** Creates a commit with the two files on top of the base commit. */
-  async createCommit(opts: { baseSha: string; baseTree: string; files: PubFiles; message: string }): Promise<string> {
-    const { data: tree } = await this.octokit.rest.git.createTree({
-      ...this.r,
-      base_tree: opts.baseTree,
-      tree: [
-        { path: 'pubspec.yaml', mode: '100644', type: 'blob', content: opts.files.pubspec },
-        { path: 'pubspec.lock', mode: '100644', type: 'blob', content: opts.files.lock },
-      ],
-    })
+  /** Creates a commit with the two files, and the files changed by the post_update commands, on top of the base commit. */
+  async createCommit(opts: {
+    baseSha: string
+    baseTree: string
+    files: PubFiles
+    generated?: TreeEntry[]
+    message: string
+  }): Promise<string> {
+    const tree: TreeItem[] = [
+      { path: 'pubspec.yaml', mode: '100644', type: 'blob', content: opts.files.pubspec },
+      { path: 'pubspec.lock', mode: '100644', type: 'blob', content: opts.files.lock },
+    ]
+    for (const entry of opts.generated ?? []) {
+      if ('deleted' in entry) {
+        tree.push({ path: entry.path, mode: '100644', type: 'blob', sha: null })
+      } else if ('base64' in entry) {
+        const { data: blob } = await this.octokit.rest.git.createBlob({ ...this.r, content: entry.base64, encoding: 'base64' })
+        tree.push({ path: entry.path, mode: entry.mode, type: 'blob', sha: blob.sha })
+      } else {
+        tree.push({ path: entry.path, mode: entry.mode, type: 'blob', content: entry.content })
+      }
+    }
+    const { data: created } = await this.octokit.rest.git.createTree({ ...this.r, base_tree: opts.baseTree, tree })
     const { data: commit } = await this.octokit.rest.git.createCommit({
       ...this.r,
       message: opts.message,
-      tree: tree.sha,
+      tree: created.sha,
       parents: [opts.baseSha],
     })
     return commit.sha

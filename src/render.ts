@@ -266,7 +266,10 @@ export function metaOf(
   return meta
 }
 
-export function renderBody(result: UnitResult, meta: Meta, infos: Map<string, PackageInfo>): string {
+/**
+ * `generated` is the number of files that the post_update commands changed.
+ */
+export function renderBody(result: UnitResult, meta: Meta, infos: Map<string, PackageInfo>, generated = 0): string {
   const changes = sortedChanges(result.changes)
   const build = (withChangelog: boolean) => {
     const budget = Math.floor(CHANGELOG_BUDGET / changes.length)
@@ -282,6 +285,7 @@ export function renderBody(result: UnitResult, meta: Meta, infos: Map<string, Pa
     return [
       'Updates the following packages.',
       changeTable(result.changes, true),
+      ...(generated > 0 ? [`Files changed by the \`post_update\` commands: ${generated}`] : []),
       ...sections,
       '---',
       REBASE_LINE,
@@ -334,7 +338,8 @@ export function errorHashOf(comment: string): string | undefined {
   return ERROR_MARKER.exec(comment)?.[1]
 }
 
-export function errorComment(log: string): string {
+/** `hash` defaults to the hash of the log. */
+export function errorComment(log: string, hash = errorHash(log)): string {
   // A fence longer than any backtick run in the log.
   const longest = Math.max(0, ...[...log.matchAll(/`+/g)].map((m) => m[0].length))
   const fence = '`'.repeat(Math.max(3, longest + 1))
@@ -349,7 +354,7 @@ export function errorComment(log: string): string {
     fence,
     '',
     '</details>',
-    `<!-- pubreform:error ${errorHash(log)} -->`,
+    `<!-- pubreform:error ${hash} -->`,
   ].join('\n')
 }
 
