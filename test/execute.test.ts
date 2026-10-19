@@ -78,7 +78,7 @@ function fakeGitHub(options: { fail?: string; comments?: Comment[]; heads?: Reco
   return { github, calls, comments }
 }
 
-function context(github: ExecuteContext["github"]): ExecuteContext {
+function context(github: ExecuteContext["github"], infos: string[] = []): ExecuteContext {
   return {
     github,
     base: 'main',
@@ -89,6 +89,7 @@ function context(github: ExecuteContext["github"]): ExecuteContext {
     packageInfo: () => ({}),
     formatLog: (log) => log.replaceAll('secret', '***'),
     log: () => {},
+    info: (m) => infos.push(m),
   }
 }
 
@@ -105,7 +106,13 @@ describe('execute', () => {
       },
       { op: 'create', result: group, branch: 'pubreform/group/a' },
     ]
-    const outcomes = await execute(ops, context(github))
+    const infos: string[] = []
+    const outcomes = await execute(ops, context(github, infos))
+    expect(infos).toEqual([
+      'Create a pull request (group: a, b) on pubreform/group/a',
+      'Created #100',
+      'Close #7 (superseded by #100)',
+    ])
     expect(calls).toEqual([
       'createCommit Update a to 2.0.0, b to 2.0.0',
       'createBranch pubreform/group/a newsha',

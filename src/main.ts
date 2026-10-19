@@ -212,17 +212,20 @@ export async function run(): Promise<void> {
   const openPrs = await github.openPrs(base)
   const closedPrs = await github.closedPrs(base)
   const ops = decide(results, unitErrors, thePlan, openPrs, closedPrs, hashes)
-  const outcomes = await execute(ops, {
-    github,
-    base,
-    baseSha,
-    baseTree,
-    hashes,
-    labels: config.labels,
-    packageInfo: (name, version) => readPackageInfo(cachedPackageDir(proxy.url, name, version)),
-    formatLog: format,
-    log: (m) => core.error(m),
-  })
+  const outcomes = await core.group('Pull requests', () =>
+    execute(ops, {
+      github,
+      base,
+      baseSha,
+      baseTree,
+      hashes,
+      labels: config.labels,
+      packageInfo: (name, version) => readPackageInfo(cachedPackageDir(proxy.url, name, version)),
+      formatLog: format,
+      log: (m) => core.error(m),
+      info: (m) => core.info(m),
+    }),
+  )
 
   await writeSummary({
     window,
