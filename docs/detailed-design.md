@@ -1,6 +1,6 @@
 # pubreform 詳細設計
 
-> ステータス: 実装済み（2026-10-18。v1 は未リリース）。ローカル E2E と GitHub E2E で確かめた（§17）。更新後のコマンド（§19）は 2026-10-19 に実装し、ローカル E2E で確かめた（GitHub E2E は未実行）。挙動を変えるときは、先にこの設計書を直す。[基本設計](design.md)を前提に、実装に必要な決定を書く。節番号の「基本 §n」は基本設計の節を指す。
+> ステータス: 実装済み（2026-10-18。v1 は未リリース）。ローカル E2E と GitHub E2E で確かめた（§17）。更新後のコマンド（§19）は 2026-10-19 に Docker のコンテナで実行する方式で実装し、ローカル E2E で確かめた（GitHub E2E は未実行）。挙動を変えるときは、先にこの設計書を直す。[基本設計](design.md)を前提に、実装に必要な決定を書く。節番号の「基本 §n」は基本設計の節を指す。
 
 ## 1. 技術スタック
 
@@ -575,7 +575,7 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 
 | 種類 | 対象 | 方法 |
 |---|---|---|
-| 単体 | version、clock、config、changelog の抜き出し、render（メタデータの往復、本文の長さの上限）、reconciler の `decide` と `execute`（`generate` を呼ぶのが `create` と `regenerate` だけであること、失敗の扱い）、planner（`closure` と併合）、generate（`git status -z` の解釈、tree の項目への変換、渡す環境変数、`sudo` の引数） | `bun test`。planner は偽の `resolve` を渡す。ネットワークは使わない |
+| 単体 | version、clock、config、changelog の抜き出し、render（メタデータの往復、本文の長さの上限）、reconciler の `decide` と `execute`（`generate` を呼ぶのが `create` と `regenerate` だけであること、失敗の扱い）、planner（`closure` と併合）、generate（`git status -z` の解釈、tree の項目への変換、渡す環境変数、`docker run` の引数） | `bun test`。planner は偽の `resolve` を渡す。ネットワークは使わない |
 | 結合 | 中継サーバーと pub | プロトタイプの検証（基本 §4.2）を `bun test` に移す。pub.dev へのネットワークと Dart / fvm が必要なので、環境変数 `PUBREFORM_IT=1` のときだけ動かす |
 | 設定のスキーマ | `pubreform.schema.json` と config.ts | 同じ設定例を両方で判定し、結果が一致することを確かめる（§4.2） |
 | ローカル E2E | Action 全体（ビルドした `dist/main.js`） | フィクスチャー用サーバー、偽の GitHub API、bare リポジトリで、場面ごとに動かす（§17.1） |
@@ -630,14 +630,16 @@ pubreform 自身の CI では、main への push と pull request のたびに�
 | コマンド | 内容 |
 |---|---|
 | `dart run tool/gen.dart` | lockfile のバージョンを `lib/versions.g.dart` に書く（ネットワークなしで `dart run` が動き、PR ごとの内容になることを見る） |
-| `sh tool/probe.sh` | 読めてはいけないものを試し、結果を `probe.txt` に書く: `INPUT_TOKEN` の値、読める `/proc/*/environ` に `INPUT_TOKEN`・`ACTIONS_RUNTIME_TOKEN`・`GH_TOKEN` があるか、pubreform のプロセスの `/proc/<pid>/environ`、GitHub の API への接続、`.git` があるか、ベースの clone の `.git/config`・pub のキャッシュ・SDK に書き込めるか、`GITHUB_WORKSPACE/.git` と `RUNNER_TEMP` の下に認証情報（`authorization` を含むファイル）があるか。あわせて、バイナリのファイル、実行権限のあるファイル、リンク、追跡しているファイルの削除、`.gitignore` で除外したファイル、`pubspec.yaml` の変更を作り、`sleep` を後ろに残す |
+| `sh tool/probe.sh` | できてはいけないことを試し、結果を `probe.txt` に書く: `INPUT_TOKEN` の値、読める `/proc/*/environ` に `INPUT_TOKEN`・`ACTIONS_RUNTIME_TOKEN`・`GH_TOKEN` があるか、pubreform のプロセス（`dist/main.js`）が見えるか、接続、`.git` があるか、`RUNNER_TEMP` と `GITHUB_WORKSPACE` があるか、ランナーのホームに置いたファイル（`PROBE_HOME/pubreform-probe-secret`）が見えるか、pub のキャッシュと SDK に書き込めるか。あわせて、バイナリのファイル、実行権限のあるファイル、リンク、追跡しているファイルの削除、`.gitignore` で除外したファイル、`pubspec.yaml` の変更を作り、`sleep` を後ろに残す |
 | `sh tool/network.sh`（`network: true`） | 同じ接続がネットワークありでは成功することを `network-on.txt` に書く（`probe.txt` の失敗が接続の誤りでないことの確認） |
+
+接続先は `PROBE_URL`（なければ `GITHUB_API_URL`）。ローカル E2E では、偽の API をすべてのインターフェースで待ち受け、`PROBE_URL` を Docker の既定のネットワークのゲートウェイ（コンテナから見たホスト）にする。コンテナの中の `127.0.0.1` はコンテナ自身を指すため。テストは、ランナーのホーム（`HOME`）を一時ディレクトリにして `pubreform-probe-secret` を置き、`PROBE_HOME` で渡す
 
 場面:
 
-1. 作成: 3 つの PR のコミットに、`lib/versions.g.dart`（その PR のバージョン）、`probe.txt`（どれも読めない・書けない・接続できない）、`network-on.txt`（`ok`）、`run.sh`（`100755`）、リンク（`120000`、リンク先の文字列）、バイナリ、削除が入る。`.gitignore` で除外したもの、`.dart_tool/`、コマンドが書いた `pubspec.yaml` は入らない。本文に `` Files changed by the `post_update` commands: 7 `` が入る。`pubreform-run` のプロセスが残っていない（止まったプロセスがゾンビとして残る環境があるので、ゾンビは数えない）
+1. 作成: 3 つの PR のコミットに、`lib/versions.g.dart`（その PR のバージョン）、`probe.txt`（どれも読めない・書けない・接続できない）、`network-on.txt`（`ok`）、`run.sh`（`100755`）、リンク（`120000`、リンク先の文字列）、バイナリ、削除が入る。`.gitignore` で除外したもの、`.dart_tool/`、コマンドが書いた `pubspec.yaml` は入らない。本文に `` Files changed by the `post_update` commands: 7 `` が入る。`sleep` がホストに残っていない（コンテナと一緒に止まる）。`pubreform-` のコンテナと `pubreform-run` のイメージが残っていない
 2. 何も変わらない: もう一度実行すると、コマンドは実行されず、どの PR の head も変わらない
-3. 失敗: ベースの設定を、終了コード 3 で失敗するコマンドに変えて実行すると、ジョブは失敗し、どの PR の head も変わらず、各 PR に失敗したコマンドと出力を含むエラーコメントが出る
+3. 失敗: ベースの設定を、終了コード 3 で失敗し、実行のたびに違う出力を出すコマンドに変えて実行すると、ジョブは失敗し、どの PR の head も変わらず、各 PR に失敗したコマンドと出力を含むエラーコメントが出る。もう一度実行しても、コメントは増えない（§19.7）
 
 ### 17.2 GitHub E2E
 
@@ -650,7 +652,7 @@ pubreform 自身の CI では、main への push と pull request のたびに�
 
 あわせて、更新後のコマンド（§19）を本物のランナーで確かめる。テスト用プロジェクトにはローカル E2E と同じコマンド（§17.1）を入れ、1 回目の実行の後に、各 PR のコミットについて次を確かめる。
 
-- `probe.txt` がローカル E2E と同じ内容になる（`docker` が使え、`ubuntu:latest` を取得でき、トークンと `actions/checkout` の認証情報を読めず、ネットワークに接続できず、SDK・pub のキャッシュに書き込めず、ベースの `.git` が見えない）。`network-on.txt` は `ok`
+- `probe.txt` がローカル E2E と同じ内容になる（`docker` が使え、§19.1 のイメージを作れ、トークンと `actions/checkout` の認証情報を読めず、ネットワークに接続できず、SDK・pub のキャッシュに書き込めず、ベースの `.git` が見えない）。`network-on.txt` は `ok`
 - 本物の API で、`mode: 100755` と `120000`、`POST /git/blobs` の blob、`sha: null` の削除が tree に入る
 - 本文の行と `lib/versions.g.dart` の内容
 
@@ -770,11 +772,13 @@ docker run --rm --name pubreform-<ランダム> \
 - マウントするのは、上の 4 つだけ。ランナーのホーム、`RUNNER_TEMP`、ワークスペース、Docker のソケットはマウントしない。`actions/checkout` が `RUNNER_TEMP` に残す認証情報（§19.8）は、コンテナからは存在しない
 - パスは、ランナー上と同じパスにマウントする。`package_config.json` に書かれる SDK と pub のキャッシュの絶対パスが、そのまま使えるようにするため
 - `/usr` は、ランナーのものを読み取り専用で重ねる。利用者がワークフローで入れたツール（`apt-get install` したもの）を、コンテナの中でも使えるようにするため
-- SDK: PATH 上の `dart`（fvm なら `fvm` が指す版）の実体の 2 つ上のディレクトリ（`<sdk>/bin/dart` の `<sdk>`）。Flutter のプロジェクトでは Flutter SDK のルート（§19.9）
+- SDK: PATH 上の `dart` の実体の 2 つ上のディレクトリ（`<sdk>/bin/dart` の `<sdk>`）。Flutter のプロジェクトと、`.fvmrc` のあるプロジェクト（fvm が入れるのは Flutter SDK なので、Dart だけのプロジェクトでも Flutter SDK の Dart を使う）では、Flutter SDK のルート（§19.9）。ルートは、ランナーのユーザーがベースの clone で `flutter --version --machine`（fvm なら `fvm flutter --version --machine`）を実行し、その `flutterRoot` から得る
 - pub のキャッシュ: `PUB_CACHE`、なければ `~/.pub-cache` を展開したもの
 - ユーザーはランナーと同じ uid と gid にする。生成用ディレクトリに書かれたファイルの持ち主がランナーのユーザーになり、持ち主を戻す手間がない。同じ uid でも、コンテナの中からはランナーのプロセスは見えず（PID の名前空間が別）、マウントしていないファイルは読めない。SDK と pub のキャッシュは読み取り専用のマウントなので、持ち主の uid でも書き込めない
 - `network: false` なら `--network none` を付ける。`true` なら Docker の既定のネットワークにする
-- 渡す環境変数: `PATH`（Flutter のプロジェクトでは同梱の Dart の `bin` を先頭にする。§19.9）、`HOME`（`/tmp`。コンテナの中の書き込める場所で、コンテナと一緒に消える）、`PUB_CACHE`、`LANG`、`LC_ALL`、`CI`、`FLUTTER_ROOT`（Flutter のプロジェクトだけ）と、`env` で指定したもの。値はコマンド行に書かず、`-e <名前>` で docker のプロセスの環境から渡す（値がプロセスの一覧やログに出ないようにするため）
+- 渡す環境変数: `PATH`（Flutter SDK を使うプロジェクトでは同梱の Dart の `bin` を先頭にする。§19.9）、`HOME`（`/tmp`。コンテナの中の書き込める場所で、コンテナと一緒に消える）、`PUB_CACHE`、`LANG`、`LC_ALL`、`CI`、`FLUTTER_ROOT`（Flutter SDK を使うプロジェクトだけ）と、`env` で指定したもの。値はコマンド行に書かず、`-e <名前>` で docker のプロセスの環境から渡す（値がプロセスの一覧やログに出ないようにするため）
+- ただし `HOME` だけは、値をコマンド行に書く（`-e HOME=/tmp`）。docker の CLI は、自分の設定（`~/.docker/config.json`）を探すのに `HOME` を、接続先などに `DOCKER_HOST` などの `DOCKER_*` を、自分の環境から読む。docker のプロセスにはランナーの環境（`HOME` と `DOCKER_*` を含む）をそのまま渡し、その上にコンテナに渡す値を重ねる。コンテナに届くのは `-e` で指定した名前だけである。`HOME` の値は決まっていて秘密ではないので、コマンド行に出てもよい
+- コマンドの実行中は、docker のプロセスの環境に `env` の値がある。ランナーのユーザーからは `/proc/<pid>/environ` で読めるが、ランナーのユーザーはもともと App のトークンを持っていて、コンテナの中からはこのプロセスが見えないので、問題にしない
 - 出力はジョブのログにそのまま出す（`core.group` で「Post update: <run>」にまとめる）
 - コマンドが終わるとコンテナが止まり、コマンドが後ろで動かし続けたプロセスも一緒に止まる。pubreform が異常終了したときに残らないよう、実行のあとに `docker rm -f <名前>` を行う（`--rm` で消えていれば何もしない）
 - 終了コードが 0 でなければ、そこで止めて §19.7 の失敗にする
@@ -834,9 +838,14 @@ docker run --rm --name pubreform-<ランダム> \
 Flutter のプロジェクトでも `post_update` を使える。ただし、コンテナの中で使えるのは SDK に同梱の Dart だけで、`flutter` コマンドは使えない。
 
 - 2026-10-19 に、別のユーザーから読み取りだけの Flutter 3.47.7 の SDK で試したところ、`flutter` コマンド（`flutter gen-l10n` など）と、SDK の `bin/dart`（起動スクリプト）は、起動のたびに SDK の中（`bin/cache/engine.stamp` など）に書き込もうとして失敗した。同梱の Dart（`<SDK>/bin/cache/dart-sdk/bin/dart`）での `dart run build_runner build` は成功した
-- そこで、Flutter のプロジェクトでは、Flutter SDK のルートを読み取り専用でマウントし、PATH の先頭に `<SDK>/bin/cache/dart-sdk/bin` を置く。`FLUTTER_ROOT` に SDK のルートを渡す。build_runner や Pigeon（`dart run pigeon`）は、この Dart で動く。build_runner は解析のために SDK の中の `flutter` パッケージを読むが、SDK 全体をマウントしているので読める
+- そこで、Flutter のプロジェクトと `.fvmrc` のあるプロジェクトでは、Flutter SDK のルートを読み取り専用でマウントし、PATH の先頭に `<SDK>/bin/cache/dart-sdk/bin` を置く。`FLUTTER_ROOT` に SDK のルートを渡す。build_runner や Pigeon（`dart run pigeon`）は、この Dart で動く。build_runner は解析のために SDK の中の `flutter` パッケージを読むが、SDK 全体をマウントしているので読める
 - `flutter` コマンドを使うもの（`flutter gen-l10n` など）は失敗し、§19.7 のとおりその更新単位のエラーになる。SDK に書き込めるようにはしない。書き換えられると、あとで pubreform が実行する pub が改ざんされるため
-- コンテナの中でこの Dart を使う形は、まだ試していない（§20）
+- 2026-10-19 に、コンテナの中で確かめた（Flutter 3.47.7。§19.1 の作り方のイメージ、SDK のルートと pub のキャッシュを読み取り専用で同じパスにマウント、`--network none`、`--cap-drop ALL`、uid 1001、PATH の先頭に同梱の Dart、`FLUTTER_ROOT` あり、`pub get --offline` はコンテナの外で済ませたもの）
+  - `dart run build_runner build`（json_serializable）は成功した（終了コード 0。`model.g.dart` を uid 1001 の持ち主で書いた）。モデルは `package:flutter/foundation.dart` を import し、`@immutable` と `ValueNotifier` を使うので、解析で読み取り専用の SDK の中の `flutter` パッケージを読んでいる
+  - `flutter gen-l10n` は `flutter: not found` で失敗した（`<SDK>/bin` は PATH にない）
+  - 起動スクリプト `$FLUTTER_ROOT/bin/dart` は、SDK の git の `safe.directory` と `bin/cache` への書き込みで失敗した
+  - SDK と pub のキャッシュへの書き込みは `Read-only file system` で失敗した
+  - Pigeon は試していない
 
 ## 20. 未確認のこと
 
@@ -847,7 +856,7 @@ Flutter のプロジェクトでも `post_update` を使える。ただし、コ
 | `action.yml` | GitHub E2E は `dist/main.js` を直接実行するため、確かめていない（§17.2） |
 | 長いタイトル | GitHub が保存時に切り詰めるか（§12.1） |
 | 更新後のコマンド | GitHub E2E（§17.2）をまだ実行していない。GitHub のランナーで、ランナーのユーザーが `docker` を使えるか、§19.1 の作り方でイメージを作って動くか、`network: true` で HTTPS に接続できるか（証明書）、コンテナから `INPUT_TOKEN`・`ACTIONS_RUNTIME_TOKEN`・`actions/checkout` の認証情報が読めないか |
-| 更新後のコマンドと Flutter | コンテナの中で、読み取り専用の Flutter SDK に同梱の Dart で、build_runner と Pigeon が動くか（§19.9） |
+| 更新後のコマンドと Flutter | Pigeon が動くか。GitHub のランナーで setup-fvm と組み合わせて動くか（build_runner はローカルのコンテナで確認済み。§19.9） |
 | 更新後のコマンドの実行時間 | PR ごとに生成が走るので、コマンドと PR が多く、作り直しが重なると長くなる。測っていない |
 
 ## 21. 基本設計からの変更点

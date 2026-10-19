@@ -1,6 +1,5 @@
 // Local E2E test of the post_update commands: like e2e.test.ts, with a project whose config has POST_UPDATE_CONFIG.
-// Also needs password-less sudo, unshare, runuser and setfacl (as on GitHub's Ubuntu runners), so it runs only
-// where `sudo -n true` succeeds:
+// Also needs docker (as on GitHub's Ubuntu runners), so it runs only where `docker version` succeeds:
 //   bun run build && PUBREFORM_E2E=1 bun test test/e2e
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { spawn, spawnSync } from 'node:child_process'
@@ -10,23 +9,27 @@ import path from 'node:path'
 import { parseMeta } from '../../src/render.ts'
 import { FakeGitHub } from './fake-github.ts'
 import { type FixtureServer, startFixtureServer } from './fixtures.ts'
-import { CONFIG, makeProject } from './make-project.ts'
+import { CONFIG, PROBE_RESULT, PROBE_SECRET, makeProject } from './make-project.ts'
 
 const E2E = process.env.PUBREFORM_E2E === '1'
-const SUDO = E2E && spawnSync('sudo', ['-n', 'true']).status === 0
+const DOCKER = E2E && spawnSync('docker', ['version']).status === 0
 setDefaultTimeout(5 * 60 * 1000)
 
 const MAIN = path.join(import.meta.dir, '../../dist/main.js')
 const TOKEN = 'e2e-secret-token'
 
-describe.skipIf(!SUDO)('local E2E: post_update', () => {
+describe.skipIf(!DOCKER)('local E2E: post_update', () => {
   let tmp = ''
   let registry: FixtureServer
   let github: FakeGitHub
+  /** The fake API as a container on the default network reaches it. */
+  let probeUrl = ''
 
   beforeAll(async () => {
     if (!fs.existsSync(MAIN)) throw new Error('dist/main.js is missing. Run `bun run build` first.')
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pubreform-e2e-post-update-'))
+    fs.mkdirSync(path.join(tmp, 'home'))
+    fs.writeFileSync(path.join(tmp, 'home', PROBE_SECRET), 'secret\n')
     const project = await makeProject({ postUpdate: true })
     registry = await startFixtureServer()
 
@@ -37,20 +40,22 @@ describe.skipIf(!SUDO)('local E2E: post_update', () => {
     const emptyTree = github.git(['hash-object', '-t', 'tree', '/dev/null'])
     const tree = github.writeTree(emptyTree, project)
     github.git(['update-ref', 'refs/heads/main', github.commitTree(tree, [], 'Initial commit')])
-    await github.start()
+    await github.start('0.0.0.0')
+    const gateway = spawnSync('docker', ['network', 'inspect', 'bridge', '--format', '{{(index .IPAM.Config 0).Gateway}}'])
+    probeUrl = `http://${gateway.stdout.toString().trim()}:${new URL(github.url).port}`
   })
 
   afterAll(async () => {
     await github?.stop()
     await registry?.close()
-    if (tmp) spawnSync('sudo', ['-n', 'rm', '-rf', tmp])
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true })
   })
 
   async function runAction(): Promise<{ status: number; output: string }> {
     fs.writeFileSync(path.join(tmp, 'summary.md'), '')
     const env: Record<string, string> = {
       PATH: process.env.PATH ?? '',
-      HOME: process.env.HOME ?? tmp,
+      HOME: path.join(tmp, 'home'),
       PUB_CACHE: path.join(tmp, 'pub-cache'),
       GITHUB_REPOSITORY: 'owner/repo',
       GITHUB_SERVER_URL: `file://${path.join(tmp, 'origin')}`,
@@ -60,6 +65,8 @@ describe.skipIf(!SUDO)('local E2E: post_update', () => {
       INPUT_TOKEN: TOKEN,
       INPUT_CONFIG: '.github/pubreform.yaml',
       PUBREFORM_UPSTREAM: registry.url,
+      PROBE_URL: probeUrl,
+      PROBE_HOME: path.join(tmp, 'home'),
     }
     const child = spawn('node', [MAIN], { env })
     let output = ''
@@ -79,12 +86,11 @@ describe.skipIf(!SUDO)('local E2E: post_update', () => {
         const [info, file] = line.split('\t')
         return [file!, info!.split(' ')[0]!] as const
       })
-  // Killed processes stay as zombies where PID 1 does not reap them (as in some containers).
-  const leftProcesses = () =>
-    spawnSync('ps', ['-u', 'pubreform-run', '-o', 'stat=,cmd='])
+  const lines = (cmd: string, args: string[]) =>
+    spawnSync(cmd, args)
       .stdout.toString()
       .split('\n')
-      .filter((line) => line.trim() !== '' && !line.trim().startsWith('Z'))
+      .filter((line) => line.trim() !== '')
 
   test('1. the files that the commands change are committed, and the commands reach nothing they must not', async () => {
     const { status, output } = await runAction()
@@ -99,17 +105,7 @@ describe.skipIf(!SUDO)('local E2E: post_update', () => {
       const versions = github.readFile(head, 'lib/versions.g.dart')
       for (const [name, [, to]] of Object.entries(meta.packages)) expect(versions).toContain(`'${name}': '${to}',`)
 
-      expect(github.readFile(head, 'probe.txt').split('\n')).toEqual([
-        'token: unset',
-        'environ with tokens: 0',
-        'pubreform environ: denied',
-        'network: failed',
-        '.git: absent',
-        'base .git: read-only',
-        'pub cache: read-only',
-        'sdk: read-only',
-        'readable credentials: 0',
-      ])
+      expect(github.readFile(head, 'probe.txt').split('\n')).toEqual(PROBE_RESULT)
       // The same request with the network works.
       expect(github.readFile(head, 'network-on.txt')).toBe('ok')
 
@@ -129,8 +125,10 @@ describe.skipIf(!SUDO)('local E2E: post_update', () => {
       // One commit on top of the base, with the message of the update.
       expect(github.git(['rev-parse', `${head}^`])).toBe(github.refSha('main')!)
     }
-    // The command left `sleep` running.
-    expect(leftProcesses()).toEqual([])
+    // The command left `sleep` running: it stopped with the container. No container or image is left.
+    expect(lines('ps', ['-eo', 'args=']).filter((args) => args.trim() === 'sleep 600')).toEqual([])
+    expect(lines('docker', ['ps', '-a', '-q', '--filter', 'name=pubreform-'])).toEqual([])
+    expect(lines('docker', ['images', '-q', 'pubreform-run'])).toEqual([])
   })
 
   test('2. nothing to regenerate: the commands do not run', async () => {

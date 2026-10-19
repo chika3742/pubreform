@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { RUN_USER, commandEnv, isInside, parseStatus, sudoArgs, treeEntries } from '../src/generate.ts'
+import { commandEnv, dockerArgs, isInside, parseStatus, treeEntries } from '../src/generate.ts'
 
 describe('parseStatus', () => {
   test('modified, deleted, type changed and untracked', () => {
@@ -92,69 +92,100 @@ describe('commandEnv', () => {
     PUB_CACHE: '/home/runner/.pub-cache',
     LANG: 'C.UTF-8',
     CI: 'true',
+    FLUTTER_ROOT: '/somewhere/flutter',
     INPUT_TOKEN: 'secret',
     ACTIONS_RUNTIME_TOKEN: 'secret',
     GITHUB_TOKEN: 'secret',
     API_SPEC_URL: 'https://example.com/spec',
   }
-  test('passes only the listed variables that are set', () => {
-    expect(commandEnv(source, { home: '/tmp/h', pubCache: '/cache', extra: [] })).toEqual({
-      PATH: '/usr/bin',
+  const dart = { root: '/opt/dart-sdk', flutter: false }
+  const flutter = { root: '/opt/flutter', flutter: true }
+
+  test('passes only the listed variables that are set, without HOME', () => {
+    expect(commandEnv(source, { sdk: dart, pubCache: '/cache', extra: [] })).toEqual({
       LANG: 'C.UTF-8',
       CI: 'true',
-      HOME: '/tmp/h',
+      PATH: '/usr/bin',
       PUB_CACHE: '/cache',
     })
   })
-  test('adds the names in env, but not over HOME and PUB_CACHE', () => {
-    expect(
-      commandEnv(source, { home: '/tmp/h', pubCache: '/cache', extra: ['API_SPEC_URL', 'MISSING', 'HOME', 'PUB_CACHE'] }),
-    ).toEqual({
-      API_SPEC_URL: 'https://example.com/spec',
-      PATH: '/usr/bin',
+  test('a Flutter SDK puts its bundled Dart first and sets FLUTTER_ROOT', () => {
+    expect(commandEnv(source, { sdk: flutter, pubCache: '/cache', extra: [] })).toEqual({
       LANG: 'C.UTF-8',
       CI: 'true',
-      HOME: '/tmp/h',
+      PATH: '/opt/flutter/bin/cache/dart-sdk/bin:/usr/bin',
+      FLUTTER_ROOT: '/opt/flutter',
       PUB_CACHE: '/cache',
+    })
+  })
+  test('adds the names in env, but not over the defaults', () => {
+    const extra = ['API_SPEC_URL', 'MISSING', 'HOME', 'PUB_CACHE', 'PATH', 'FLUTTER_ROOT']
+    expect(commandEnv({ ...source, PATH: '/usr/bin' }, { sdk: dart, pubCache: '/cache', extra })).toEqual({
+      API_SPEC_URL: 'https://example.com/spec',
+      LANG: 'C.UTF-8',
+      CI: 'true',
+      PATH: '/usr/bin',
+      PUB_CACHE: '/cache',
+    })
+    expect(commandEnv(source, { sdk: flutter, pubCache: '/cache', extra })).toMatchObject({
+      PATH: '/opt/flutter/bin/cache/dart-sdk/bin:/usr/bin',
+      FLUTTER_ROOT: '/opt/flutter',
     })
   })
 })
 
-describe('sudoArgs', () => {
-  const env = { PATH: '/usr/bin', HOME: '/tmp/h' }
-  test('without the network', () => {
-    expect(sudoArgs({ run: 'dart run build_runner build', network: false, env: [] }, env)).toEqual([
-      '-n',
-      'unshare',
-      '--net',
-      '--',
-      'runuser',
-      '-u',
-      RUN_USER,
-      '--',
-      'env',
-      '-i',
-      'PATH=/usr/bin',
-      'HOME=/tmp/h',
-      'sh',
-      '-c',
+describe('dockerArgs', () => {
+  const opts = {
+    name: 'pubreform-abc',
+    image: 'pubreform-run:abc',
+    uid: 1001,
+    gid: 118,
+    sdk: '/opt/dart-sdk',
+    pubCache: '/home/runner/.pub-cache',
+    dir: '/tmp/pubreform-gen-x',
+    envNames: ['PATH', 'PUB_CACHE', 'API_TOKEN'],
+  }
+  const common = (network: string[]) => [
+    'run',
+    '--rm',
+    '--name',
+    'pubreform-abc',
+    '--user',
+    '1001:118',
+    '--cap-drop',
+    'ALL',
+    '--security-opt',
+    'no-new-privileges',
+    ...network,
+    '-v',
+    '/usr:/usr:ro',
+    '-v',
+    '/opt/dart-sdk:/opt/dart-sdk:ro',
+    '-v',
+    '/home/runner/.pub-cache:/home/runner/.pub-cache:ro',
+    '-v',
+    '/tmp/pubreform-gen-x:/tmp/pubreform-gen-x',
+    '-w',
+    '/tmp/pubreform-gen-x',
+    '-e',
+    'HOME=/tmp',
+    '-e',
+    'PATH',
+    '-e',
+    'PUB_CACHE',
+    '-e',
+    'API_TOKEN',
+    'pubreform-run:abc',
+    'sh',
+    '-c',
+  ]
+  test('without the network; values of the variables are not on the command line', () => {
+    expect(dockerArgs({ run: 'dart run build_runner build', network: false, env: [] }, opts)).toEqual([
+      ...common(['--network', 'none']),
       'dart run build_runner build',
     ])
   })
   test('with the network', () => {
-    expect(sudoArgs({ run: './gen.sh', network: true, env: [] }, env)).toEqual([
-      '-n',
-      'runuser',
-      '-u',
-      RUN_USER,
-      '--',
-      'env',
-      '-i',
-      'PATH=/usr/bin',
-      'HOME=/tmp/h',
-      'sh',
-      '-c',
-      './gen.sh',
-    ])
+    expect(dockerArgs({ run: './gen.sh', network: true, env: [] }, opts)).toEqual([...common([]), './gen.sh'])
   })
 })

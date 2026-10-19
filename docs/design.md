@@ -435,7 +435,7 @@ v1 は、セキュリティアドバイザリがあっても待機期間を短�
 
 ### 14.3 更新後のコマンド
 
-> 2026-10-19 に、コマンドを Docker のコンテナで実行する方式に設計を変えた。実装は別のユーザーで実行する前の方式のままで、まだこの設計に合わせていない。Linux のランナーで使える。実装のための決定は[詳細設計](detailed-design.md) §19 に書く。
+> 実装済み（2026-10-19）。コマンドは Docker のコンテナで実行する。Docker が使える Linux のランナーで使える。実装のための決定は[詳細設計](detailed-design.md) §19 に書く。
 
 依存を上げたあとに、生成コード（build_runner など）を作り直したいことがある。利用者のワークフローで後からコミットを足すと、pubreform は人のコミットとみなしてその PR を更新しなくなり（§7.2）、作り直すときの強制 push で足したコミットも消える。そこで、pubreform がコミットを作る前に、設定したコマンドを実行し、変わったファイルも同じコミットに入れる。Renovate の `postUpgradeTasks` と同じ考え方。
 
@@ -484,7 +484,7 @@ PR を作るときと作り直すとき（§7.2）に、その更新単位のコ
 
 Docker が使える Linux のランナーだけで動かす。それ以外では、`post_update` があれば何もせずに失敗終了する。
 
-Flutter のプロジェクトでも使えるが、コンテナの中で使えるのは SDK に同梱の Dart だけで、`flutter` コマンド（`flutter gen-l10n` など）は使えない。`flutter` は起動のたびに SDK の中（`bin/cache`）に書き込むが、SDK は読み取り専用でマウントするため（詳細 §19.9）。build_runner や Pigeon（`dart run pigeon`）は、同梱の Dart で動く。
+Flutter のプロジェクトでも使えるが、コンテナの中で使えるのは SDK に同梱の Dart だけで、`flutter` コマンド（`flutter gen-l10n` など）は使えない。`flutter` は起動のたびに SDK の中（`bin/cache`）に書き込むが、SDK は読み取り専用でマウントするため（詳細 §19.9）。build_runner は同梱の Dart で動く（コンテナの中で確認済み。Pigeon（`dart run pigeon`）は未確認）。`.fvmrc` のある Dart だけのプロジェクトも、fvm が入れた Flutter SDK の Dart を使うので、同じ扱いにする。
 
 #### コミットに入れるもの
 

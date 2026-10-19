@@ -216,7 +216,8 @@ export class FakeGitHub {
 
   // ---- Server ----
 
-  async start(): Promise<void> {
+  /** `host` is where to listen; `url` always uses 127.0.0.1. */
+  async start(host = '127.0.0.1'): Promise<void> {
     const server = http.createServer(async (req, res) => {
       const chunks: Buffer[] = []
       for await (const chunk of req) chunks.push(chunk as Buffer)
@@ -235,7 +236,7 @@ export class FakeGitHub {
       }
     })
     this.server = server
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+    await new Promise<void>((resolve) => server.listen(0, host, () => resolve()))
     this.url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
   }
 

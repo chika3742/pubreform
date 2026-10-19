@@ -131,8 +131,9 @@ post_update:
     env: [API_SPEC_URL]
 ```
 
-- Linux runners only, such as `ubuntu-latest`: the commands need password-less `sudo`, `unshare` and `runuser`. Dart projects only: Flutter projects are not supported yet, because the `flutter` command writes to the Flutter SDK
-- The commands run code from your dependencies, so pubreform runs them in a copy of the repository without `.git`, as a separate user (`pubreform-run`) that cannot read the tokens or write to the SDK and the pub cache, with only a few environment variables (`PATH`, `HOME`, `PUB_CACHE`, `LANG`, `LC_ALL`, `CI`, and those in `env`), and without the network unless `network: true`. Dependencies are already fetched, so `dart run` works without the network
+- Linux runners only, such as `ubuntu-latest`, where the runner user can use `docker`. Nothing is pulled: pubreform builds a small image from the runner's own files
+- The commands run code from your dependencies, so pubreform runs each one in a new container that has only a copy of the repository without `.git` (writable), and the runner's `/usr`, the SDK and the pub cache (read-only). It cannot see the tokens, the runner's processes or the other files of the runner, gets only a few environment variables (`PATH`, `HOME`, `PUB_CACHE`, `LANG`, `LC_ALL`, `CI`, `FLUTTER_ROOT`, and those in `env`), and has no network unless `network: true`. Dependencies are already fetched, so `dart run` works without the network. Tools installed under your home directory are not available
+- In Flutter projects (and projects with `.fvmrc`), `dart` is the Dart bundled with the Flutter SDK, so `dart run build_runner build` works, but `flutter` commands such as `flutter gen-l10n` do not: the `flutter` command writes to the SDK, which is read-only
 - Bring the generated code on the default branch up to date first. Otherwise, the changes that are already due on the default branch show up in every pull request
 - The commands run only when a pull request is created or rebuilt, once per pull request. Changing `post_update` rebuilds every pull request
 - If a command fails, the pull request is not created, or is left as it is with the error posted to it, and the job fails

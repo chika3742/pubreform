@@ -24,15 +24,22 @@ ignore:
   - name: fx_ignored
 `
 
-/** post_update commands that generate files, and try to reach what they must not (the tokens, the network, ...). */
+/**
+ * post_update commands that generate files, and try to reach what they must not (the tokens, the network, ...).
+ * PROBE_URL, if set, is the URL to connect to instead of GITHUB_API_URL (in the local E2E, the host as seen from a
+ * container). PROBE_HOME is the runner's home, with the file pubreform-probe-secret that the commands must not see.
+ */
 export const POST_UPDATE_CONFIG = `${CONFIG}post_update:
   - run: dart run tool/gen.dart
   - run: sh tool/probe.sh
-    env: [GITHUB_API_URL, GITHUB_WORKSPACE, RUNNER_TEMP]
+    env: [GITHUB_API_URL, GITHUB_WORKSPACE, RUNNER_TEMP, PROBE_URL, PROBE_HOME]
   - run: sh tool/network.sh
     network: true
-    env: [GITHUB_API_URL]
+    env: [GITHUB_API_URL, PROBE_URL]
 `
+
+/** The file in the runner's home that the post_update commands must not see. */
+export const PROBE_SECRET = 'pubreform-probe-secret'
 
 /** Files that the post_update commands of POST_UPDATE_CONFIG use. */
 export const POST_UPDATE_FILES: Record<string, string> = {
@@ -51,28 +58,24 @@ void main() {
 `,
   'tool/probe.sh': `# Tries what a post_update command must not be able to do, and records the results in probe.txt.
 out=probe.txt
+url=\${PROBE_URL:-$GITHUB_API_URL}
 echo "token: \${INPUT_TOKEN:-unset}" > "$out"
 hits=0
 for f in /proc/[0-9]*/environ; do
   if (tr '\\000' '\\n' < "$f") 2> /dev/null | grep -q -e '^INPUT_TOKEN=' -e '^ACTIONS_RUNTIME_TOKEN=' -e '^GH_TOKEN='; then hits=$((hits + 1)); fi
 done
 echo "environ with tokens: $hits" >> "$out"
-pids=$(pgrep -f dist/main.js)
-if [ -z "$pids" ]; then echo "pubreform environ: not found" >> "$out"
-elif cat $(for p in $pids; do echo /proc/$p/environ; done) > /dev/null 2>&1; then echo "pubreform environ: read" >> "$out"
-else echo "pubreform environ: denied" >> "$out"; fi
-if curl -sS --max-time 10 -o /dev/null "$GITHUB_API_URL" 2>/dev/null; then echo "network: ok" >> "$out"; else echo "network: failed" >> "$out"; fi
+if [ -n "$(pgrep -f dist/main.js)" ]; then echo "pubreform process: visible" >> "$out"; else echo "pubreform process: not visible" >> "$out"; fi
+if curl -sS --max-time 10 -o /dev/null "$url" 2> /dev/null; then echo "network: ok" >> "$out"; else echo "network: failed" >> "$out"; fi
 if [ -e .git ]; then echo ".git: present" >> "$out"; else echo ".git: absent" >> "$out"; fi
-if touch "$RUNNER_TEMP/pubreform/base/.git/config" 2> /dev/null; then echo "base .git: writable" >> "$out"; else echo "base .git: read-only" >> "$out"; fi
+for d in RUNNER_TEMP GITHUB_WORKSPACE; do
+  eval "p=\\\${$d}"
+  if [ -n "$p" ] && [ -e "$p" ]; then echo "$d: present" >> "$out"; else echo "$d: absent" >> "$out"; fi
+done
+if [ -e "$PROBE_HOME/${PROBE_SECRET}" ]; then echo "runner home: visible" >> "$out"; else echo "runner home: not visible" >> "$out"; fi
 if touch "$PUB_CACHE/pubreform-probe" 2> /dev/null; then echo "pub cache: writable" >> "$out"; else echo "pub cache: read-only" >> "$out"; fi
 sdk=$(dirname "$(readlink -f "$(command -v dart)")")
 if touch "$sdk/pubreform-probe" 2> /dev/null; then echo "sdk: writable" >> "$out"; else echo "sdk: read-only" >> "$out"; fi
-for d in "$GITHUB_WORKSPACE/.git" "$RUNNER_TEMP"; do
-  if [ -n "\${d%/.git}" ] && [ -e "$d" ]; then grep -rlis 'authori[z]ation' "$d" 2> /dev/null; fi
-done > credentials.txt
-echo "readable credentials: $(wc -l < credentials.txt)" >> "$out"
-cat credentials.txt
-rm credentials.txt
 printf 'a\\000b' > blob.bin
 printf '#!/bin/sh\\n' > run.sh
 chmod +x run.sh
@@ -81,12 +84,26 @@ rm obsolete.g.dart
 mkdir -p build
 echo ignored > build/ignored.txt
 echo '# changed by post_update' >> pubspec.yaml
-# Left running: pubreform must stop it.
+# Left running: it must stop with the container.
 sleep 600 > /dev/null 2>&1 &
 `,
-  'tool/network.sh': `if curl -sS --max-time 10 -o /dev/null "$GITHUB_API_URL"; then echo ok > network-on.txt; else echo failed > network-on.txt; fi
+  'tool/network.sh': `if curl -sS --max-time 10 -o /dev/null "\${PROBE_URL:-$GITHUB_API_URL}"; then echo ok > network-on.txt; else echo failed > network-on.txt; fi
 `,
 }
+
+/** What tool/probe.sh records when nothing that it tries works. */
+export const PROBE_RESULT = [
+  'token: unset',
+  'environ with tokens: 0',
+  'pubreform process: not visible',
+  'network: failed',
+  '.git: absent',
+  'RUNNER_TEMP: absent',
+  'GITHUB_WORKSPACE: absent',
+  'runner home: not visible',
+  'pub cache: read-only',
+  'sdk: read-only',
+]
 
 function pubspec(constraint: string): string {
   const deps = (names: string[]) => names.map((n) => `  ${n}: ${constraint}\n`).join('')

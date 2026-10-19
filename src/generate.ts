@@ -1,6 +1,7 @@
-// Running the post_update commands as a separate user, and collecting the files that they change.
-// The commands run code from the dependencies, so they get neither the tokens nor write access to
+// Running the post_update commands in a Docker container, and collecting the files that they change.
+// The commands run code from the dependencies, so the container gets neither the tokens nor write access to
 // anything that pubreform runs or trusts later (the SDK, the pub cache, the base clone and its .git).
+import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
@@ -9,15 +10,16 @@ import * as core from '@actions/core'
 import * as exec from '@actions/exec'
 import type { UnitResult } from './applier.ts'
 import type { PostUpdate } from './config.ts'
-import { Pub, pubCacheDir, pubCommand } from './pub.ts'
+import { Pub } from './pub.ts'
 
-export const RUN_USER = 'pubreform-run'
-
-/** Where the generation directories are made. Not RUNNER_TEMP: it is under the runner's home. */
+/** Where the generation directories are made. */
 const TMP = '/tmp'
 
-/** Variables passed to the commands when pubreform has them, besides HOME and PUB_CACHE. */
-const PASSED_ENV = ['PATH', 'LANG', 'LC_ALL', 'CI', 'FVM_CACHE_PATH', 'FLUTTER_ROOT']
+/** HOME in the container: writable, and removed with the container. */
+const CONTAINER_HOME = '/tmp'
+
+/** Variables passed to the commands when pubreform has them, besides the defaults. */
+const PASSED_ENV = ['LANG', 'LC_ALL', 'CI']
 
 /** The files that the update itself writes, from the result of the update. */
 const UPDATE_FILES = new Set(['pubspec.yaml', 'pubspec.lock'])
@@ -141,10 +143,21 @@ export function treeEntries(dir: string, changes: StatusEntry[]): TreeEntry[] {
   return entries
 }
 
-/** The environment of a command: only the listed variables that pubreform has, with HOME and PUB_CACHE set. */
+/** Where the commands find the SDK. */
+export interface Sdk {
+  /** Mounted read-only at the same path. */
+  root: string
+  /** For a Flutter SDK: its bundled Dart comes first on PATH, and FLUTTER_ROOT is set. */
+  flutter: boolean
+}
+
+/**
+ * The variables of a command, besides HOME (see dockerArgs): the defaults, the listed variables that pubreform has,
+ * and the names in `env`.
+ */
 export function commandEnv(
   source: Record<string, string | undefined>,
-  opts: { home: string; pubCache: string; extra: string[] },
+  opts: { sdk: Sdk; pubCache: string; extra: string[] },
 ): Record<string, string> {
   const env: Record<string, string> = {}
   for (const name of [...opts.extra, ...PASSED_ENV]) {
@@ -152,23 +165,59 @@ export function commandEnv(
     if (value !== undefined) env[name] = value
   }
   // The defaults win over the names in `env`.
-  env.HOME = opts.home
+  const PATH = source.PATH ?? ''
+  if (opts.sdk.flutter) {
+    // The flutter launcher writes to the SDK, which is read-only; the bundled Dart does not.
+    env.PATH = [path.join(opts.sdk.root, 'bin', 'cache', 'dart-sdk', 'bin'), PATH].filter(Boolean).join(':')
+    env.FLUTTER_ROOT = opts.sdk.root
+  } else {
+    env.PATH = PATH
+    delete env.FLUTTER_ROOT
+  }
+  delete env.HOME
   env.PUB_CACHE = opts.pubCache
   return env
 }
 
-/** The arguments of `sudo` that run a command as the separate user, without the network unless it is allowed. */
-export function sudoArgs(command: PostUpdate, env: Record<string, string>): string[] {
+export interface ContainerOptions {
+  name: string
+  image: string
+  uid: number
+  gid: number
+  sdk: string
+  pubCache: string
+  /** The generation directory, also the working directory. */
+  dir: string
+  /** Names of the variables, whose values the docker process has in its environment. Not HOME. */
+  envNames: string[]
+}
+
+/** The arguments of `docker run` for a command. Values of variables are not on the command line. */
+export function dockerArgs(command: PostUpdate, opts: ContainerOptions): string[] {
+  const mount = (p: string, mode?: 'ro') => ['-v', `${p}:${p}${mode ? `:${mode}` : ''}`]
   return [
-    '-n',
-    ...(command.network ? [] : ['unshare', '--net', '--']),
-    'runuser',
-    '-u',
-    RUN_USER,
-    '--',
-    'env',
-    '-i',
-    ...Object.entries(env).map(([k, v]) => `${k}=${v}`),
+    'run',
+    '--rm',
+    '--name',
+    opts.name,
+    '--user',
+    `${opts.uid}:${opts.gid}`,
+    '--cap-drop',
+    'ALL',
+    '--security-opt',
+    'no-new-privileges',
+    ...(command.network ? [] : ['--network', 'none']),
+    ...mount('/usr', 'ro'),
+    ...mount(opts.sdk, 'ro'),
+    ...mount(opts.pubCache, 'ro'),
+    ...mount(opts.dir),
+    '-w',
+    opts.dir,
+    // HOME is fixed and not secret. The docker process keeps the runner's HOME, which the docker CLI reads.
+    '-e',
+    `HOME=${CONTAINER_HOME}`,
+    ...opts.envNames.flatMap((name) => ['-e', name]),
+    opts.image,
     'sh',
     '-c',
     command.run,
@@ -184,24 +233,56 @@ async function run(cmd: string, args: string[], opts: exec.ExecOptions = {}): Pr
   return result
 }
 
-/** sudo gets only PATH: nothing else of pubreform's environment needs to reach the commands. */
-const sudoEnv = () => ({ PATH: process.env.PATH ?? '' })
-
-const sudo = (args: string[]) => run('sudo', ['-n', ...args], { env: sudoEnv() })
-
-const succeeds = (p: Promise<unknown>): Promise<boolean> =>
-  p.then(
-    () => true,
-    () => false,
-  )
+const random = () => randomBytes(6).toString('hex')
 
 /** Checks that the commands can run on this runner. Throws when they cannot. */
 export async function checkEnvironment(): Promise<void> {
-  const problem = 'post_update needs a Linux runner with password-less sudo, unshare and runuser'
+  const problem = 'post_update needs a Linux runner where the runner user can use docker'
   if (process.platform !== 'linux') throw new Error(`${problem}; this runner is ${process.platform}`)
-  if (!(await succeeds(sudo(['true'])))) throw new Error(`${problem}; sudo -n true failed`)
-  if (!(await succeeds(run('sh', ['-c', 'command -v unshare && command -v runuser'])))) {
-    throw new Error(`${problem}; unshare or runuser is not found`)
+  try {
+    await run('docker', ['version'])
+  } catch (e) {
+    throw new Error(`${problem}; docker version failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
+/** Files of the runner's /etc in the image. None of them is secret. */
+const ETC_FILES = [
+  'passwd',
+  'group',
+  'nsswitch.conf',
+  'ld.so.cache',
+  'ld.so.conf',
+  'ld.so.conf.d',
+  'alternatives',
+  'ssl',
+  'ca-certificates.conf',
+]
+
+/**
+ * Builds the image of the containers from the runner's files, without pulling anything:
+ * a skeleton, the links of /bin and the like, and a few files of /etc. The runner's /usr is mounted when running.
+ */
+export async function buildImage(): Promise<string> {
+  const image = `pubreform-run:${random()}`
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'pubreform-image-'))
+  try {
+    for (const dir of ['etc', 'usr', 'tmp', 'proc', 'sys', 'dev']) await fsp.mkdir(path.join(root, dir))
+    await fsp.chmod(path.join(root, 'tmp'), 0o1777)
+    for (const link of ['bin', 'sbin', 'lib', 'lib64']) {
+      const st = await fsp.lstat(path.join('/', link)).catch(() => undefined)
+      if (st?.isSymbolicLink()) await fsp.symlink(await fsp.readlink(path.join('/', link)), path.join(root, link))
+    }
+    for (const file of ETC_FILES) {
+      const source = path.join('/etc', file)
+      if (fs.existsSync(source)) {
+        await fsp.cp(source, path.join(root, 'etc', file), { recursive: true, verbatimSymlinks: true })
+      }
+    }
+    await run('sh', ['-c', 'tar --owner=0 --group=0 -C "$1" -c . | docker import - "$2"', 'sh', root, image])
+    return image
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true })
   }
 }
 
@@ -217,6 +298,28 @@ function which(name: string, PATH = process.env.PATH ?? ''): string | undefined 
   return undefined
 }
 
+/**
+ * The SDK that the project uses. A Flutter project, or any project with .fvmrc (fvm installs Flutter SDKs), uses
+ * the root that `flutter --version --machine` reports, run as the runner's user in `cwd`. Otherwise, the SDK of
+ * `dart` on PATH (`<sdk>/bin/dart`).
+ */
+export async function findSdk(opts: { flutter: boolean; fvm: boolean; cwd: string }): Promise<Sdk> {
+  if (opts.flutter || opts.fvm) {
+    const [cmd, ...args] = [...(opts.fvm ? ['fvm'] : []), 'flutter', '--version', '--machine']
+    const { stdout } = await run(cmd!, args, { cwd: opts.cwd })
+    const root = (JSON.parse(stdout.slice(stdout.indexOf('{'))) as { flutterRoot?: unknown }).flutterRoot
+    if (typeof root !== 'string' || root === '') throw new Error(`cannot find the Flutter SDK: ${stdout.trim()}`)
+    return { root, flutter: true }
+  }
+  const dart = which('dart')
+  if (!dart) throw new Error('cannot find the Dart SDK: dart is not on PATH')
+  return { root: path.dirname(path.dirname(dart)), flutter: false }
+}
+
+export async function removeImage(image: string): Promise<void> {
+  await run('docker', ['rmi', image])
+}
+
 export interface GeneratorOptions {
   /** The base clone, with the trusted .git. */
   baseDir: string
@@ -225,64 +328,47 @@ export interface GeneratorOptions {
   fvm: boolean
   /** URL of the registry proxy, written to the lockfile so that `pub get --offline` uses the cached packages. */
   hostedUrl: string
+  /** From buildImage. */
+  image: string
+  sdk: Sdk
+  pubCache: string
 }
 
 export class Generator {
-  private prepared?: Promise<void>
-
   constructor(private readonly options: GeneratorOptions) {}
-
-  /** Creates the user, and lets it read (not write) the SDK and the pub cache. Once per run. */
-  private prepare(): Promise<void> {
-    this.prepared ??= (async () => {
-      if (!(await succeeds(run('id', ['-u', RUN_USER])))) {
-        await sudo(['useradd', '--system', '--no-create-home', '--shell', '/usr/sbin/nologin', RUN_USER])
-      }
-      const [tool] = pubCommand(this.options.flutter, this.options.fvm)
-      const readable = new Set<string>([pubCacheDir()])
-      const binary = which(tool!)
-      // <sdk>/bin/<tool>
-      if (binary) readable.add(path.dirname(path.dirname(binary)))
-      for (const name of ['FVM_CACHE_PATH', 'FLUTTER_ROOT']) if (process.env[name]) readable.add(process.env[name]!)
-      for (const p of readable) if (fs.existsSync(p)) await grantRead(p)
-    })()
-    return this.prepared
-  }
 
   /** Runs the commands on the result of the update, and returns the files that they changed. */
   async generate(result: UnitResult): Promise<TreeEntry[]> {
-    await this.prepare()
     const { baseDir } = this.options
     const dir = await fsp.mkdtemp(path.join(TMP, 'pubreform-gen-'))
-    const home = await fsp.mkdtemp(path.join(TMP, 'pubreform-home-'))
     try {
       // The tracked files of the base, without .git: git would run the hooks and the config that the commands wrote.
       const gitDir = path.join(baseDir, '.git')
       await run('git', ['--git-dir', gitDir, '--work-tree', baseDir, 'checkout-index', '--all', `--prefix=${dir}/`])
-      // As the runner's user, through the stopped proxy's URL: every package is in the cache.
+      // As the runner's user, outside the container, through the stopped proxy's URL: every package is in the cache.
       const pub = new Pub({ dir, flutter: this.options.flutter, fvm: this.options.fvm, hostedUrl: this.options.hostedUrl })
       await pub.run(['get', '--offline'], result.files)
-
-      await sudo(['chown', '-R', `${RUN_USER}:`, dir, home])
-      try {
-        for (const command of this.options.commands) await this.runCommand(command, dir, home)
-      } finally {
-        // Processes left in the background must not touch the files from here on, or the next unit.
-        await exec.exec('sudo', ['-n', 'pkill', '-KILL', '-u', RUN_USER], {
-          env: sudoEnv(),
-          silent: true,
-          ignoreReturnCode: true,
-        })
-        await sudo(['chown', '-R', `${process.getuid!()}:${process.getgid!()}`, dir])
-      }
+      for (const command of this.options.commands) await this.runCommand(command, dir)
       return treeEntries(dir, await changedFiles(baseDir, dir))
     } finally {
-      await sudo(['rm', '-rf', dir, home])
+      await fsp.rm(dir, { recursive: true, force: true })
     }
   }
 
-  private async runCommand(command: PostUpdate, dir: string, home: string) {
-    const env = commandEnv(process.env, { home, pubCache: pubCacheDir(), extra: command.env })
+  private async runCommand(command: PostUpdate, dir: string) {
+    const { image, sdk, pubCache } = this.options
+    const env = commandEnv(process.env, { sdk, pubCache, extra: command.env })
+    const name = `pubreform-${random()}`
+    const args = dockerArgs(command, {
+      name,
+      image,
+      uid: process.getuid!(),
+      gid: process.getgid!(),
+      sdk: sdk.root,
+      pubCache,
+      dir,
+      envNames: Object.keys(env),
+    })
     const lines: string[] = []
     let partial = ''
     const collect = (data: Buffer) => {
@@ -292,16 +378,22 @@ export class Generator {
       lines.push(...parts)
       if (lines.length > OUTPUT_TAIL_LINES) lines.splice(0, lines.length - OUTPUT_TAIL_LINES)
     }
-    // The command line is not logged: it has the values of the variables.
-    const exitCode = await core.group(`Post update: ${command.run}`, () =>
-      exec.exec('sudo', sudoArgs(command, env), {
-        cwd: dir,
-        env: sudoEnv(),
-        silent: true,
-        ignoreReturnCode: true,
-        listeners: { stdout: collect, stderr: collect },
-      }),
-    )
+    let exitCode: number
+    try {
+      exitCode = await core.group(`Post update: ${command.run}`, () =>
+        exec.exec('docker', args, {
+          // The runner's environment, for the docker CLI (HOME, DOCKER_*), with the values for the container.
+          // Only the names given with -e reach the container.
+          env: { ...(process.env as Record<string, string>), ...env },
+          silent: true,
+          ignoreReturnCode: true,
+          listeners: { stdout: collect, stderr: collect },
+        }),
+      )
+    } finally {
+      // In case --rm did not happen.
+      await exec.exec('docker', ['rm', '-f', name], { silent: true, ignoreReturnCode: true })
+    }
     if (partial) lines.push(partial)
     if (exitCode !== 0) {
       throw new PostUpdateError(
@@ -311,18 +403,6 @@ export class Generator {
       )
     }
   }
-}
-
-/** Lets the user read and traverse `p`, and traverse the directories above it. Never gives write access. */
-async function grantRead(p: string) {
-  const canRead = (target: string, test: string) => succeeds(sudo(['runuser', '-u', RUN_USER, '--', 'test', test, target]))
-  if ((await canRead(p, '-r')) && (await canRead(p, '-x'))) return
-  const ancestors: string[] = []
-  for (let dir = path.dirname(p); dir !== path.dirname(dir); dir = path.dirname(dir)) ancestors.unshift(dir)
-  for (const dir of ancestors) {
-    if (!(await canRead(dir, '-x'))) await sudo(['setfacl', '-m', `u:${RUN_USER}:x`, dir])
-  }
-  await sudo(['setfacl', '-R', '-m', `u:${RUN_USER}:rX`, p])
 }
 
 /**
