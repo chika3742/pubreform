@@ -98,7 +98,7 @@ The workflow decides when the action runs. This one runs it every Monday, after 
 | `post_update` | `[]` | Commands to run before each pull request is committed, such as code generation. See [Post-update commands](#post-update-commands) |
 | `post_update[].run` | (required) | The command, run with `sh -c` at the repository root |
 | `post_update[].network` | `false` | Whether the command can use the network |
-| `post_update[].env` | `[]` | Names of more environment variables to pass, with their values from the workflow. Names starting with `INPUT_` or `ACTIONS_` are not allowed |
+| `post_update[].env` | `[]` | Names of more environment variables to pass, with their values from the workflow. Names starting with `INPUT_` or `ACTIONS_` are not allowed. The values can reach the pull request, through files the command writes or through the output in an error comment, so take care with secrets |
 
 The `# $schema:` line enables completion and validation in IntelliJ IDEA and in VS Code with the YAML extension.
 
@@ -131,7 +131,7 @@ post_update:
     env: [API_SPEC_URL]
 ```
 
-- Linux runners only, such as `ubuntu-latest`, where the runner user can use `docker`. Nothing is pulled: pubreform builds a small image from the runner's own files
+- Linux runners only, such as `ubuntu-latest`, where the runner user can use `docker` and `/bin` links to `/usr/bin` (merged `/usr`). Nothing is pulled: pubreform builds a small image from the runner's own files
 - The commands run code from your dependencies, so pubreform runs each one in a new container that has only a copy of the repository without `.git` (writable), and the runner's `/usr`, the SDK and the pub cache (read-only). It cannot see the tokens, the runner's processes or the other files of the runner, gets only a few environment variables (`PATH`, `HOME`, `PUB_CACHE`, `LANG`, `LC_ALL`, `CI`, `FLUTTER_ROOT`, and those in `env`), and has no network unless `network: true`. Dependencies are already fetched, so `dart run` works without the network. Tools installed under your home directory are not available
 - In Flutter projects (and projects with `.fvmrc`), `dart` is the Dart bundled with the Flutter SDK, so `dart run build_runner build` works, but `flutter` commands such as `flutter gen-l10n` do not: the `flutter` command writes to the SDK, which is read-only
 - Bring the generated code on the default branch up to date first. Otherwise, the changes that are already due on the default branch show up in every pull request

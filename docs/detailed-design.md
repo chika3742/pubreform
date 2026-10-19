@@ -72,23 +72,24 @@ runs:
 4. 設定を clone から読み、検証する（§4）。configHash を計算する
 5. pubspec.yaml / pubspec.lock / .fvmrc を読む（§7）。baseHash を計算する
    ルートの pubspec に workspace: があれば全体エラー
-   post_update があれば、実行できる環境か（Linux で docker が使えるか）を確かめ、イメージを取得する（§19.1）
+   post_update があれば、実行できる環境か（Linux で docker が使えるか）を確かめる（§19.1）
 6. slot と cutoff を求める（§5）
 7. 中継サーバーを起動する（§9）
 8. 計画する（§10）→ 更新単位と、計画に失敗したパッケージ（uncertain）
 9. 各更新単位を適用する（§11）→ 結果、または単位ごとのエラー
 10. 既存 PR を集める（open と、直近 100 件の closed）（§13）
 11. 操作を決める（§14）。純粋関数で、テストできる形にする
+    post_update があれば、イメージを作り、SDK を探す（§19.1）。どちらかに失敗したら全体エラー（PR はまだ変更していない）
 12. 操作を 1 つずつ実行する。create と regenerate では、コミットの前に post_update のコマンドを実行する（§19）。失敗はその操作のエラーとして記録し、次へ進む（ジョブのログでは `Pull requests` のグループにまとめる。post_update があるときはまとめない）
 13. ジョブサマリーを書く（§16）。エラーが 1 件でもあれば core.setFailed
-（finally）中継サーバーを止める
+（finally）中継サーバーを止める。post_update のイメージを消す
 ```
 
 エラーは 2 種類に分ける。
 
 | 種類 | 例 | 扱い |
 |---|---|---|
-| 全体エラー | 設定の誤り、clone の失敗、U / R の解決の失敗、workspace、post_update を実行できない環境 | 手順 10 以降に進まず、PR を一切変更せずに失敗終了する |
+| 全体エラー | 設定の誤り、clone の失敗、U / R の解決の失敗、workspace、post_update を実行できない環境、post_update のイメージの作成や SDK の特定の失敗 | PR を一切変更せずに失敗終了する。手順 5 までの失敗なら手順 6 以降に、post_update のイメージと SDK の失敗なら手順 12 に進まない |
 | 単位のエラー | 1 つの更新単位の S の計算・適用・post_update のコマンド・コミット・PR 操作の失敗 | その単位だけを止め、他は続ける（§15） |
 
 ## 4. 設定（config.ts）
@@ -710,8 +711,10 @@ PR を作るときと作り直すときに、その更新単位のコミット�
 ### 19.1 前提
 
 - Linux のランナーで、ランナーのユーザーが `docker` を使えること。GitHub のホストランナー（ubuntu）を想定する
+- `/bin` などが `/usr` の下へのリンクになっている（merged `/usr`）こと。イメージにはそのリンクだけを置き、`/usr` を重ねるので、そうでないランナーではコンテナに `/bin/sh` がなく、すべてのコマンドが失敗する。確かめはしない（GitHub のホストランナーは満たす）
 - 条件を満たさない環境で `post_update` があれば、全体エラーにする（何も変更しない）。確認は設定を読んだ直後に 1 回だけ行う（`process.platform` と `docker version`）
 - イメージは、最初の更新単位の前に 1 回だけ、ランナーのファイルから作る（`docker import`）。中身は次だけで、ランナーの `/usr` は実行のときに重ねる（§19.5）。作れなければ全体エラーにする
+- SDK（§19.5）も同じときに 1 回だけ探す。見つからなければ（`flutter --version --machine` の失敗など）全体エラーにする
   - ディレクトリ: `etc`、`usr`（重ねる場所）、`tmp`（`1777`）、`proc`、`sys`、`dev`
   - リンク: ランナーの `/bin`、`/sbin`、`/lib`、`/lib64` のうちリンクになっているものを同じ先に（Ubuntu では `usr/bin` など）
   - `/etc` から: `passwd`、`group`、`nsswitch.conf`、`ld.so.cache`、`ld.so.conf`、`ld.so.conf.d`、`alternatives`（`awk` などのリンク先）、`ssl/certs`（証明書）、`ssl/openssl.cnf`、`ca-certificates.conf`。どれもランナーのユーザーが読めるもので、秘密は含まない。`/etc/ssl` を丸ごと写さないのは、root だけが読める秘密鍵の置き場所（`/etc/ssl/private`）が含まれるため（GitHub のランナーでは読めずに失敗し、root で動かすと秘密鍵がイメージに入ってしまう）

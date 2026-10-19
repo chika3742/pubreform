@@ -82,7 +82,7 @@
         "required": ["run"],
         "properties": {
           "run": {
-            "description": "Command run with `sh -c` in a copy of the repository, as a separate user.",
+            "description": "Command run with `sh -c` in a Docker container, in a copy of the repository without `.git`.",
             "type": "string",
             "minLength": 1,
             "examples": ["dart run build_runner build"]
