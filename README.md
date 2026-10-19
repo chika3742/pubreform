@@ -57,10 +57,6 @@ on:
     types: [edited]
   workflow_dispatch:
 
-concurrency:
-  group: pubreform
-  cancel-in-progress: false
-
 jobs:
   pubreform:
     # On pull_request, run only for pubreform's pull requests, and not for its own edits.
@@ -68,6 +64,9 @@ jobs:
       github.event_name != 'pull_request' ||
       (startsWith(github.head_ref, 'pubreform/') && github.event.sender.type != 'Bot')
     runs-on: ubuntu-latest
+    concurrency: # Set at job level so a pending job isn't canceled when the job is skipped
+      group: pubreform
+      cancel-in-progress: false
     steps:
       - uses: actions/create-github-app-token@v3
         id: app-token
