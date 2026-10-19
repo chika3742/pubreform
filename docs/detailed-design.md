@@ -714,7 +714,7 @@ PR を作るときと作り直すときに、その更新単位のコミット�
 - イメージは、最初の更新単位の前に 1 回だけ、ランナーのファイルから作る（`docker import`）。中身は次だけで、ランナーの `/usr` は実行のときに重ねる（§19.5）。作れなければ全体エラーにする
   - ディレクトリ: `etc`、`usr`（重ねる場所）、`tmp`（`1777`）、`proc`、`sys`、`dev`
   - リンク: ランナーの `/bin`、`/sbin`、`/lib`、`/lib64` のうちリンクになっているものを同じ先に（Ubuntu では `usr/bin` など）
-  - `/etc` から: `passwd`、`group`、`nsswitch.conf`、`ld.so.cache`、`ld.so.conf`、`ld.so.conf.d`、`alternatives`（`awk` などのリンク先）、`ssl`（証明書）、`ca-certificates.conf`。どれもランナーのユーザーが読めるもので、秘密は含まない
+  - `/etc` から: `passwd`、`group`、`nsswitch.conf`、`ld.so.cache`、`ld.so.conf`、`ld.so.conf.d`、`alternatives`（`awk` などのリンク先）、`ssl/certs`（証明書）、`ssl/openssl.cnf`、`ca-certificates.conf`。どれもランナーのユーザーが読めるもので、秘密は含まない。`/etc/ssl` を丸ごと写さないのは、root だけが読める秘密鍵の置き場所（`/etc/ssl/private`）が含まれるため（GitHub のランナーでは読めずに失敗し、root で動かすと秘密鍵がイメージに入ってしまう）
 - レジストリから取得しないのは、Docker Hub などの取得回数の制限を避けるため（§19.8）。ランナーの `/usr` を重ねるので、イメージから使うのは骨組みと `/etc` の一部だけで、ランナーのものを使えば `/usr` と版がずれることもない。イメージの名前は `pubreform-run:<ランダム>` とし、実行の最後に消す（`docker rmi`）
 
 ### 19.2 設定

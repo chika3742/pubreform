@@ -255,7 +255,9 @@ const ETC_FILES = [
   'ld.so.conf',
   'ld.so.conf.d',
   'alternatives',
-  'ssl',
+  // Not all of ssl: ssl/private holds private keys, readable only by root.
+  'ssl/certs',
+  'ssl/openssl.cnf',
   'ca-certificates.conf',
 ]
 
@@ -276,7 +278,9 @@ export async function buildImage(): Promise<string> {
     for (const file of ETC_FILES) {
       const source = path.join('/etc', file)
       if (fs.existsSync(source)) {
-        await fsp.cp(source, path.join(root, 'etc', file), { recursive: true, verbatimSymlinks: true })
+        const target = path.join(root, 'etc', file)
+        await fsp.mkdir(path.dirname(target), { recursive: true })
+        await fsp.cp(source, target, { recursive: true, verbatimSymlinks: true })
       }
     }
     await run('sh', ['-c', 'tar --owner=0 --group=0 -C "$1" -c . | docker import - "$2"', 'sh', root, image])
