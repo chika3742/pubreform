@@ -338,7 +338,8 @@ export function errorHashOf(comment: string): string | undefined {
   return ERROR_MARKER.exec(comment)?.[1]
 }
 
-export function errorComment(log: string): string {
+/** `hash` defaults to the hash of the log. */
+export function errorComment(log: string, hash = errorHash(log)): string {
   // A fence longer than any backtick run in the log.
   const longest = Math.max(0, ...[...log.matchAll(/`+/g)].map((m) => m[0].length))
   const fence = '`'.repeat(Math.max(3, longest + 1))
@@ -353,7 +354,7 @@ export function errorComment(log: string): string {
     fence,
     '',
     '</details>',
-    `<!-- pubreform:error ${errorHash(log)} -->`,
+    `<!-- pubreform:error ${hash} -->`,
   ].join('\n')
 }
 

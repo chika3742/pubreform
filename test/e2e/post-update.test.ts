@@ -143,18 +143,22 @@ describe.skipIf(!SUDO)('local E2E: post_update', () => {
 
   test('3. a failing command is an error commented on each pull request, which is left as it is', async () => {
     const heads = open().map((pr) => github.headOf(pr))
-    github.commitToBase(
-      { '.github/pubreform.yaml': `${CONFIG}post_update:\n  - run: echo generation failed >&2; exit 3\n` },
-      'Break the generation',
-    )
+    // The output differs on each run.
+    const run = 'echo generation failed at $(date +%s%N) >&2; exit 3'
+    github.commitToBase({ '.github/pubreform.yaml': `${CONFIG}post_update:\n  - run: ${run}\n` }, 'Break the generation')
     const { status } = await runAction()
     expect(status).not.toBe(0)
     expect(open().map((pr) => github.headOf(pr))).toEqual(heads)
     for (const pr of open()) {
       const comment = pr.comments.at(-1)!.body
       expect(comment).toStartWith('pubreform failed to update this PR.')
-      expect(comment).toContain('post_update command failed with exit code 3: echo generation failed >&2; exit 3')
-      expect(comment).toContain('generation failed')
+      expect(comment).toContain(`post_update command failed with exit code 3: ${run}`)
+      expect(comment).toContain('generation failed at ')
     }
+
+    // The same failure with other output is not commented again.
+    const counts = open().map((pr) => pr.comments.length)
+    expect((await runAction()).status).not.toBe(0)
+    expect(open().map((pr) => pr.comments.length)).toEqual(counts)
   })
 })

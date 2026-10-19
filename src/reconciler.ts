@@ -1,6 +1,6 @@
 // Matching planned units with existing pull requests and deciding operations.
 import type { UnitResult } from './applier.ts'
-import type { TreeEntry } from './generate.ts'
+import { PostUpdateError, type TreeEntry } from './generate.ts'
 import type { Plan, Unit } from './planner.ts'
 import type { GitHub } from './github.ts'
 import {
@@ -260,12 +260,14 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
           outcomes.push({ kind: undefined, packages: [], action: 'error', error: `cannot create label "${label}": ${errorText(e)}` })
         })
 
-  const commentError = async (pr: number, rawLog: string) => {
+  /** `key` identifies the error for the duplicate check instead of the log. */
+  const commentError = async (pr: number, rawLog: string, key?: string) => {
     const log = ctx.formatLog(rawLog)
+    const hash = errorHash(key ?? log)
     const comments = await github.comments(pr)
     const last = comments.filter((c) => c.isBot && errorHashOf(c.body) !== undefined).pop()
-    if (last && errorHashOf(last.body) === errorHash(log)) return
-    await github.comment(pr, errorComment(log))
+    if (last && errorHashOf(last.body) === hash) return
+    await github.comment(pr, errorComment(log, hash))
   }
 
   /** Records a failure, and comments it on the pull request if there is one. */
@@ -275,7 +277,7 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
     let comment = ''
     if (outcome.pr !== undefined) {
       try {
-        await commentError(outcome.pr, error)
+        await commentError(outcome.pr, error, e instanceof PostUpdateError ? e.key : undefined)
       } catch (ce) {
         comment = `\nand cannot comment on #${outcome.pr}: ${errorText(ce)}`
       }

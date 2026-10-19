@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 import type { UnitResult } from '../src/applier.ts'
-import type { TreeEntry } from '../src/generate.ts'
+import { PostUpdateError, type TreeEntry } from '../src/generate.ts'
 import type { Comment } from '../src/github.ts'
 import { type ExecuteContext, type Op, type PrState, execute } from '../src/reconciler.ts'
-import { errorComment, parseMeta, renderMeta } from '../src/render.ts'
+import { errorComment, errorHashOf, parseMeta, renderMeta } from '../src/render.ts'
 
 const http: UnitResult = {
   unit: { kind: 'single', members: ['http'], targets: { http: '2.0.0' } },
@@ -280,6 +280,29 @@ describe('execute', () => {
         ['error', 3],
       ])
       expect(outcomes[1]!.error).toContain('dart run build_runner build\nboom')
+    })
+
+    test('a failed command is commented again only when the command or the exit code changes', async () => {
+      const failure = (output: string, exitCode = 1) => async () => {
+        throw new PostUpdateError(`post_update command failed with exit code ${exitCode}: gen\n${output}`, 'gen', exitCode)
+      }
+      const pr = prOf(3, 'pubreform/single/http')
+      const op: Op = { op: 'regenerate', pr, result: http, contentChanged: false }
+      const first = fakeGitHub()
+      await execute([op], withGenerate(first.github, failure('took 1.2s')))
+      const posted = first.comments.get(3)!
+      expect(posted).toHaveLength(1)
+      expect(posted[0]!.body).toContain('took 1.2s')
+
+      // Only the output differs: not commented again.
+      const same = fakeGitHub({ comments: posted })
+      await execute([op], withGenerate(same.github, failure('took 3.4s')))
+      expect(same.calls).toEqual(['comments 3'])
+
+      const other = fakeGitHub({ comments: posted })
+      await execute([op], withGenerate(other.github, failure('took 3.4s', 2)))
+      expect(other.calls).toEqual(['comments 3', 'comment 3 pubreform failed to update this PR.'])
+      expect(errorHashOf(other.comments.get(3)![0]!.body)).not.toBe(errorHashOf(posted[0]!.body))
     })
   })
 })

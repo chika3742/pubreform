@@ -24,6 +24,24 @@ const UPDATE_FILES = new Set(['pubspec.yaml', 'pubspec.lock'])
 
 const OUTPUT_TAIL_LINES = 100
 
+/** A post_update command that exited with a non-zero code. */
+export class PostUpdateError extends Error {
+  override name = 'PostUpdateError'
+
+  constructor(
+    message: string,
+    readonly run: string,
+    readonly exitCode: number,
+  ) {
+    super(message)
+  }
+
+  /** What identifies the failure, without the output: tools that print timings change it on every run. */
+  get key(): string {
+    return `${this.run}\0${this.exitCode}`
+  }
+}
+
 export type FileMode = '100644' | '100755' | '120000'
 
 /** A change to the tree of the commit, besides pubspec.yaml and pubspec.lock. */
@@ -286,8 +304,10 @@ export class Generator {
     )
     if (partial) lines.push(partial)
     if (exitCode !== 0) {
-      throw new Error(
+      throw new PostUpdateError(
         `post_update command failed with exit code ${exitCode}: ${command.run}\n${lines.slice(-OUTPUT_TAIL_LINES).join('\n')}`,
+        command.run,
+        exitCode,
       )
     }
   }
