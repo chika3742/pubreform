@@ -123,6 +123,7 @@ const CHANGELOG_TOKEN = new RegExp(
     /(?<code>```[\s\S]*?```|`[^`\n]*`)/,
     /\[(?<text>[^\]\n]*)\]\((?<href>[^)\s]*)\)/,
     /(?<url>https?:\/\/[^\s<>()[\]]+)/,
+    /(?<comment><!--)/,
     /(?<=^|[^\w/.-])(?<repo>[\w.-]+\/[\w.-]+)#(?<repoNumber>\d+)\b/,
     /(?<=^|[^\w&/#])#(?<number>\d+)\b/,
     /(?<=^|[^\w`/.@])@(?<name>[A-Za-z0-9][A-Za-z0-9-]*)/,
@@ -139,6 +140,7 @@ const issueLink = (label: string, repo: string, number: string) =>
 /**
  * The changelog without what would give GitHub items backlinks from the pull request or notify people:
  * links and references to issues are pointed at redirect.github.com, and mentions are broken.
+ * HTML comments are shown as text, so that an unclosed one cannot hide the rest of the body.
  * `#123` refers to the source repository when `source` is on GitHub.
  */
 export function withoutBacklinks(text: string, source?: string): string {
@@ -148,6 +150,8 @@ export function withoutBacklinks(text: string, source?: string): string {
     if (g.code !== undefined) return match
     if (g.href !== undefined) return `[${noMentions(g.text!)}](${g.href.replace(GITHUB_REF_URL, 'https://redirect.github.com/$1')})`
     if (g.url !== undefined) return match.replace(GITHUB_REF_URL, 'https://redirect.github.com/$1')
+    // An unclosed comment would hide the rest of the body, including the checkbox.
+    if (g.comment !== undefined) return '&lt;!--'
     if (g.repo !== undefined) return issueLink(match, g.repo, g.repoNumber!)
     if (g.number !== undefined) return sourceRepo ? issueLink(match, sourceRepo, g.number) : `#${ZWSP}${g.number}`
     return `@${ZWSP}${g.name}`
@@ -171,8 +175,26 @@ export function isRebaseChecked(body: string): boolean {
 
 const changelogUrl = (name: string) => `https://pub.dev/packages/${name}/changelog`
 
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
+
+/**
+ * The text with a closing fence added when it ends inside a fenced code block. Otherwise the block would run
+ * to the end of the body, and the checkbox would be shown as code.
+ */
+export function closeFence(text: string): string {
+  let open: string | undefined
+  for (const line of text.split('\n')) {
+    const m = FENCE.exec(line)
+    if (!m) continue
+    const fence = m[1]!
+    if (open === undefined) open = fence
+    else if (fence[0] === open[0] && fence.length >= open.length && m[2]!.trim() === '') open = undefined
+  }
+  return open === undefined ? text : `${text}\n${open}`
+}
+
 function truncate(text: string, budget: number, name: string): string {
-  if (text.length <= budget) return text
+  if (text.length <= budget) return closeFence(text)
   const lines: string[] = []
   let length = 0
   for (const line of text.split('\n')) {
@@ -180,7 +202,7 @@ function truncate(text: string, budget: number, name: string): string {
     lines.push(line)
     length += line.length + 1
   }
-  return `${lines.join('\n')}\n…\n\n[Full changelog](${changelogUrl(name)})`
+  return `${closeFence(lines.join('\n'))}\n…\n\n[Full changelog](${changelogUrl(name)})`
 }
 
 function packageSection(name: string, change: Change, info: PackageInfo, changelog: string | undefined): string {
