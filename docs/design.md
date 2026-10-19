@@ -434,7 +434,7 @@ v1 は、セキュリティアドバイザリがあっても待機期間を短�
 
 ### 14.3 更新後のコマンド（案）
 
-> 未実装の案。v1 は `pubspec.yaml` と `pubspec.lock` だけをコミットする。
+> 未実装の案。v1 は `pubspec.yaml` と `pubspec.lock` だけをコミットする。実装のための決定は [post-update-design.md](post-update-design.md) に書く。
 
 依存を上げたあとに、生成コード（build_runner、`flutter gen-l10n` など）を作り直したいことがある。利用者のワークフローで後からコミットを足すと、pubreform は人のコミットとみなしてその PR を更新しなくなり（§7.2）、作り直すときの強制 push で足したコミットも消える。そこで、pubreform がコミットを作る前に、設定したコマンドを実行し、変わったファイルも同じコミットに入れる。Renovate の `postUpgradeTasks` と同じ考え方。
 
