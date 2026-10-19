@@ -225,7 +225,10 @@ export interface ExecuteContext {
   packageInfo: (name: string, version: string) => PackageInfo
   /** Formats an error log for a comment or the job log. */
   formatLog: (log: string) => string
+  /** Logs an error. */
   log: (message: string) => void
+  /** Logs an operation on a pull request. */
+  info: (message: string) => void
 }
 
 function errorText(e: unknown): string {
@@ -297,11 +300,13 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
       case 'create': {
         const base = { kind: op.result.unit.kind, packages: unitPackages(op.result) }
         let pr: number | undefined
+        ctx.info(`Create a pull request (${base.kind}: ${base.packages.join(', ')}) on ${op.branch}`)
         try {
           const sha = await commit(op.result)
           await github.createBranch(op.branch, sha)
           pr = await github.createPr({ base: ctx.base, branch: op.branch, title: title(op.result), body: body(op.result, sha) })
           numbers.set(op.branch, pr)
+          ctx.info(`Created #${pr}`)
           await github.addLabels(pr, await labels())
           outcomes.push({ ...base, action: 'created', pr })
         } catch (e) {
@@ -313,13 +318,17 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
         const { pr, result } = op
         const base = { kind: result.unit.kind, packages: unitPackages(result), pr: pr.number }
         numbers.set(pr.branch, pr.number)
+        ctx.info(`Regenerate #${pr.number} (${base.packages.join(', ')})`)
         try {
           const sha = await commit(result)
           // The body goes first, so that the next run can tell a partial failure from manual commits.
           await github.updatePr(pr.number, { title: title(result), body: body(result, sha, pr.headSha) })
           await github.updateBranch(pr.branch, pr.headSha, sha)
           await github.addLabels(pr.number, await labels())
-          if (op.contentChanged && pr.meta) await github.comment(pr.number, contentChangedComment(pr.meta.packages, result.changes))
+          if (op.contentChanged && pr.meta) {
+            ctx.info(`Comment the content change on #${pr.number}`)
+            await github.comment(pr.number, contentChangedComment(pr.meta.packages, result.changes))
+          }
           outcomes.push({ ...base, action: 'regenerated' })
         } catch (e) {
           await fail(base, e)
@@ -333,7 +342,10 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
         try {
           const marker = manualMarker(pr.headSha)
           const comments = await github.comments(pr.number)
-          if (!comments.some((c) => c.isBot && c.body.includes(marker))) {
+          if (comments.some((c) => c.isBot && c.body.includes(marker))) {
+            ctx.info(`#${pr.number} has manual commits; already notified`)
+          } else {
+            ctx.info(`#${pr.number} has manual commits; notify`)
             await github.comment(pr.number, manualComment(pr.headSha))
           }
           outcomes.push({ ...base, action: 'notified' })
@@ -353,9 +365,11 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
         break
       case 'none':
         numbers.set(op.pr.branch, op.pr.number)
+        ctx.info(`#${op.pr.number} is up to date`)
         outcomes.push({ kind: prKind(op.pr), packages: prPackages(op.pr), action: 'unchanged', pr: op.pr.number })
         break
       case 'skip':
+        ctx.info(`Skip ${unitPackages(op.result).join(', ')}: the same update was closed in #${op.closedPr.number}`)
         outcomes.push({
           kind: op.result.unit.kind,
           packages: unitPackages(op.result),
@@ -368,6 +382,7 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
         const base = { kind: prKind(pr), packages: prPackages(pr), pr: pr.number }
         try {
           const supersededBy = op.supersededBy === undefined ? undefined : numbers.get(op.supersededBy)
+          ctx.info(`Close #${pr.number}${supersededBy === undefined ? '' : ` (superseded by #${supersededBy})`}`)
           await github.comment(pr.number, closeComment(supersededBy))
           // closed: true tells a later run that pubreform, not a person, closed it.
           await github.closePr(pr.number, markClosed(pr.body))
