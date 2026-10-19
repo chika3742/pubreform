@@ -31,4 +31,4 @@ pub の依存を更新する PR を作成・保守する GitHub Action。TypeScr
 ## 未確認のこと
 
 - README のワークフロー例（トリガーと `if` の条件）と、setup-fvm と組み合わせた Flutter プロジェクトでの実行は、実際の GitHub ではまだ確かめていない。GitHub E2E は Dart だけで、ビルドした `dist/main.js` を直接実行している（`action.yml` も確かめていない）
-- 更新後のコマンド（`post_update`。詳細 §19）は、GitHub E2E をまだ実行していない。GitHub のランナーで `docker` が使えるか、ランナーのファイルから作ったイメージで動くか、コンテナから認証情報が読めないかは未確認。Flutter SDK を使うプロジェクトでは、コンテナの中で同梱の Dart だけが使え、`flutter` コマンドは使えない（詳細 §19.9）
+- 更新後のコマンド（`post_update`。詳細 §19）は、GitHub E2E で Dart のプロジェクトについて確かめた。`uses:` で起動したときの `ACTIONS_RUNTIME_TOKEN` は直接は確かめていない（詳細 §20）。Pigeon と、setup-fvm を使う Flutter プロジェクトは GitHub では未確認。Flutter SDK を使うプロジェクトでは、コンテナの中で同梱の Dart だけが使え、`flutter` コマンドは使えない（詳細 §19.9）

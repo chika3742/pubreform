@@ -1,6 +1,6 @@
 # pubreform 詳細設計
 
-> ステータス: 実装済み（2026-10-18。v1 は未リリース）。ローカル E2E と GitHub E2E で確かめた（§17）。更新後のコマンド（§19）は 2026-10-19 に Docker のコンテナで実行する方式で実装し、ローカル E2E で確かめた（GitHub E2E は未実行）。挙動を変えるときは、先にこの設計書を直す。[基本設計](design.md)を前提に、実装に必要な決定を書く。節番号の「基本 §n」は基本設計の節を指す。
+> ステータス: 実装済み（2026-10-18。v1 は未リリース）。ローカル E2E と GitHub E2E で確かめた（§17）。更新後のコマンド（§19）は 2026-10-19 に Docker のコンテナで実行する方式で実装し、ローカル E2E と GitHub E2E（[run #6](https://github.com/chika3742/pubreform-e2e/actions/runs/39206665275)）で確かめた。挙動を変えるときは、先にこの設計書を直す。[基本設計](design.md)を前提に、実装に必要な決定を書く。節番号の「基本 §n」は基本設計の節を指す。
 
 ## 1. 技術スタック
 
@@ -823,6 +823,13 @@ docker run --rm --name pubreform-<ランダム> \
 
 2026-10-19 に、Dart 3.13.5 で確認した（フィクスチャー用サーバーを中継サーバーの代わりにし、Docker 29.8.2 のコンテナで実行。GitHub のランナーでは未確認）。
 
+2026-10-19 に GitHub のホストランナー（ubuntu-latest）で、GitHub E2E（[run #6](https://github.com/chika3742/pubreform-e2e/actions/runs/39206665275)）により次を確かめた。
+
+- ランナーのユーザーが `docker` を使え、§19.1 の作り方でイメージを作って、コマンドを実行できた
+- コンテナから、`INPUT_TOKEN`、トークンを含む環境変数、pubreform のプロセス、`.git`、`RUNNER_TEMP`（`actions/checkout` の認証情報の置き場所）、`GITHUB_WORKSPACE`、ランナーのホームが見えなかった。`--network none` では外部に接続できず、pub のキャッシュと SDK には書き込めなかった
+- `network: true` のコマンドは、HTTPS で GitHub の API に接続できた（§19.1 で写した証明書が使えた）
+- 生成したファイル、実行権限、リンク、バイナリ、削除、`.gitignore` の除外が、本物の API で作ったコミットに入った
+
 - 中継サーバーの URL の lockfile なら、サーバーを止めたあとでも `pub get --offline` が成功し、`package_config.json` ができる
 - その後、ネットワークなしで `dart run` が動く。暗黙の `pub get` は始まらない。`PUB_HOSTED_URL` を渡さなくても、lockfile を pub.dev の URL に戻した後でも同じ
 - §19.1 の作り方で、ランナー（ここでは Ubuntu 24.04 のコンテナ）のファイルからイメージを作れた（0.1 秒、1.25 MB）
@@ -855,7 +862,7 @@ Flutter のプロジェクトでも `post_update` を使える。ただし、コ
 | Flutter プロジェクト | setup-fvm と組み合わせた実行を、実際の GitHub で確かめていない。GitHub E2E は Dart だけ（§17.2） |
 | `action.yml` | GitHub E2E は `dist/main.js` を直接実行するため、確かめていない（§17.2） |
 | 長いタイトル | GitHub が保存時に切り詰めるか（§12.1） |
-| 更新後のコマンド | GitHub E2E（§17.2）をまだ実行していない。GitHub のランナーで、ランナーのユーザーが `docker` を使えるか、§19.1 の作り方でイメージを作って動くか、`network: true` で HTTPS に接続できるか（証明書）、コンテナから `INPUT_TOKEN`・`ACTIONS_RUNTIME_TOKEN`・`actions/checkout` の認証情報が読めないか |
+| 更新後のコマンドと `ACTIONS_RUNTIME_TOKEN` | GitHub E2E は pubreform を `run:` のステップから起動するので、そのプロセスに `ACTIONS_RUNTIME_TOKEN` がない。`uses:` で起動したときにコンテナから読めないことは、直接は確かめていない（コンテナからは pubreform のプロセスが見えないことは確かめた） |
 | 更新後のコマンドと Flutter | Pigeon が動くか。GitHub のランナーで setup-fvm と組み合わせて動くか（build_runner はローカルのコンテナで確認済み。§19.9） |
 | 更新後のコマンドの実行時間 | PR ごとに生成が走るので、コマンドと PR が多く、作り直しが重なると長くなる。測っていない |
 
