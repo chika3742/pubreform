@@ -251,7 +251,6 @@ pub(args: string[], opts: { pubspec: string; lock: string }): Promise<{ pubspec:
 - セキュリティアドバイザリ（§20）のために、次を公開する
   - `upstreamListing(name)`: 保持している pub.dev の一覧をそのまま返す。取得に失敗したら例外を投げる。§20 と計画の解決が、同じ一覧を見るため
   - `setFixes(fixes)`: 要修正のパッケージを渡す。計画の前に 1 回だけ呼ぶ
-  - `isIgnoredFix(name)`: 修正版が `ignore` に該当するか（ジョブサマリーの `No fixed version` の判定。§16）
 
 隠す判定は、次の表の上から順に、最初に当てはまるもので決める。
 
@@ -259,7 +258,7 @@ pub(args: string[], opts: { pubspec: string; lock: string }): Promise<{ pubspec:
 |---|---|
 | ロック済みのバージョン | 見せる |
 | 要修正のパッケージで、`affected` に入っている | 隠す |
-| 要修正のパッケージで、`fix.version` と同じ | `ignore` に該当すれば隠す。該当しなければ見せる |
+| 要修正のパッケージで、`fix.version` と同じ | 見せる（`fix` は `ignore` に該当しないバージョンから選んでいる。§20.4） |
 | cutoff より後の公開、または `ignore` に該当 | 隠す |
 | それ以外 | 見せる |
 
@@ -655,7 +654,7 @@ Security advisories の表:
 
 | 状況 | Status |
 |---|---|
-| `fix` がない、または `isIgnoredFix(name)` | `No fixed version` |
+| `fix` がない | `No fixed version` |
 | このパッケージを直す結果があり、その PR の操作が `create`、`regenerate`、`refresh`、`none` のどれか（成功したもの） | `Fixed in #<n>`（複数なら `, ` でつなぐ。番号の順。成功した PR だけを並べる） |
 | このパッケージを直す結果があり、その PR の操作が `notifyManual`（人手のコミットがあるので更新しない） | `Not updated in #<n> (manual commits)` |
 | このパッケージを直す結果があり、その操作が `skip`（利用者が閉じた同じ内容の PR がある） | `Closed in #<n>` |
@@ -679,7 +678,7 @@ Security advisories の表:
 |---|---|
 | `parseAdvisories` | `withdrawn` の除外、`ecosystem` の大文字小文字、別のパッケージの `affected` の除外、形の誤りで例外、`url` の検証 |
 | `validAdvisories` | `id` と `aliases` による `ignored_advisories` の照合 |
-| `findFix` | バックポート（基本 §14.2 の例）、`retracted` の除外、プレリリースの除外、影響を受けないロック済みのバージョン（`undefined`）、修正版がない |
+| `findFix` | バックポート（基本 §14.2 の例）、`retracted` の除外、プレリリースの除外、`ignore` に該当する版の除外（最も古い修正版が `ignore` に該当すれば、次に古い修正版）、影響を受けないロック済みのバージョン（`undefined`）、修正版がない |
 | `collectFixes` | `advisoriesUpdated` がなければアドバイザリを取りに行かない、取得の失敗で例外、pub.dev 以外のホストの項目を見ない |
 | `RegistryProxy` の隠す判定 | §9 の表の各行 |
 | `plan` | 要修正の推移的依存だけが U で変わるとき、`members` が空のマイナー・パッチグループができる（偽の `resolve`） |
@@ -1026,14 +1025,14 @@ interface Fix {
   fix?: { version: string; published?: Date }  // f(p)。なければ修正版がない
 }
 
-function findFix(name: string, locked: string, listing: Listing, advisories: Advisory[]): Fix | undefined
+function findFix(name: string, locked: string, listing: Listing, advisories: Advisory[], ignore: IgnoreRule[]): Fix | undefined
 ```
 
 - `c(p)` がどの有効なアドバイザリの影響も受けなければ `undefined`（要修正でない）
-- `f(p)`: 一覧の `versions` のうち、安定版（`isStable`）で、`compareVersions(v, c(p)) > 0`、`retracted` が `true` でなく、`affected` に入っていないものの最小（`compareVersions` の順）
+- `f(p)`: 一覧の `versions` のうち、安定版（`isStable`）で、`compareVersions(v, c(p)) > 0`、`retracted` が `true` でなく、`affected` に入っておらず、`ignore` に該当しないものの最小（`compareVersions` の順）。`ignore` の判定は、中継サーバーと同じ関数を使う（`name` が同じで、`versions` がないか `allows(versions, v)` のルール）
 - バージョンの照合は文字列の一致で行う（pub は `canonicalizedVersion` で照合するが、pub.dev の一覧とアドバイザリはどちらも正規化された文字列を返す）
 
-`collectFixes(opts): Promise<Map<string, Fix>>` が 20.1〜20.4 をまとめて行う。取得の関数を引数で受け取り、テストでは偽の関数を渡す。
+`collectFixes(opts): Promise<Map<string, Fix>>` が 20.1〜20.4 をまとめて行う。取得の関数と、設定の `ignore` を引数で受け取る。テストでは偽の取得の関数を渡す。
 
 ### 20.5 確認済みのこと
 
