@@ -12,9 +12,13 @@ export interface FixtureVersion {
   dependencies?: Record<string, string>
   /** Dart SDK constraint. Defaults to ^3.0.0. */
   sdk?: string
+  retracted?: boolean
 }
 
 export type Fixtures = Record<string, FixtureVersion[]>
+
+/** package -> advisories in the OSV format, as pub.dev returns them. */
+export type Advisories = Record<string, object[]>
 
 /** Packages that produce each case of the local E2E. Every package starts locked at 1.0.0. */
 export function defaultFixtures(): Fixtures {
@@ -35,6 +39,11 @@ export function defaultFixtures(): Fixtures {
     fx_fresh: [base, { version: '1.1.0', daysAgo: 1 }],
     // Ignored by the config.
     fx_ignored: [base, old('1.1.0')],
+    // Security advisories (scenarios 12 and 13): only 1.0.0 until then.
+    fx_vuln: [base],
+    fx_parent: [{ ...base, dependencies: { fx_child: '^1.0.0' } }],
+    fx_child: [base],
+    fx_late: [base],
   }
 }
 
@@ -137,13 +146,16 @@ export interface FixtureServer {
   url: string
   /** Adds a version while the server runs. */
   addVersion(name: string, version: FixtureVersion): void
+  /** Adds a security advisory (OSV) while the server runs. */
+  addAdvisory(name: string, advisory: object): void
   close(): Promise<void>
 }
 
 export async function startFixtureServer(
-  options: { port?: number; fixtures?: Fixtures; now?: Date } = {},
+  options: { port?: number; fixtures?: Fixtures; advisories?: Advisories; now?: Date } = {},
 ): Promise<FixtureServer> {
   const fixtures = options.fixtures ?? defaultFixtures()
+  const advisories: Advisories = { ...options.advisories }
   const now = options.now ?? new Date()
   let url = ''
 
@@ -157,9 +169,12 @@ export async function startFixtureServer(
         archive_url: `${url}/packages/${name}/versions/${v.version}.tar.gz`,
         archive_sha256: createHash('sha256').update(archive).digest('hex'),
         published: new Date(now.getTime() - v.daysAgo * 24 * 60 * 60 * 1000).toISOString(),
+        ...(v.retracted ? { retracted: true } : {}),
       }
     })
-    return { name, latest: entries[entries.length - 1], versions: entries }
+    // As pub.dev: advisoriesUpdated only when the package has advisories.
+    const updated = advisories[name]?.length ? { advisoriesUpdated: now.toISOString() } : {}
+    return { name, latest: entries[entries.length - 1], versions: entries, ...updated }
   }
 
   const server = http.createServer((req, res) => {
@@ -170,7 +185,7 @@ export async function startFixtureServer(
       res.end(JSON.stringify(listing(m[1]!)))
     } else if ((m = /^\/api\/packages\/([a-z0-9_]+)\/advisories$/.exec(path)) && fixtures[m[1]!]) {
       res.writeHead(200, { 'content-type': 'application/vnd.pub.v2+json' })
-      res.end(JSON.stringify({ advisories: [], advisoriesUpdated: now.toISOString() }))
+      res.end(JSON.stringify({ advisories: advisories[m[1]!] ?? [], advisoriesUpdated: now.toISOString() }))
     } else if ((m = /^\/packages\/([a-z0-9_]+)\/versions\/(.+)\.tar\.gz$/.exec(path)) && fixtures[m[1]!]) {
       try {
         const archive = archiveOf(m[1]!, fixtures[m[1]!]!, m[2]!)
@@ -194,6 +209,9 @@ export async function startFixtureServer(
     url,
     addVersion(name, version) {
       fixtures[name]!.push(version)
+    },
+    addAdvisory(name, advisory) {
+      advisories[name] = [...(advisories[name] ?? []), advisory]
     },
     async close() {
       server.closeAllConnections()
