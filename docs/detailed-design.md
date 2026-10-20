@@ -62,7 +62,12 @@ inputs:
 runs:
   using: node24
   main: dist/main.js
+branding:
+  icon: package
+  color: blue
 ```
+
+`branding` は Marketplace のバッジ。アイコンは依存のパッケージを表す Feather の `package`、色は setup-fvm（`blue`、`arrow-down-circle`）とそろえて `blue` にする。
 
 ## 3. 全体の流れ（main.ts）
 
