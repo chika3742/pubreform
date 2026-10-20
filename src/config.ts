@@ -3,13 +3,18 @@
 import { createHash } from 'node:crypto'
 import { CronExpressionParser } from 'cron-parser'
 import { parse } from 'yaml'
-import { parseConstraint } from './version.ts'
+import { allows, parseConstraint } from './version.ts'
 
 export type Versioning = 'increase' | 'lockfile-only'
 
 export interface IgnoreRule {
   name: string
   versions?: string
+}
+
+/** Whether an `ignore` rule covers the version: the same name, and no `versions` or a constraint that allows it. */
+export function isIgnored(rules: IgnoreRule[], name: string, version: string): boolean {
+  return rules.some((rule) => rule.name === name && (rule.versions === undefined || allows(rule.versions, version)))
 }
 
 export interface PostUpdate {

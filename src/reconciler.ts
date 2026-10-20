@@ -1,4 +1,5 @@
 // Matching planned units with existing pull requests and deciding operations.
+import type { Fix } from './advisories.ts'
 import type { UnitResult } from './applier.ts'
 import { PostUpdateError, type TreeEntry } from './generate.ts'
 import type { Plan, Unit } from './planner.ts'
@@ -7,6 +8,7 @@ import {
   BRANCH_PREFIX,
   type Meta,
   type PackageInfo,
+  advisoryIds,
   branchName,
   closeComment,
   commitMessage,
@@ -42,10 +44,14 @@ export interface UnitError {
 export type Op =
   | { op: 'create'; result: UnitResult; branch: string }
   | { op: 'regenerate'; pr: PrState; result: UnitResult; contentChanged: boolean }
-  | { op: 'notifyManual'; pr: PrState }
+  /** `result` is the unit matched with the pull request (for the job summary). */
+  | { op: 'notifyManual'; pr: PrState; result: UnitResult }
   | { op: 'commentError'; pr: PrState; log: string }
   | { op: 'close'; pr: PrState; supersededBy?: string } // supersededBy: the branch of the unit that takes over
-  | { op: 'none'; pr: PrState }
+  /** Only the advisories changed: the title, body and metadata are updated, not the commit. */
+  | { op: 'refresh'; pr: PrState; result: UnitResult }
+  /** `result` is the unit matched with the pull request, if any. */
+  | { op: 'none'; pr: PrState; result?: UnitResult }
   /** A unit without a pull request, skipped because the same update was closed without merging. */
   | { op: 'skip'; result: UnitResult; closedPr: PrState }
   /** A unit that failed to apply and has no pull request. Only logged. */
@@ -68,7 +74,13 @@ function prPackages(pr: PrState): string[] {
 }
 
 function targets(result: UnitResult): Map<string, string> {
-  return new Map(Object.entries(result.changes).map(([name, c]) => [name, c.to]))
+  return new Map([...Object.entries(result.changes), ...Object.entries(result.transitiveFixes)].map(([name, c]) => [name, c.to]))
+}
+
+function sameSet(a: string[], b: string[]): boolean {
+  const x = new Set(a)
+  const y = new Set(b)
+  return x.size === y.size && [...x].every((v) => y.has(v))
 }
 
 function sameTargets(a: Map<string, string>, b: Map<string, string>): boolean {
@@ -122,7 +134,7 @@ function decideBoth(pr: PrState, result: UnitResult, ctx: DecideContext): Op {
   const meta = pr.meta
   const contentChanged = meta !== undefined && !sameTargets(metaTargets(meta), targets(result))
   const regenerate: Op = { op: 'regenerate', pr, result, contentChanged }
-  if (meta && pr.headSha !== meta.commit && pr.headSha !== meta.previous && !checked) return { op: 'notifyManual', pr }
+  if (meta && pr.headSha !== meta.commit && pr.headSha !== meta.previous && !checked) return { op: 'notifyManual', pr, result }
   // The previous regeneration stopped before moving the branch.
   if (meta && meta.previous !== undefined && pr.headSha === meta.previous) return regenerate
   if (checked) return regenerate
@@ -130,7 +142,8 @@ function decideBoth(pr: PrState, result: UnitResult, ctx: DecideContext): Op {
   if (contentChanged) return regenerate
   if (meta && (meta.baseHash !== ctx.baseHash || meta.configHash !== ctx.configHash)) return regenerate
   if (!meta) return regenerate
-  return { op: 'none', pr }
+  if (!sameSet(meta.advisories ?? [], advisoryIds(result))) return { op: 'refresh', pr, result }
+  return { op: 'none', pr, result }
 }
 
 /**
@@ -184,7 +197,7 @@ export function decide(
       continue
     }
     const successor = items.find((i) => {
-      const names = new Set([...i.unit.members, ...Object.keys(i.result?.changes ?? {})])
+      const names = new Set([...i.unit.members, ...(i.result ? unitPackages(i.result) : [])])
       return packages.some((name) => names.has(name))
     })
     const supersededBy = successor ? (pairs.get(successor)?.branch ?? branchName(successor.unit)) : undefined
@@ -198,9 +211,11 @@ export function decide(
 export interface Outcome {
   kind: Unit['kind'] | undefined
   packages: string[]
-  action: 'created' | 'regenerated' | 'unchanged' | 'closed' | 'skipped' | 'notified' | 'error'
+  action: 'created' | 'regenerated' | 'refreshed' | 'unchanged' | 'closed' | 'skipped' | 'notified' | 'error'
   pr?: number
   error?: string
+  /** Packages whose security advisories the update of the operation fixes. */
+  fixes?: string[]
 }
 
 export interface ExecuteContext {
@@ -230,6 +245,8 @@ export interface ExecuteContext {
   log: (message: string) => void
   /** Logs an operation on a pull request. */
   info: (message: string) => void
+  /** The time zone of the config, for dates in bodies. */
+  timeZone: string
   /** Runs the post_update commands on a unit to be committed, and returns the files that they changed. */
   generate?: (result: UnitResult) => Promise<TreeEntry[]>
 }
@@ -239,8 +256,16 @@ function errorText(e: unknown): string {
 }
 
 function unitPackages(result: UnitResult): string[] {
-  return Object.keys(result.changes)
+  return [...Object.keys(result.changes), ...Object.keys(result.transitiveFixes)].sort()
 }
+
+/** `fixes` of an outcome: packages whose advisories the result fixes, when there are any. */
+function fixedPackages(result: UnitResult): { fixes?: string[] } {
+  const fixes = [...new Set(result.advisories.map((a) => a.package))]
+  return fixes.length > 0 ? { fixes } : {}
+}
+
+const GENERATED_LINE = /^Files changed by the `post_update` commands: (\d+)$/m
 
 function prKind(pr: PrState): Unit['kind'] | undefined {
   return pr.meta?.kind
@@ -298,17 +323,22 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
     return { sha, generated: generated.length }
   }
 
-  const body = (result: UnitResult, sha: string, generated: number, previous?: string) => {
-    const infos = new Map(Object.entries(result.changes).map(([name, c]) => [name, ctx.packageInfo(name, c.to)]))
-    return renderBody(result, metaOf(result, ctx.hashes, sha, previous), infos, generated)
-  }
+  const infos = (result: UnitResult) =>
+    new Map(
+      [...Object.entries(result.changes), ...Object.entries(result.transitiveFixes)].map(([name, c]) => [
+        name,
+        ctx.packageInfo(name, c.to),
+      ]),
+    )
+  const body = (result: UnitResult, sha: string, generated: number, previous?: string) =>
+    renderBody(result, metaOf(result, ctx.hashes, sha, previous), infos(result), { generated, timeZone: ctx.timeZone })
 
   // close runs last, so that the pull request that supersedes it has a number.
   const ordered = [...ops.filter((o) => o.op !== 'close'), ...ops.filter((o) => o.op === 'close')]
   for (const op of ordered) {
     switch (op.op) {
       case 'create': {
-        const base = { kind: op.result.unit.kind, packages: unitPackages(op.result) }
+        const base = { kind: op.result.unit.kind, packages: unitPackages(op.result), ...fixedPackages(op.result) }
         let pr: number | undefined
         ctx.info(`Create a pull request (${base.kind}: ${base.packages.join(', ')}) on ${op.branch}`)
         try {
@@ -331,7 +361,7 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
       }
       case 'regenerate': {
         const { pr, result } = op
-        const base = { kind: result.unit.kind, packages: unitPackages(result), pr: pr.number }
+        const base = { kind: result.unit.kind, packages: unitPackages(result), pr: pr.number, ...fixedPackages(result) }
         numbers.set(pr.branch, pr.number)
         ctx.info(`Regenerate #${pr.number} (${base.packages.join(', ')})`)
         try {
@@ -342,7 +372,10 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
           await github.addLabels(pr.number, await labels())
           if (op.contentChanged && pr.meta) {
             ctx.info(`Comment the content change on #${pr.number}`)
-            await github.comment(pr.number, contentChangedComment(pr.meta.packages, result.changes))
+            await github.comment(
+              pr.number,
+              contentChangedComment(pr.meta.packages, { ...result.changes, ...result.transitiveFixes }),
+            )
           }
           outcomes.push({ ...base, action: 'regenerated' })
         } catch (e) {
@@ -350,9 +383,29 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
         }
         break
       }
+      case 'refresh': {
+        const { pr, result } = op
+        const base = { kind: result.unit.kind, packages: unitPackages(result), pr: pr.number, ...fixedPackages(result) }
+        numbers.set(pr.branch, pr.number)
+        ctx.info(`Refresh #${pr.number} (${pr.branch}): security advisories changed`)
+        try {
+          // Everything but the advisories stays as it is: the commit is not created again.
+          const meta: Meta = { ...pr.meta!, advisories: advisoryIds(result) }
+          if (meta.advisories!.length === 0) delete meta.advisories
+          const generated = Number(GENERATED_LINE.exec(pr.body)?.[1] ?? 0)
+          await github.updatePr(pr.number, {
+            title: title(result),
+            body: renderBody(result, meta, infos(result), { generated, timeZone: ctx.timeZone }),
+          })
+          outcomes.push({ ...base, action: 'refreshed' })
+        } catch (e) {
+          await fail(base, e)
+        }
+        break
+      }
       case 'notifyManual': {
         const { pr } = op
-        const base = { kind: prKind(pr), packages: prPackages(pr), pr: pr.number }
+        const base = { kind: prKind(pr), packages: prPackages(pr), pr: pr.number, ...fixedPackages(op.result) }
         numbers.set(pr.branch, pr.number)
         try {
           const marker = manualMarker(pr.headSha)
@@ -381,7 +434,13 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
       case 'none':
         numbers.set(op.pr.branch, op.pr.number)
         ctx.info(`#${op.pr.number} is up to date`)
-        outcomes.push({ kind: prKind(op.pr), packages: prPackages(op.pr), action: 'unchanged', pr: op.pr.number })
+        outcomes.push({
+          kind: prKind(op.pr),
+          packages: prPackages(op.pr),
+          action: 'unchanged',
+          pr: op.pr.number,
+          ...(op.result ? fixedPackages(op.result) : {}),
+        })
         break
       case 'skip':
         ctx.info(`Skip ${unitPackages(op.result).join(', ')}: the same update was closed in #${op.closedPr.number}`)
@@ -390,6 +449,7 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
           packages: unitPackages(op.result),
           action: 'skipped',
           pr: op.closedPr.number,
+          ...fixedPackages(op.result),
         })
         break
       case 'close': {
@@ -411,4 +471,41 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
     }
   }
   return outcomes
+}
+
+const FIXED_ACTIONS: Outcome['action'][] = ['created', 'regenerated', 'refreshed', 'unchanged']
+
+/** What failed in this run, for the status of the packages that no result fixes. */
+export interface PlanFailures {
+  /** Direct dependencies. */
+  direct: Set<string>
+  /** Packages whose planning failed. */
+  uncertain: Set<string>
+  /** Members of units that failed to apply. */
+  failed: Set<string>
+  /** Whether the minor and patch unit failed to apply: transitive dependencies are usually fixed there. */
+  minorFailed: boolean
+}
+
+/** How the advisories of a package are fixed, for the job summary. */
+export function advisoryStatus(fix: Fix, outcomes: Outcome[], failures: PlanFailures): string {
+  if (fix.fix === undefined) return 'No fixed version'
+  const fixing = outcomes.filter((o) => o.fixes?.includes(fix.name))
+  const numbers = (action: (a: Outcome['action']) => boolean) =>
+    [...new Set(fixing.filter((o) => action(o.action) && o.pr !== undefined).map((o) => o.pr!))]
+      .sort((a, b) => a - b)
+      .map((n) => `#${n}`)
+      .join(', ')
+  const fixed = numbers((a) => FIXED_ACTIONS.includes(a))
+  if (fixed) return `Fixed in ${fixed}`
+  const manual = numbers((a) => a === 'notified')
+  if (manual) return `Not updated in ${manual} (manual commits)`
+  const closed = numbers((a) => a === 'skipped')
+  if (closed) return `Closed in ${closed}`
+  if (fixing.some((o) => o.action === 'error')) return 'Error'
+  const failed = failures.direct.has(fix.name)
+    ? failures.failed.has(fix.name) || failures.uncertain.has(fix.name)
+    : failures.minorFailed
+  if (failed) return 'Error'
+  return 'Cannot be fixed with the current constraints'
 }

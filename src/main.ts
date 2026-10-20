@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import * as core from '@actions/core'
 import * as exec from '@actions/exec'
+import { type Fix, collectFixes, fetchAdvisories } from './advisories.ts'
 import { type UnitResult, applyUnit } from './applier.ts'
 import { type Window, computeWindow, firstSlotShowing } from './clock.ts'
 import { type Config, configHash, parseConfig } from './config.ts'
@@ -13,7 +14,7 @@ import { type Plan, plan } from './planner.ts'
 import { RegistryProxy } from './proxy.ts'
 import { Pub, cachedPackageDir, cloneBase, pubCacheDir } from './pub.ts'
 import { type Section, baseHash, directDeps, hasWorkspace, isFlutter, lockVersions } from './pubspec.ts'
-import { type Outcome, type UnitError, decide, execute } from './reconciler.ts'
+import { type Outcome, type PlanFailures, type UnitError, advisoryStatus, decide, execute } from './reconciler.ts'
 import { formatLog, readPackageInfo } from './render.ts'
 
 async function readOptional(file: string): Promise<string | undefined> {
@@ -54,6 +55,8 @@ async function writeSummary(opts: {
   plan?: Plan
   waiting: Waiting[]
   outcomes: Outcome[]
+  fixes: Map<string, Fix>
+  failures: PlanFailures
   prUrl: (n: number) => string
 }) {
   const { window, config, outcomes } = opts
@@ -65,6 +68,7 @@ async function writeSummary(opts: {
   const actions: Record<Outcome['action'], string> = {
     created: 'created',
     regenerated: 'regenerated',
+    refreshed: 'refreshed',
     unchanged: 'unchanged',
     closed: 'closed',
     skipped: 'skipped (closed without merging)',
@@ -109,6 +113,18 @@ async function writeSummary(opts: {
     s.addTable([
       ['Package', 'Type', 'Current', 'Resolvable', 'Latest'].map((data) => ({ data, header: true })),
       ...opts.plan.unresolvable.map((u) => [u.name, typeOf(u.section), u.current, u.resolvable, u.latest]),
+    ])
+  }
+  if (opts.fixes.size > 0) {
+    s.addHeading('Security advisories', 3)
+    s.addTable([
+      ['Package', 'Locked', 'Advisories', 'Status'].map((data) => ({ data, header: true })),
+      ...[...opts.fixes.values()].map((f) => [
+        f.name,
+        f.locked,
+        f.advisories.map((a) => a.id).join(', '),
+        advisoryStatus(f, outcomes, opts.failures),
+      ]),
     ])
   }
   if (opts.plan && opts.plan.uncertain.size > 0) {
@@ -171,11 +187,27 @@ export async function run(): Promise<void> {
     upstream: process.env.PUBREFORM_UPSTREAM || undefined,
   })
   await proxy.start()
+  let fixes: Map<string, Fix>
   let thePlan: Plan
   const results: UnitResult[] = []
   const unitErrors: UnitError[] = []
   const waiting: Waiting[] = []
   try {
+    // Every resolution sees the same versions, so the fixes are known before planning.
+    fixes = await core.group('Security advisories', async () => {
+      const found = await collectFixes({
+        pubspec: files.pubspec,
+        lock: files.lock,
+        listing: (name) => proxy.upstreamListing(name),
+        advisories: (name) => fetchAdvisories(proxy.upstreamUrl, name),
+        ignore: config.ignore,
+      })
+      for (const f of found.values()) {
+        core.info(`${f.name} ${f.locked}: ${f.advisories.map((a) => a.id).join(', ')}; fixed in ${f.fix?.version ?? 'none'}`)
+      }
+      return found
+    })
+    proxy.setFixes(fixes)
     const pub = new Pub({ dir, flutter: isFlutter(files.pubspec), fvm: fvmrc !== undefined, hostedUrl: proxy.url })
     thePlan = await core.group('Plan', () =>
       plan({
@@ -183,6 +215,7 @@ export async function run(): Promise<void> {
         basePubspec: files.pubspec,
         resolve: async (args, pubspec) => lockVersions((await pub.run(args, { pubspec, lock: files.lock })).lock),
         visibleVersions: (name) => proxy.visibleVersions(name),
+        fixes,
         log: (m) => core.warning(m),
       }),
     )
@@ -200,9 +233,11 @@ export async function run(): Promise<void> {
             deps,
             versioning: config.versioning,
             pub: (args, f) => pub.run(args, f),
+            fixes,
+            cutoff: window.cutoff,
           })
           if (result) results.push(result)
-          else core.info('No direct dependency changes; skipped.')
+          else core.info('No direct dependency or fixed transitive dependency changes; skipped.')
         } catch (e) {
           unitErrors.push({ unit, log: e instanceof Error ? e.message : String(e) })
         }
@@ -247,6 +282,7 @@ export async function run(): Promise<void> {
         formatLog: format,
         log: (m) => core.error(m),
         info: (m) => core.info(m),
+        timeZone: config.schedule.timezone,
         generate: generator && ((result) => generator.generate(result)),
       }),
     )
@@ -260,6 +296,13 @@ export async function run(): Promise<void> {
     plan: thePlan,
     waiting,
     outcomes,
+    fixes,
+    failures: {
+      direct: new Set(deps.map((d) => d.name)),
+      uncertain: thePlan.uncertain,
+      failed: new Set(unitErrors.flatMap((e) => e.unit.members)),
+      minorFailed: unitErrors.some((e) => e.unit.kind === 'minor'),
+    },
     prUrl: (n) => `${serverUrl}/${repository}/pull/${n}`,
   })
   const errors = outcomes.filter((o) => o.error !== undefined).length

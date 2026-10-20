@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { parse } from 'yaml'
-import { baseHash, directDeps, hasWorkspace, isFlutter, lockVersions, withConstraints } from '../src/pubspec.ts'
+import { baseHash, directDeps, hasWorkspace, ignoredAdvisories, isFlutter, lockVersions, withConstraints } from '../src/pubspec.ts'
 
 const pubspec = `name: app
 environment:
@@ -113,5 +113,14 @@ describe('baseHash', () => {
     expect(baseHash({ pubspec: 'a', lock: 'b', fvmrc: '' })).toBe(h)
     expect(baseHash({ pubspec: 'a', lock: 'b', fvmrc: '{}' })).not.toBe(h)
     expect(baseHash({ pubspec: 'ab', lock: '' })).not.toBe(baseHash({ pubspec: 'a', lock: 'b' }))
+  })
+})
+
+describe('ignoredAdvisories', () => {
+  test('a list of strings, or nothing', () => {
+    expect(ignoredAdvisories('name: app\nignored_advisories: [GHSA-1, CVE-2]\n')).toEqual(new Set(['GHSA-1', 'CVE-2']))
+    expect(ignoredAdvisories('name: app\n')).toEqual(new Set())
+    expect(ignoredAdvisories('name: app\nignored_advisories: GHSA-1\n')).toEqual(new Set())
+    expect(ignoredAdvisories('name: app\nignored_advisories: [GHSA-1, 2]\n')).toEqual(new Set())
   })
 })

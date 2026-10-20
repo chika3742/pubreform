@@ -1,4 +1,5 @@
 // Planning update units.
+import type { Fix } from './advisories.ts'
 import { type DirectDep, type Section, withConstraints } from './pubspec.ts'
 import { allows, compareVersions, isStable, maxVersion } from './version.ts'
 
@@ -9,7 +10,7 @@ export type UnitKind = 'single' | 'minor' | 'group'
 
 export interface Unit {
   kind: UnitKind
-  /** minor: direct dependencies that change in U. single / group: S. */
+  /** minor: direct dependencies that change in U (may be empty when only fixed transitive ones change). single / group: S. */
   members: string[]
   /** single / group: the versions in R. */
   targets: Record<string, string>
@@ -36,6 +37,8 @@ export interface PlanInput {
   resolve: Resolve
   /** Versions shown by the registry proxy. */
   visibleVersions: (name: string) => Promise<string[]>
+  /** Locked packages that security advisories affect. */
+  fixes: Map<string, Fix>
   log?: (message: string) => void
 }
 
@@ -53,6 +56,12 @@ export async function plan(input: PlanInput): Promise<Plan> {
   const R = await resolve(['upgrade'], withConstraints(basePubspec, new Map(deps.map((d) => [d.name, `>=${d.current}`]))))
 
   const minor = deps.filter((d) => get(U, d.name, 'U') !== d.current).map((d) => d.name)
+  // Transitive dependencies that U moves off the versions that the advisories affect.
+  const direct = new Set(deps.map((d) => d.name))
+  const fixedTransitive = [...input.fixes.values()].filter((f) => {
+    const u = U.get(f.name)
+    return !direct.has(f.name) && u !== undefined && u !== f.locked && !f.affected.has(u)
+  })
   const X = deps.filter((d) => compareVersions(get(R, d.name, 'R'), get(U, d.name, 'U')) > 0).map((d) => d.name)
 
   async function closure(start: Set<string>): Promise<Set<string>> {
@@ -110,7 +119,7 @@ export async function plan(input: PlanInput): Promise<Plan> {
   }
 
   const units: Unit[] = []
-  if (minor.length > 0) units.push({ kind: 'minor', members: minor, targets: {} })
+  if (minor.length > 0 || fixedTransitive.length > 0) units.push({ kind: 'minor', members: minor, targets: {} })
   const updateUnits = sets.map((s): Unit => {
     const members = [...s].sort()
     return {

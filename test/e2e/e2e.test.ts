@@ -268,4 +268,74 @@ describe.skipIf(!E2E)('local E2E', () => {
     expect(github.refSha(pr.branch)).toBe(head)
     expect(pr.comments).toEqual([])
   })
+
+  const advisory = (id: string, name: string, versions: string[]) => ({
+    id,
+    summary: `Fixture advisory of ${name}`,
+    aliases: [],
+    database_specific: { severity: 'HIGH', pub_display_url: `https://github.com/advisories/${id}` },
+    affected: [{ package: { name, ecosystem: 'Pub' }, versions }],
+  })
+  const LATE = 'pubreform/single/fx_late'
+
+  test('12. security advisories: the fixed versions are used before the release age has passed', async () => {
+    registry.addVersion('fx_vuln', { version: '1.1.0', daysAgo: 30 })
+    registry.addVersion('fx_vuln', { version: '1.0.1', daysAgo: 1 })
+    registry.addVersion('fx_child', { version: '1.0.1', daysAgo: 1 })
+    registry.addVersion('fx_late', { version: '2.0.0', daysAgo: 30 })
+    registry.addAdvisory('fx_vuln', advisory('GHSA-e2e0-vuln-0001', 'fx_vuln', ['1.0.0', '1.1.0']))
+    registry.addAdvisory('fx_child', advisory('GHSA-e2e0-chld-0001', 'fx_child', ['1.0.0']))
+    const { summary } = await runOk()
+
+    const minor = openOn(MINOR)
+    expect(minor.title).toBe('[Security] Update minor and patch (2 packages)')
+    expect(minor.body).toStartWith('Fixes the following security advisories.\n\n| Package | Advisory | Severity | From | To |\n')
+    expect(minor.body).toMatch(
+      /\| \[fx_child\]\(https:\/\/pub\.dev\/packages\/fx_child\) \| \[GHSA-e2e0-chld-0001\]\(https:\/\/github\.com\/advisories\/GHSA-e2e0-chld-0001\) Fixture advisory of fx_child \| high \| 1\.0\.0 \| 1\.0\.1 \(released \d{4}-\d{2}-\d{2}\) \|/,
+    )
+    expect(minor.body).toMatch(/\| \[fx_vuln\]\(https:\/\/pub\.dev\/packages\/fx_vuln\) \| .* \| high \| 1\.0\.0 \| 1\.0\.1 \(released \d{4}-\d{2}-\d{2}\) \|/)
+    expect(minor.body).toContain('Versions with a release date are used before `min_release_age_days` has passed, to fix the advisory.')
+    expect(minor.body).toContain('| [fx_child](https://pub.dev/packages/fx_child) | 1.0.0 | 1.0.1 | transitive |')
+    expect(minor.body).toContain('| [fx_vuln](https://pub.dev/packages/fx_vuln) | 1.0.0 | 1.0.1 | direct |')
+    expect(minor.body).toContain('### fx_child 1.0.0 → 1.0.1')
+    expect(parseMeta(minor.body)).toMatchObject({
+      kind: 'minor',
+      packages: { fx_child: ['1.0.0', '1.0.1'], fx_vuln: ['1.0.0', '1.0.1'] },
+      advisories: ['GHSA-e2e0-chld-0001', 'GHSA-e2e0-vuln-0001'],
+    })
+    expect(commitMessage(github.headOf(minor))).toBe(
+      '[Security] Update minor and patch (2 packages)\n\n| Package | From | To | Type |\n|---|---|---|---|\n| fx_child | 1.0.0 | 1.0.1 | transitive |\n| fx_vuln | 1.0.0 | 1.0.1 | direct |',
+    )
+    // The affected 1.1.0 is not chosen, though it is newer and past the release age.
+    expect(lockVersion(github.headOf(minor), 'fx_vuln')).toBe('1.0.1')
+    expect(lockVersion(github.headOf(minor), 'fx_child')).toBe('1.0.1')
+
+    const late = openOn(LATE)
+    expect(late.title).toBe('Update fx_late from 1.0.0 to 2.0.0')
+    expect(late.body).not.toContain('security advisories')
+    expect(parseMeta(late.body)!.advisories).toBeUndefined()
+
+    expect(summary).toContain('Security advisories')
+    expect(summary).toContain(`<td>fx_child</td><td>1.0.0</td><td>GHSA-e2e0-chld-0001</td><td>Fixed in #${minor.number}</td>`)
+    expect(summary).toContain(`<td>fx_vuln</td><td>1.0.0</td><td>GHSA-e2e0-vuln-0001</td><td>Fixed in #${minor.number}</td>`)
+    // Neither the shown fixed version nor the hidden affected one is waiting for the release age.
+    expect(summary).not.toContain('<td>fx_vuln</td><td>direct</td>')
+  })
+
+  test('13. an advisory on the version that a pull request updates from refreshes it without a new commit', async () => {
+    const late = openOn(LATE)
+    const before = snapshot()
+    registry.addAdvisory('fx_late', advisory('GHSA-e2e0-late-0001', 'fx_late', ['1.0.0']))
+    const { summary, output } = await runOk()
+    expect(late.title).toBe('[Security] Update fx_late from 1.0.0 to 2.0.0')
+    expect(late.body).toStartWith('Fixes the following security advisories.')
+    expect(late.body).toContain('| high | 1.0.0 | 2.0.0 |')
+    expect(late.body).not.toContain('Versions with a release date')
+    expect(parseMeta(late.body)).toMatchObject({ advisories: ['GHSA-e2e0-late-0001'], commit: before.find((b) => b.n === late.number)!.head })
+    expect(output).toContain(`Refresh #${late.number} (${LATE}): security advisories changed`)
+    // No new commit and no comment anywhere.
+    expect(snapshot()).toEqual(before)
+    expect(summary).toContain(`<td>fx_late</td><td>1.0.0</td><td>GHSA-e2e0-late-0001</td><td>Fixed in #${late.number}</td>`)
+  })
 })
+
