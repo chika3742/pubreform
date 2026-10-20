@@ -488,8 +488,8 @@ export interface PlanFailures {
 }
 
 /** How the advisories of a package are fixed, for the job summary. */
-export function advisoryStatus(fix: Fix, outcomes: Outcome[], ignoredFix: boolean, failures: PlanFailures): string {
-  if (fix.fix === undefined || ignoredFix) return 'No fixed version'
+export function advisoryStatus(fix: Fix, outcomes: Outcome[], failures: PlanFailures): string {
+  if (fix.fix === undefined) return 'No fixed version'
   const fixing = outcomes.filter((o) => o.fixes?.includes(fix.name))
   const numbers = (action: (a: Outcome['action']) => boolean) =>
     [...new Set(fixing.filter((o) => action(o.action) && o.pr !== undefined).map((o) => o.pr!))]

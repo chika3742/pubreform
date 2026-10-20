@@ -171,25 +171,26 @@ describe('advisoryStatus', () => {
   const o = (action: Outcome['action'], pr?: number, fixes = ['x']): Outcome => ({ kind: 'minor', packages: [], action, pr, fixes })
   const none = { direct: new Set(['x']), uncertain: new Set<string>(), failed: new Set<string>(), minorFailed: false }
   test('in order', () => {
-    expect(advisoryStatus({ ...fix, fix: undefined }, [o('created', 1)], false, none)).toBe('No fixed version')
-    expect(advisoryStatus(fix, [o('created', 1)], true, none)).toBe('No fixed version')
-    expect(advisoryStatus(fix, [o('unchanged', 5), o('refreshed', 2), o('notified', 7), o('skipped', 3), o('error', 4)], false, none)).toBe(
+    expect(advisoryStatus({ ...fix, fix: undefined }, [o('created', 1)], none)).toBe('No fixed version')
+    // A fix that ignore covers is never chosen: a fix that is there is used.
+    expect(advisoryStatus(fix, [o('created', 1)], none)).toBe('Fixed in #1')
+    expect(advisoryStatus(fix, [o('unchanged', 5), o('refreshed', 2), o('notified', 7), o('skipped', 3), o('error', 4)], none)).toBe(
       'Fixed in #2, #5',
     )
-    expect(advisoryStatus(fix, [o('regenerated', 6)], false, none)).toBe('Fixed in #6')
-    expect(advisoryStatus(fix, [o('notified', 7), o('skipped', 3)], false, none)).toBe('Not updated in #7 (manual commits)')
-    expect(advisoryStatus(fix, [o('skipped', 3), o('error', 4)], false, none)).toBe('Closed in #3')
-    expect(advisoryStatus(fix, [o('error', undefined), o('created', 1, ['y'])], false, none)).toBe('Error')
-    expect(advisoryStatus(fix, [], false, none)).toBe('Cannot be fixed with the current constraints')
+    expect(advisoryStatus(fix, [o('regenerated', 6)], none)).toBe('Fixed in #6')
+    expect(advisoryStatus(fix, [o('notified', 7), o('skipped', 3)], none)).toBe('Not updated in #7 (manual commits)')
+    expect(advisoryStatus(fix, [o('skipped', 3), o('error', 4)], none)).toBe('Closed in #3')
+    expect(advisoryStatus(fix, [o('error', undefined), o('created', 1, ['y'])], none)).toBe('Error')
+    expect(advisoryStatus(fix, [], none)).toBe('Cannot be fixed with the current constraints')
   })
   test('Error when the package failed to plan or apply', () => {
-    expect(advisoryStatus(fix, [], false, { ...none, uncertain: new Set(['x']) })).toBe('Error')
-    expect(advisoryStatus(fix, [], false, { ...none, failed: new Set(['x']) })).toBe('Error')
+    expect(advisoryStatus(fix, [], { ...none, uncertain: new Set(['x']) })).toBe('Error')
+    expect(advisoryStatus(fix, [], { ...none, failed: new Set(['x']) })).toBe('Error')
     // A failed minor unit counts only for transitive dependencies.
-    expect(advisoryStatus(fix, [], false, { ...none, minorFailed: true })).toBe('Cannot be fixed with the current constraints')
+    expect(advisoryStatus(fix, [], { ...none, minorFailed: true })).toBe('Cannot be fixed with the current constraints')
     const transitive = { ...none, direct: new Set<string>() }
-    expect(advisoryStatus(fix, [], false, { ...transitive, minorFailed: true })).toBe('Error')
-    expect(advisoryStatus(fix, [], false, { ...transitive, failed: new Set(['x']) })).toBe('Cannot be fixed with the current constraints')
+    expect(advisoryStatus(fix, [], { ...transitive, minorFailed: true })).toBe('Error')
+    expect(advisoryStatus(fix, [], { ...transitive, failed: new Set(['x']) })).toBe('Cannot be fixed with the current constraints')
   })
 })
 

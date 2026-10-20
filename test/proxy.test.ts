@@ -152,17 +152,14 @@ describe('RegistryProxy', () => {
         proxy.setFixes(fix('3.0.0', ['1.0.0', '1.1.0', '2.0.0']))
         expect(await proxy.visibleVersions('foo')).toEqual(['1.0.0', '3.0.0'])
         expect(await proxy.visibleVersions('bar')).toEqual(['1.0.0', '1.1.0', '2.0.0'])
-        expect(proxy.isIgnoredFix('foo')).toBe(false)
         // Shown versions are not waiting; hidden affected versions are not either.
         expect(await proxy.waitingVersion('foo')).toBeUndefined()
       })
     })
-    test('the fixed version is hidden when ignored', async () => {
-      await withProxy({ locked: new Map([['foo', '1.0.0']]), ignore: [{ name: 'foo', versions: '>=3.0.0' }] }, async (proxy) => {
+    test('ignore still hides the other versions; the fixed version is always shown', async () => {
+      await withProxy({ locked: new Map([['foo', '1.0.0']]), ignore: [{ name: 'foo', versions: '2.0.0' }] }, async (proxy) => {
         proxy.setFixes(fix('3.0.0', ['1.0.0']))
-        expect(await proxy.visibleVersions('foo')).toEqual(['1.0.0', '1.1.0', '2.0.0'])
-        expect(proxy.isIgnoredFix('foo')).toBe(true)
-        expect(proxy.isIgnoredFix('bar')).toBe(false)
+        expect(await proxy.visibleVersions('foo')).toEqual(['1.0.0', '1.1.0', '3.0.0'])
       })
     })
     test('without a fixed version, only affected versions are hidden', async () => {

@@ -125,9 +125,9 @@ Check "Rebase this PR" in the description to rebuild a pull request on the lates
 pubreform reads the security advisories that pub.dev reports (from the GitHub Advisory Database) for every package locked in `pubspec.lock`, direct or transitive. When a locked version is affected, pubreform updates it to a version that is not:
 
 - The pull request that fixes it is titled with `[Security] `, for example `[Security] Update archive from 3.3.7 to 3.3.8`, and its description starts with a table of the advisories. A fixed transitive dependency is listed in the table of packages as `transitive`
-- The waiting period is skipped only for one version: the oldest stable version that is newer than the locked one and is not affected (nor retracted). Its release date is shown in the table. The other versions, including the dependencies of that version, still wait. The affected versions of that package are not used
+- The waiting period is skipped only for one version: the oldest stable version that is newer than the locked one and is not affected, retracted or covered by `ignore`. Its release date is shown in the table. The other versions, including the dependencies of that version, still wait. The affected versions of that package are not used
 - A fix that fits the current constraints goes into the minor and patch pull request, even if no direct dependency changes. Otherwise it is a major update. A transitive dependency is fixed only when the packages that depend on it allow the fixed version
-- To skip an advisory, list its ID (or one of its aliases, such as a CVE) in `ignored_advisories` in `pubspec.yaml`, as for `dart pub`. An `ignore` rule in the config also wins over an advisory. The feature itself cannot be turned off
+- To skip an advisory, list its ID (or one of its aliases, such as a CVE) in `ignored_advisories` in `pubspec.yaml`, as for `dart pub`. Versions that an `ignore` rule in the config covers are never used: the oldest fix that it does not cover is used instead. The feature itself cannot be turned off
 - The job summary lists each affected package and whether a pull request fixes it
 - If the advisories cannot be read from pub.dev, the run fails without changing anything
 

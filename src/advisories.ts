@@ -1,5 +1,6 @@
 // Security advisories: which locked packages need a fix, and the version that fixes them.
 // pub.dev returns the advisories of the GitHub Advisory Database in the OSV format.
+import { type IgnoreRule, isIgnored } from './config.ts'
 import type { Listing } from './proxy.ts'
 import { ignoredAdvisories, isPubDev, parseLock } from './pubspec.ts'
 import { compareVersions, isStable } from './version.ts'
@@ -85,14 +86,20 @@ function stable(version: string): boolean {
   }
 }
 
-/** Undefined when no valid advisory affects the locked version. */
-export function findFix(name: string, locked: string, listing: Listing, advisories: Advisory[]): Fix | undefined {
+/** Undefined when no valid advisory affects the locked version. Versions that `ignore` covers are not chosen. */
+export function findFix(
+  name: string,
+  locked: string,
+  listing: Listing,
+  advisories: Advisory[],
+  ignore: IgnoreRule[],
+): Fix | undefined {
   const affecting = advisories.filter((a) => a.versions.has(locked))
   if (affecting.length === 0) return undefined
   const affected = new Set(advisories.flatMap((a) => [...a.versions]))
   let fix: Fix['fix']
   for (const v of listing.versions) {
-    if (!stable(v.version) || v.retracted === true || affected.has(v.version)) continue
+    if (!stable(v.version) || v.retracted === true || affected.has(v.version) || isIgnored(ignore, name, v.version)) continue
     if (compareVersions(v.version, locked) <= 0) continue
     if (fix === undefined || compareVersions(v.version, fix.version) < 0) {
       fix = { version: v.version, ...(v.published === undefined ? {} : { published: new Date(v.published) }) }
@@ -121,6 +128,7 @@ export async function collectFixes(opts: {
   lock: string
   listing: (name: string) => Promise<Listing>
   advisories: (name: string) => Promise<unknown>
+  ignore: IgnoreRule[]
 }): Promise<Map<string, Fix>> {
   const ignored = ignoredAdvisories(opts.pubspec)
   const targets = [...parseLock(opts.lock)].filter(([, p]) => p.source === 'hosted' && p.url !== undefined && isPubDev(p.url))
@@ -133,7 +141,7 @@ export async function collectFixes(opts: {
       // As in pub: without advisoriesUpdated, the package has no advisories.
       if (listing.advisoriesUpdated === undefined) continue
       const advisories = validAdvisories(parseAdvisories(await opts.advisories(name), name), ignored)
-      const fix = findFix(name, locked.version, listing, advisories)
+      const fix = findFix(name, locked.version, listing, advisories, opts.ignore)
       if (fix) found.push(fix)
     }
   }

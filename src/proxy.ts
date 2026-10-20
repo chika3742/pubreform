@@ -5,8 +5,8 @@
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { Fix } from './advisories.ts'
-import type { IgnoreRule } from './config.ts'
-import { allows, compareVersions, isStable } from './version.ts'
+import { type IgnoreRule, isIgnored } from './config.ts'
+import { compareVersions, isStable } from './version.ts'
 
 export const PROXY_PORT = 8471
 const UPSTREAM = 'https://pub.dev'
@@ -92,12 +92,6 @@ export class RegistryProxy {
     return upstream.listing
   }
 
-  /** Whether the version that fixes the advisories of the package is ignored by the config. */
-  isIgnoredFix(name: string): boolean {
-    const version = this.fixes.get(name)?.fix?.version
-    return version !== undefined && this.isIgnored(name, version)
-  }
-
   /** Versions that the proxy shows for the package. */
   async visibleVersions(name: string): Promise<string[]> {
     const upstream = await this.listing(name)
@@ -129,16 +123,15 @@ export class RegistryProxy {
     if (this.options.locked.get(name) === version) return false
     const fix = this.fixes.get(name)
     if (fix?.affected.has(version)) return true
-    // The version that fixes the advisories is shown even before the cutoff.
-    if (fix?.fix?.version === version) return this.isIgnored(name, version)
+    // The version that fixes the advisories is shown even before the cutoff. It is chosen among versions that
+    // `ignore` does not cover.
+    if (fix?.fix?.version === version) return false
     if (!(published !== undefined && new Date(published) <= this.options.cutoff)) return true
     return this.isIgnored(name, version)
   }
 
   private isIgnored(name: string, version: string): boolean {
-    return this.options.ignore.some(
-      (rule) => rule.name === name && (rule.versions === undefined || allows(rule.versions, version)),
-    )
+    return isIgnored(this.options.ignore, name, version)
   }
 
   private filter(name: string, listing: Listing): Listing {

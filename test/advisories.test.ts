@@ -93,7 +93,7 @@ describe('findFix', () => {
       ['1.3.1', '2026-10-18T00:00:00Z'],
     ])
     const a = advisory('B', ['1.2.3', '1.3.0'])
-    expect(findFix('foo', '1.2.3', l, [advisory('A', ['0.1.0']), a])).toEqual({
+    expect(findFix('foo', '1.2.3', l, [advisory('A', ['0.1.0']), a], [])).toEqual({
       name: 'foo',
       locked: '1.2.3',
       advisories: [a],
@@ -108,14 +108,25 @@ describe('findFix', () => {
       ['1.0.1', '2026-01-03T00:00:00Z', true],
       ['1.0.2', '2026-01-04T00:00:00Z'],
     ])
-    expect(findFix('foo', '1.0.0', l, [advisory('A', ['1.0.0'])])?.fix?.version).toBe('1.0.2')
+    expect(findFix('foo', '1.0.0', l, [advisory('A', ['1.0.0'])], [])?.fix?.version).toBe('1.0.2')
+  })
+  test('skips versions that ignore covers: the next oldest fix', () => {
+    const l = listing([
+      ['1.0.0', '2026-01-01T00:00:00Z'],
+      ['1.0.1', '2026-01-02T00:00:00Z'],
+      ['1.0.2', '2026-01-03T00:00:00Z'],
+    ])
+    const a = [advisory('A', ['1.0.0'])]
+    expect(findFix('foo', '1.0.0', l, a, [{ name: 'foo', versions: '1.0.1' }])?.fix?.version).toBe('1.0.2')
+    expect(findFix('foo', '1.0.0', l, a, [{ name: 'bar' }])?.fix?.version).toBe('1.0.1')
+    expect(findFix('foo', '1.0.0', l, a, [{ name: 'foo' }])?.fix).toBeUndefined()
   })
   test('advisories in id order', () => {
     const l = listing([['1.0.0', '2026-01-01T00:00:00Z']])
-    expect(findFix('foo', '1.0.0', l, [advisory('B', ['1.0.0']), advisory('A', ['1.0.0'])])!.advisories.map((a) => a.id)).toEqual(['A', 'B'])
+    expect(findFix('foo', '1.0.0', l, [advisory('B', ['1.0.0']), advisory('A', ['1.0.0'])], [])!.advisories.map((a) => a.id)).toEqual(['A', 'B'])
   })
   test('undefined when the locked version is not affected', () => {
-    expect(findFix('foo', '1.0.0', listing([['1.0.0', '2026-01-01T00:00:00Z']]), [advisory('A', ['0.9.0'])])).toBeUndefined()
+    expect(findFix('foo', '1.0.0', listing([['1.0.0', '2026-01-01T00:00:00Z']]), [advisory('A', ['0.9.0'])], [])).toBeUndefined()
   })
   test('no fixed version', () => {
     const l = listing([
@@ -123,7 +134,7 @@ describe('findFix', () => {
       ['1.1.0', '2026-01-02T00:00:00Z'],
       ['0.9.0', '2025-01-01T00:00:00Z'],
     ])
-    const fix = findFix('foo', '1.0.0', l, [advisory('A', ['1.0.0', '1.1.0'])])!
+    const fix = findFix('foo', '1.0.0', l, [advisory('A', ['1.0.0', '1.1.0'])], [])!
     expect(fix.fix).toBeUndefined()
     expect(fix.advisories.map((a) => a.id)).toEqual(['A'])
   })
@@ -143,6 +154,7 @@ describe('collectFixes', () => {
     const fixes = await collectFixes({
       pubspec: 'name: app\nignored_advisories: [GHSA-ignored]\n',
       lock,
+      ignore: [{ name: 'foo', versions: '1.0.0' }],
       listing: async (name) => {
         requested.push(`listing ${name}`)
         return listings[name]!
@@ -157,7 +169,7 @@ describe('collectFixes', () => {
     expect(fixes.get('foo')!.fix?.version).toBe('1.0.1')
   })
   test('a failure to fetch is thrown', async () => {
-    const opts = { pubspec: 'name: app\n', lock, advisories: async () => ({ advisories: [] }) }
+    const opts = { pubspec: 'name: app\n', lock, advisories: async () => ({ advisories: [] }), ignore: [] }
     await expect(
       collectFixes({
         ...opts,
