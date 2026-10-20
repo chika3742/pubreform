@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import type { UnitResult } from '../src/applier.ts'
 import type { Unit } from '../src/planner.ts'
-import { type PrState, decide } from '../src/reconciler.ts'
+import type { Fix } from '../src/advisories.ts'
+import { type Outcome, type PrState, advisoryStatus, decide } from '../src/reconciler.ts'
 import { type Meta, REBASE_LINE, branchName, renderMeta } from '../src/render.ts'
 
 const ctx = { baseHash: 'base', configHash: 'config' }
@@ -13,6 +14,8 @@ function result(kind: Unit['kind'], changes: Record<string, [string, string]>, m
     changes: Object.fromEntries(
       Object.entries(changes).map(([name, [from, to]]) => [name, { from, to, section: 'dependencies' as const }]),
     ),
+    transitiveFixes: {},
+    advisories: [],
   }
 }
 
@@ -90,7 +93,7 @@ describe('decide: units with pull requests', () => {
   const op = (r: UnitResult, p: PrState) => decide([r], [], noUncertain, [p], [], ctx)
   test('none when nothing changed', () => {
     const p = pr(http)
-    expect(op(http, p)).toEqual([{ op: 'none', pr: p }])
+    expect(op(http, p)).toEqual([{ op: 'none', pr: p, result: http }])
   })
   test('manual commits', () => {
     const p = pr(http, { headSha: 'other' })
@@ -98,7 +101,7 @@ describe('decide: units with pull requests', () => {
   })
   test('head at meta.commit after a regeneration is not a manual commit', () => {
     const p = pr(http, { headSha: 'c2', meta: { commit: 'c2', previous: 'c1' } })
-    expect(op(http, p)).toEqual([{ op: 'none', pr: p }])
+    expect(op(http, p)).toEqual([{ op: 'none', pr: p, result: http }])
   })
   test('head still at meta.previous: the last regeneration stopped before moving the branch', () => {
     const p = pr(http, { headSha: 'c1', meta: { commit: 'c2', previous: 'c1' } })
@@ -124,7 +127,7 @@ describe('decide: units with pull requests', () => {
   })
   test('only from changed is not a content change', () => {
     const p = pr(result('minor', { lints: ['5.0.0', '6.1.0'], meta: ['1.16.0', '1.17.0'] }))
-    expect(op(minor, p)).toEqual([{ op: 'none', pr: p }])
+    expect(op(minor, p)).toEqual([{ op: 'none', pr: p, result: minor }])
   })
   test('base or config changed', () => {
     expect(op(http, pr(http, { meta: { baseHash: 'old' } }))[0]).toMatchObject({ op: 'regenerate', contentChanged: false })
@@ -141,6 +144,43 @@ describe('decide: units with pull requests', () => {
   })
 })
 
+describe('decide: security advisories', () => {
+  const op = (r: UnitResult, p: PrState) => decide([r], [], noUncertain, [p], [], ctx)
+  const fixed: UnitResult = {
+    ...http,
+    advisories: [{ package: 'http', advisory: { id: 'GHSA-1', aliases: [], versions: new Set() }, from: '1.5.0', to: '2.0.0' }],
+  }
+  test('refresh when only the advisories changed', () => {
+    const p = pr(http)
+    expect(op(fixed, p)).toEqual([{ op: 'refresh', pr: p, result: fixed }])
+    const q = pr(http, { meta: { advisories: ['GHSA-1'] } })
+    expect(op(http, q)).toEqual([{ op: 'refresh', pr: q, result: http }])
+    const same = pr(http, { meta: { advisories: ['GHSA-1'] } })
+    expect(op(fixed, same)).toEqual([{ op: 'none', pr: same, result: fixed }])
+  })
+  test('regenerate and notifyManual come first', () => {
+    const changed = pr(http, { meta: { baseHash: 'old' } })
+    expect(op(fixed, changed)).toEqual([{ op: 'regenerate', pr: changed, result: fixed, contentChanged: false }])
+    const manual = pr(http, { headSha: 'other' })
+    expect(op(fixed, manual)).toEqual([{ op: 'notifyManual', pr: manual }])
+  })
+})
+
+describe('advisoryStatus', () => {
+  const fix: Fix = { name: 'x', locked: '1.0.0', advisories: [], affected: new Set(['1.0.0']), fix: { version: '1.0.1' } }
+  const o = (action: Outcome['action'], pr?: number, fixes = ['x']): Outcome => ({ kind: 'minor', packages: [], action, pr, fixes })
+  test('in order', () => {
+    expect(advisoryStatus({ ...fix, fix: undefined }, [o('created', 1)], false)).toBe('No fixed version')
+    expect(advisoryStatus(fix, [o('created', 1)], true)).toBe('No fixed version')
+    expect(advisoryStatus(fix, [o('unchanged', 5), o('refreshed', 2), o('skipped', 3), o('error', 4)], false)).toBe('Fixed in #2, #5')
+    expect(advisoryStatus(fix, [o('regenerated', 6)], false)).toBe('Fixed in #6')
+    expect(advisoryStatus(fix, [o('skipped', 3), o('error', 4)], false)).toBe('Closed in #3')
+    expect(advisoryStatus(fix, [o('error', undefined), o('created', 1, ['y'])], false)).toBe('Error')
+    expect(advisoryStatus(fix, [o('notified', 1)], false)).toBe('Cannot be fixed with the current constraints')
+    expect(advisoryStatus(fix, [], false)).toBe('Cannot be fixed with the current constraints')
+  })
+})
+
 describe('decide: group matching', () => {
   test('a group keeps its branch when members change', () => {
     const old = pr(result('group', { x: ['1.0.0', '2.0.0'], a: ['1.0.0', '2.0.0'] }), { branch: 'pubreform/group/x' })
@@ -154,7 +194,7 @@ describe('decide: group matching', () => {
     const p2 = pr(result('group', { a: ['1.0.0', '2.0.0'], b: ['1.0.0', '2.0.0'] }), { number: 102, branch: 'pubreform/group/b' })
     const ops = decide([group], [], noUncertain, [p1, p2], [], ctx)
     expect(ops).toEqual([
-      { op: 'none', pr: p2 },
+      { op: 'none', pr: p2, result: group },
       { op: 'close', pr: p1, supersededBy: 'pubreform/group/b' },
     ])
   })

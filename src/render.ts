@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parse } from 'yaml'
-import type { Change, UnitResult } from './applier.ts'
+import type { UnitResult } from './applier.ts'
 import type { Unit, UnitKind } from './planner.ts'
 import { compareVersions, parseVersion } from './version.ts'
 
@@ -20,6 +20,8 @@ export interface Meta {
   previous?: string
   /** Set when pubreform closed the pull request. */
   closed?: true
+  /** IDs of the security advisories that the update fixes. Missing means none. */
+  advisories?: string[]
 }
 
 // ---- Branch names, titles, commit messages ----
@@ -35,34 +37,49 @@ export function branchName(unit: Unit): string {
   }
 }
 
+const SECURITY_PREFIX = '[Security] '
+
+interface Row {
+  from: string
+  to: string
+  type: 'direct' | 'dev' | 'transitive'
+}
+
+/** Changed direct dependencies and fixed transitive ones, by package name. */
+function rows(result: UnitResult): [string, Row][] {
+  const all: [string, Row][] = [
+    ...Object.entries(result.changes).map(([name, c]): [string, Row] => [
+      name,
+      { from: c.from, to: c.to, type: c.section === 'dev_dependencies' ? 'dev' : 'direct' },
+    ]),
+    ...Object.entries(result.transitiveFixes).map(([name, c]): [string, Row] => [name, { ...c, type: 'transitive' }]),
+  ]
+  return all.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+}
+
 export function title(result: UnitResult): string {
   const { kind, members, targets } = result.unit
-  const names = Object.keys(result.changes)
-  const to = (name: string) => result.changes[name]?.to ?? targets[name]
+  const changed = new Map(rows(result))
+  const to = (name: string) => changed.get(name)?.to ?? targets[name]
   // single, and minor / group with one change, name the package.
-  const name = kind === 'single' ? members[0]! : names.length === 1 ? names[0] : undefined
-  if (name !== undefined) return `Update ${name} from ${result.changes[name]?.from ?? '?'} to ${to(name)}`
-  if (kind === 'minor') return `Update minor and patch (${names.length} packages)`
-  return `Update ${[...members].sort().map((n) => `${n} to ${to(n)}`).join(', ')}`
+  const name = kind === 'single' ? members[0]! : changed.size === 1 ? [...changed.keys()][0] : undefined
+  const prefix = result.advisories.length > 0 ? SECURITY_PREFIX : ''
+  if (name !== undefined) return `${prefix}Update ${name} from ${changed.get(name)?.from ?? '?'} to ${to(name)}`
+  if (kind === 'minor') return `${prefix}Update minor and patch (${changed.size} packages)`
+  return `${prefix}Update ${[...members].sort().map((n) => `${n} to ${to(n)}`).join(', ')}`
 }
 
-const typeOf = (change: Change) => (change.section === 'dev_dependencies' ? 'dev' : 'direct')
-
-function sortedChanges(changes: Record<string, Change>): [string, Change][] {
-  return Object.entries(changes).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-}
-
-function changeTable(changes: Record<string, Change>, link: boolean): string {
-  const rows = sortedChanges(changes).map(([name, c]) => {
+function changeTable(result: UnitResult, link: boolean): string {
+  const lines = rows(result).map(([name, c]) => {
     const label = link ? `[${name}](https://pub.dev/packages/${name})` : name
-    return `| ${label} | ${c.from} | ${c.to} | ${typeOf(c)} |`
+    return `| ${label} | ${c.from} | ${c.to} | ${c.type} |`
   })
-  return ['| Package | From | To | Type |', '|---|---|---|---|', ...rows].join('\n')
+  return ['| Package | From | To | Type |', '|---|---|---|---|', ...lines].join('\n')
 }
 
 export function commitMessage(result: UnitResult): string {
-  if (result.unit.kind === 'single' || Object.keys(result.changes).length === 1) return title(result)
-  return `${title(result)}\n\n${changeTable(result.changes, false)}\n`
+  if (result.unit.kind === 'single' || rows(result).length === 1) return title(result)
+  return `${title(result)}\n\n${changeTable(result, false)}\n`
 }
 
 // ---- Package information from the pub cache ----
@@ -207,7 +224,7 @@ function truncate(text: string, budget: number, name: string): string {
   return `${closeFence(lines.join('\n'))}\n…\n\n[Full changelog](${changelogUrl(name)})`
 }
 
-function packageSection(name: string, change: Change, info: PackageInfo, changelog: string | undefined): string {
+function packageSection(name: string, change: { from: string; to: string }, info: PackageInfo, changelog: string | undefined): string {
   const links = [`[pub.dev](https://pub.dev/packages/${name}/versions/${change.to})`]
   if (info.source) links.push(`[Source](${info.source})`)
   const parts = [`### ${name} ${change.from} → ${change.to}`, links.join(' · ')]
@@ -257,20 +274,64 @@ export function metaOf(
   const meta: Meta = {
     v: 1,
     kind: result.unit.kind,
-    packages: Object.fromEntries(sortedChanges(result.changes).map(([name, c]) => [name, [c.from, c.to]])),
+    packages: Object.fromEntries(rows(result).map(([name, c]) => [name, [c.from, c.to]])),
     baseHash: hashes.baseHash,
     configHash: hashes.configHash,
     commit,
   }
   if (previous !== undefined) meta.previous = previous
+  const advisories = advisoryIds(result)
+  if (advisories.length > 0) meta.advisories = advisories
   return meta
+}
+
+/** IDs of the advisories that the result fixes, without duplicates, in order. */
+export function advisoryIds(result: UnitResult): string[] {
+  return [...new Set(result.advisories.map((a) => a.advisory.id))].sort()
+}
+
+const SUMMARY_LIMIT = 200
+
+/** The advisory summary, safe in a table cell: it comes from the advisory database. */
+function summaryCell(summary: string): string {
+  const text = withoutBacklinks(summary).replace(/\r?\n|\r/g, ' ').replaceAll('|', '\\|')
+  return text.length > SUMMARY_LIMIT ? `${text.slice(0, SUMMARY_LIMIT)}…` : text
+}
+
+/** YYYY-MM-DD in the time zone. */
+function dateIn(date: Date, timeZone: string): string {
+  return date.toLocaleDateString('sv-SE', { timeZone })
+}
+
+function advisoryTable(result: UnitResult, timeZone: string): string {
+  const lines = result.advisories.map(({ package: name, advisory, from, to, early }) => {
+    const id = advisory.url ? `[${advisory.id}](${advisory.url})` : advisory.id
+    const text = advisory.summary === undefined ? id : `${id} ${summaryCell(advisory.summary)}`
+    const toCell = early ? `${to} (released ${dateIn(early, timeZone)})` : to
+    return `| [${name}](https://pub.dev/packages/${name}) | ${text} | ${advisory.severity ?? ''} | ${from} | ${toCell} |`
+  })
+  const parts = [
+    'Fixes the following security advisories.',
+    ['| Package | Advisory | Severity | From | To |', '|---|---|---|---|---|', ...lines].join('\n'),
+  ]
+  if (result.advisories.some((a) => a.early)) {
+    parts.push('Versions with a release date are used before `min_release_age_days` has passed, to fix the advisory.')
+  }
+  return parts.join('\n\n')
 }
 
 /**
  * `generated` is the number of files that the post_update commands changed.
+ * `timeZone` is for the release dates of the versions that fix advisories.
  */
-export function renderBody(result: UnitResult, meta: Meta, infos: Map<string, PackageInfo>, generated = 0): string {
-  const changes = sortedChanges(result.changes)
+export function renderBody(
+  result: UnitResult,
+  meta: Meta,
+  infos: Map<string, PackageInfo>,
+  opts: { generated?: number; timeZone: string },
+): string {
+  const changes = rows(result)
+  const generated = opts.generated ?? 0
   const build = (withChangelog: boolean) => {
     const budget = Math.floor(CHANGELOG_BUDGET / changes.length)
     const sections = changes.map(([name, change]) => {
@@ -283,8 +344,9 @@ export function renderBody(result: UnitResult, meta: Meta, infos: Map<string, Pa
       return packageSection(name, change, info, changelog)
     })
     return [
+      ...(result.advisories.length > 0 ? [advisoryTable(result, opts.timeZone)] : []),
       'Updates the following packages.',
-      changeTable(result.changes, true),
+      changeTable(result, true),
       ...(generated > 0 ? [`Files changed by the \`post_update\` commands: ${generated}`] : []),
       ...sections,
       '---',
@@ -298,7 +360,7 @@ export function renderBody(result: UnitResult, meta: Meta, infos: Map<string, Pa
 
 // ---- Comments ----
 
-export function contentChangedComment(before: Meta['packages'], after: Record<string, Change>): string {
+export function contentChangedComment(before: Meta['packages'], after: Record<string, { from: string; to: string }>): string {
   const names = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()
   const rows: string[] = []
   for (const name of names) {

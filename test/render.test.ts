@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import type { Advisory } from '../src/advisories.ts'
 import type { UnitResult } from '../src/applier.ts'
 import {
   branchName,
@@ -34,6 +35,8 @@ const single: UnitResult = {
     http: { from: '1.5.0', to: '2.0.0', section: 'dependencies' },
     async: { from: '2.13.0', to: '2.13.1', section: 'dependencies' },
   },
+  transitiveFixes: {},
+  advisories: [],
 }
 const group: UnitResult = {
   unit: { kind: 'group', members: ['lints', 'http'], targets: {} },
@@ -42,6 +45,8 @@ const group: UnitResult = {
     lints: { from: '6.0.0', to: '6.1.0', section: 'dev_dependencies' },
     http: { from: '1.5.0', to: '1.6.0', section: 'dependencies' },
   },
+  transitiveFixes: {},
+  advisories: [],
 }
 const hashes = { baseHash: 'b'.repeat(64), configHash: 'c'.repeat(64) }
 
@@ -66,6 +71,8 @@ describe('names', () => {
       unit: { kind: 'minor', members: ['http'], targets: {} },
       files: { pubspec: '', lock: '' },
       changes: { http: { from: '1.5.0', to: '1.6.0', section: 'dependencies' } },
+      transitiveFixes: {},
+      advisories: [],
     }
     expect(title(one)).toBe('Update http from 1.5.0 to 1.6.0')
     expect(commitMessage(one)).toBe('Update http from 1.5.0 to 1.6.0')
@@ -79,6 +86,78 @@ describe('names', () => {
     expect(commitMessage(group)).toBe(
       'Update http to 1.6.0, lints to 6.1.0\n\n| Package | From | To | Type |\n|---|---|---|---|\n| http | 1.5.0 | 1.6.0 | direct |\n| lints | 6.0.0 | 6.1.0 | dev |\n',
     )
+  })
+})
+
+describe('security advisories', () => {
+  const adv = (id: string, extra: Partial<Advisory> = {}): Advisory => ({ id, aliases: [], versions: new Set(), ...extra })
+  // A minor unit that fixes a direct and a transitive dependency.
+  const fixing: UnitResult = {
+    unit: { kind: 'minor', members: ['vuln'], targets: {} },
+    files: { pubspec: '', lock: '' },
+    changes: { vuln: { from: '1.0.0', to: '1.0.1', section: 'dependencies' } },
+    transitiveFixes: { child: { from: '1.0.0', to: '1.0.1' } },
+    advisories: [
+      {
+        package: 'child',
+        advisory: adv('GHSA-c', { summary: 'Bad | things\nby @someone in #12', severity: 'moderate' }),
+        from: '1.0.0',
+        to: '1.0.1',
+      },
+      {
+        package: 'vuln',
+        advisory: adv('GHSA-v', { url: 'https://github.com/advisories/GHSA-v', summary: 'x'.repeat(250), severity: 'high' }),
+        from: '1.0.0',
+        to: '1.0.1',
+        early: new Date('2026-10-18T20:00:00Z'),
+      },
+    ],
+  }
+  test('title, commit message and metadata', () => {
+    expect(title(fixing)).toBe('[Security] Update minor and patch (2 packages)')
+    expect(commitMessage(fixing)).toBe(
+      '[Security] Update minor and patch (2 packages)\n\n| Package | From | To | Type |\n|---|---|---|---|\n| child | 1.0.0 | 1.0.1 | transitive |\n| vuln | 1.0.0 | 1.0.1 | direct |\n',
+    )
+    const meta = metaOf(fixing, hashes, 'abc')
+    expect(meta.packages).toEqual({ child: ['1.0.0', '1.0.1'], vuln: ['1.0.0', '1.0.1'] })
+    expect(meta.advisories).toEqual(['GHSA-c', 'GHSA-v'])
+    expect(parseMeta(renderMeta(meta))).toEqual(meta)
+    expect('advisories' in metaOf(single, hashes, 'abc')).toBe(false)
+  })
+  test('one fixed transitive dependency is titled like single', () => {
+    const only: UnitResult = { ...fixing, unit: { kind: 'minor', members: [], targets: {} }, changes: {}, advisories: [fixing.advisories[0]!] }
+    expect(title(only)).toBe('[Security] Update child from 1.0.0 to 1.0.1')
+    expect(commitMessage(only)).toBe('[Security] Update child from 1.0.0 to 1.0.1')
+    expect(title({ ...single, advisories: fixing.advisories })).toBe('[Security] Update http from 1.5.0 to 2.0.0')
+  })
+  test('the advisory table comes first', () => {
+    const meta = metaOf(fixing, hashes, 'abc')
+    const body = renderBody(fixing, meta, new Map(), { timeZone: 'Asia/Tokyo' })
+    expect(body).toStartWith(`Fixes the following security advisories.
+
+| Package | Advisory | Severity | From | To |
+|---|---|---|---|---|
+| [child](https://pub.dev/packages/child) | GHSA-c Bad \\| things by @\u200bsomeone in #\u200b12 | moderate | 1.0.0 | 1.0.1 |
+| [vuln](https://pub.dev/packages/vuln) | [GHSA-v](https://github.com/advisories/GHSA-v) ${'x'.repeat(200)}… | high | 1.0.0 | 1.0.1 (released 2026-10-19) |
+
+Versions with a release date are used before \`min_release_age_days\` has passed, to fix the advisory.
+
+Updates the following packages.
+
+| Package | From | To | Type |
+|---|---|---|---|
+| [child](https://pub.dev/packages/child) | 1.0.0 | 1.0.1 | transitive |
+| [vuln](https://pub.dev/packages/vuln) | 1.0.0 | 1.0.1 | direct |
+
+### child 1.0.0 → 1.0.1
+`)
+    expect(body).toContain('### vuln 1.0.0 → 1.0.1')
+  })
+  test('no release date sentence without early versions', () => {
+    const late = { ...fixing, advisories: fixing.advisories.map(({ early, ...a }) => a) }
+    const body = renderBody(late, metaOf(late, hashes, 'abc'), new Map(), { timeZone: 'UTC' })
+    expect(body).toContain('| 1.0.0 | 1.0.1 |\n\nUpdates the following packages.')
+    expect(body).not.toContain('released')
   })
 })
 
@@ -171,6 +250,7 @@ describe('renderBody', () => {
       new Map([
         ['http', { source: 'https://github.com/dart-lang/http', changelog: '## 2.0.0\n\n- New.\n\n## 1.5.0\n' }],
       ]),
+      { timeZone: 'UTC' },
     )
     expect(body).toBe(`Updates the following packages.
 
@@ -215,6 +295,7 @@ ${renderMeta(meta)}
       single,
       meta,
       new Map([['http', { changelog: `## 2.0.0\n\n${fake}\n`, source: `https://example.com\n${fake}` }]]),
+      { timeZone: 'UTC' },
     )
     // The copy in the source URL is kept as is; the one in the changelog has its comment shown as text.
     expect(body).toContain(`\n${fake})`)
@@ -223,7 +304,7 @@ ${renderMeta(meta)}
   })
   test('truncates each changelog to its share of 50,000 characters', () => {
     const long = `## 2.0.0\n\n${'- line of text\n'.repeat(4000)}`
-    const body = renderBody(single, meta, new Map([['http', { changelog: long }], ['async', { changelog: `## 2.13.1\n\n${'- x\n'.repeat(10)}` }]]))
+    const body = renderBody(single, meta, new Map([['http', { changelog: long }], ['async', { changelog: `## 2.13.1\n\n${'- x\n'.repeat(10)}` }]]), { timeZone: 'UTC' })
     const httpSection = body.slice(body.indexOf('### http'))
     const changelog = httpSection.slice(httpSection.indexOf('## 2.0.0'), httpSection.indexOf('\n\n</details>'))
     expect(changelog.length).toBeLessThanOrEqual(25_000 + 100)
@@ -233,7 +314,7 @@ ${renderMeta(meta)}
   })
   test('closes a code block that truncation cuts', () => {
     const long = `## 2.0.0\n\n\`\`\`dart\n${'final x = 1;\n'.repeat(5000)}\`\`\`\n`
-    const body = renderBody(single, meta, new Map([['http', { changelog: long }]]))
+    const body = renderBody(single, meta, new Map([['http', { changelog: long }]]), { timeZone: 'UTC' })
     expect(body).toContain('final x = 1;\n```\n…\n\n[Full changelog](https://pub.dev/packages/http/changelog)')
     expect(body.split('\n').filter((l) => l.startsWith('```')).length % 2).toBe(0)
   })
@@ -242,6 +323,8 @@ ${renderMeta(meta)}
       unit: { kind: 'minor', members: [], targets: {} },
       files: { pubspec: '', lock: '' },
       changes: {},
+      transitiveFixes: {},
+      advisories: [],
     }
     const infos = new Map()
     for (let i = 0; i < 400; i++) {
@@ -249,7 +332,7 @@ ${renderMeta(meta)}
       many.changes[name] = { from: '1.0.0', to: '1.0.1', section: 'dependencies' }
       infos.set(name, { source: `https://github.com/example/${name}`, changelog: `## 1.0.1\n\n${'- fix\n'.repeat(30)}` })
     }
-    const body = renderBody(many, metaOf(many, hashes, 'abc'), infos)
+    const body = renderBody(many, metaOf(many, hashes, 'abc'), infos, { timeZone: 'UTC' })
     expect(body).not.toContain('<details>')
     expect(body).toContain('[Changelog](https://pub.dev/packages/package_with_a_rather_long_name_0/changelog)')
   })
@@ -280,9 +363,9 @@ describe('comments', () => {
     const before: Meta['packages'] = { http: ['1.5.0', '1.6.0'], meta: ['1.16.0', '1.17.0'], same: ['1.0.0', '1.1.0'] }
     expect(
       contentChangedComment(before, {
-        http: { from: '1.5.0', to: '1.6.1', section: 'dependencies' },
-        lints: { from: '6.0.0', to: '6.1.0', section: 'dev_dependencies' },
-        same: { from: '1.0.1', to: '1.1.0', section: 'dependencies' },
+        http: { from: '1.5.0', to: '1.6.1' },
+        lints: { from: '6.0.0', to: '6.1.0' },
+        same: { from: '1.0.1', to: '1.1.0' },
       }),
     ).toBe(`The update in this PR has changed.
 

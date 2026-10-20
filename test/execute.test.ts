@@ -9,6 +9,8 @@ const http: UnitResult = {
   unit: { kind: 'single', members: ['http'], targets: { http: '2.0.0' } },
   files: { pubspec: 'p', lock: 'l' },
   changes: { http: { from: '1.5.0', to: '2.0.0', section: 'dependencies' } },
+  transitiveFixes: {},
+  advisories: [],
 }
 const group: UnitResult = {
   unit: { kind: 'group', members: ['a', 'b'], targets: {} },
@@ -17,6 +19,8 @@ const group: UnitResult = {
     a: { from: '1.0.0', to: '2.0.0', section: 'dependencies' },
     b: { from: '1.0.0', to: '2.0.0', section: 'dependencies' },
   },
+  transitiveFixes: {},
+  advisories: [],
 }
 const prOf = (number: number, branch: string, extra: Partial<PrState> = {}): PrState => ({
   number,
@@ -91,6 +95,7 @@ function context(github: ExecuteContext["github"], infos: string[] = []): Execut
     formatLog: (log) => log.replaceAll('secret', '***'),
     log: () => {},
     info: (m) => infos.push(m),
+    timeZone: 'UTC',
   }
 }
 
@@ -159,6 +164,57 @@ describe('execute', () => {
       previous: 'head',
     })
     expect(outcomes).toEqual([{ kind: 'single', packages: ['http'], action: 'regenerated', pr: 3 }])
+  })
+
+  test('refresh updates the title, body and advisories only: no commit, no post_update, no comment', async () => {
+    const { github, calls } = fakeGitHub()
+    const meta = {
+      v: 1 as const,
+      kind: 'single' as const,
+      packages: { http: ['1.5.0', '2.0.0'] as [string, string] },
+      baseHash: 'old-bh',
+      configHash: 'old-ch',
+      commit: 'head',
+      previous: 'before',
+    }
+    const pr = prOf(3, 'pubreform/single/http', {
+      meta,
+      body: `Updates the following packages.\n\nFiles changed by the \`post_update\` commands: 4\n\n${renderMeta(meta)}\n`,
+    })
+    let update = { title: '', body: '' }
+    github.updatePr = async (_n, o) => {
+      calls.push('updatePr')
+      update = o
+    }
+    const fixed: UnitResult = {
+      ...http,
+      advisories: [{ package: 'http', advisory: { id: 'GHSA-1', aliases: [], versions: new Set() }, from: '1.5.0', to: '2.0.0' }],
+    }
+    const infos: string[] = []
+    const generate = async () => {
+      calls.push('generate')
+      return []
+    }
+    const outcomes = await execute([{ op: 'refresh', pr, result: fixed }], { ...context(github, infos), generate })
+    expect(calls).toEqual(['updatePr'])
+    expect(infos).toEqual(['Refresh #3 (pubreform/single/http): security advisories changed'])
+    expect(update.title).toBe('[Security] Update http from 1.5.0 to 2.0.0')
+    expect(update.body).toStartWith('Fixes the following security advisories.')
+    expect(update.body).toContain('Files changed by the `post_update` commands: 4')
+    expect(update.body).toContain('- [ ] Rebase this PR')
+    expect(parseMeta(update.body)).toEqual({ ...meta, advisories: ['GHSA-1'] })
+    expect(outcomes).toEqual([{ kind: 'single', packages: ['http'], action: 'refreshed', pr: 3, fixes: ['http'] }])
+
+    // Advisories that are gone are removed; no line without generated files.
+    const { github: g2 } = fakeGitHub()
+    g2.updatePr = async (_n, o) => {
+      update = o
+    }
+    const withIds = { ...pr, meta: { ...meta, advisories: ['GHSA-1'] }, body: renderMeta(meta) }
+    await execute([{ op: 'refresh', pr: withIds, result: http }], context(g2))
+    expect(update.title).toBe('Update http from 1.5.0 to 2.0.0')
+    expect(update.body).not.toContain('post_update')
+    expect(parseMeta(update.body)).toEqual(meta)
   })
 
   test('a moved branch is an error commented on the pull request', async () => {
