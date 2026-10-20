@@ -247,7 +247,7 @@ pub(args: string[], opts: { pubspec: string; lock: string }): Promise<{ pubspec:
 - pub.dev への取得は 30 秒で打ち切る。失敗したら 502 を返す（pub が失敗し、その解決のエラーになる）
 - テストのために、環境変数 `PUBREFORM_UPSTREAM` があれば、pub.dev の代わりにその URL から取得する（E2E でフィクスチャー用サーバーに向けるため。利用者向けの設定ではないので、README には書かない）
 - 計画のために `visibleVersions(name)`（絞り込み後のバージョン一覧）を公開する
-- ジョブサマリーのために `waitingVersion(name)` を公開する。cutoff より後に公開されたことだけが理由で隠した安定版のうち最新のもの（バージョンと公開日時）を返す。見せている安定版のどれよりも新しいときだけ返し、`ignore` に該当するものと、要修正のパッケージの影響を受けるバージョン（下記）は含めない。一覧を取得できなければ返さない。見せた修正版は「隠した」に入らないので、待機中の表には出ない
+- ジョブサマリーのために `waitingVersion(name)` を公開する。cutoff より後に公開されたことだけが理由で隠した安定版のうち最新のもの（バージョンと公開日時）を返す。見せている安定版のどれよりも新しいときだけ返し、`ignore` に該当するものは含めない。一覧を取得できなければ返さない。要修正のパッケージの `affected` のバージョン（下記）も候補から除く（隠す理由が cutoff ではないため）。見せた修正版は隠していないので、待機中の表には出ない
 - セキュリティアドバイザリ（§20）のために、次を公開する
   - `upstreamListing(name)`: 保持している pub.dev の一覧をそのまま返す。取得に失敗したら例外を投げる。§20 と計画の解決が、同じ一覧を見るため
   - `setFixes(fixes)`: 要修正のパッケージを渡す。計画の前に 1 回だけ呼ぶ
@@ -563,7 +563,7 @@ interface PrState {
 type Op =
   | { op: 'create'; result: UnitResult; branch: string }
   | { op: 'regenerate'; pr: PrState; result: UnitResult; contentChanged: boolean }
-  | { op: 'notifyManual'; pr: PrState }
+  | { op: 'notifyManual'; pr: PrState; result: UnitResult }   // result: 対応した単位の結果（ジョブサマリー用）
   | { op: 'commentError'; pr: PrState; log: string }
   | { op: 'close'; pr: PrState; supersededBy?: string } // supersededBy: 引き継ぐ単位のブランチ
   | { op: 'refresh'; pr: PrState; result: UnitResult }   // コミットは作り直さず、タイトル、本文、メタデータだけを更新する
@@ -656,9 +656,11 @@ Security advisories の表:
 | 状況 | Status |
 |---|---|
 | `fix` がない、または `isIgnoredFix(name)` | `No fixed version` |
-| このパッケージを直す結果があり、その PR の操作が `create`、`regenerate`、`refresh`、`none` のどれか（成功したもの） | `Fixed in #<n>`（複数なら `, ` でつなぐ。番号の順） |
+| このパッケージを直す結果があり、その PR の操作が `create`、`regenerate`、`refresh`、`none` のどれか（成功したもの） | `Fixed in #<n>`（複数なら `, ` でつなぐ。番号の順。成功した PR だけを並べる） |
+| このパッケージを直す結果があり、その PR の操作が `notifyManual`（人手のコミットがあるので更新しない） | `Not updated in #<n> (manual commits)` |
 | このパッケージを直す結果があり、その操作が `skip`（利用者が閉じた同じ内容の PR がある） | `Closed in #<n>` |
 | このパッケージを直す結果があり、その操作がエラーになった | `Error` |
+| 直接依存で、適用に失敗した単位（`commentError` / `error`）のメンバーか、`uncertain` に入っている。推移的依存で、マイナー・パッチグループの適用に失敗した（推移的依存の修正はふつうそこで入るため） | `Error` |
 | それ以外 | `Cannot be fixed with the current constraints` |
 
 ## 17. テスト

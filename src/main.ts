@@ -14,7 +14,7 @@ import { type Plan, plan } from './planner.ts'
 import { RegistryProxy } from './proxy.ts'
 import { Pub, cachedPackageDir, cloneBase, pubCacheDir } from './pub.ts'
 import { type Section, baseHash, directDeps, hasWorkspace, isFlutter, lockVersions } from './pubspec.ts'
-import { type Outcome, type UnitError, advisoryStatus, decide, execute } from './reconciler.ts'
+import { type Outcome, type PlanFailures, type UnitError, advisoryStatus, decide, execute } from './reconciler.ts'
 import { formatLog, readPackageInfo } from './render.ts'
 
 async function readOptional(file: string): Promise<string | undefined> {
@@ -58,6 +58,7 @@ async function writeSummary(opts: {
   fixes: Map<string, Fix>
   /** Whether the version that fixes the package is ignored by the config. */
   isIgnoredFix: (name: string) => boolean
+  failures: PlanFailures
   prUrl: (n: number) => string
 }) {
   const { window, config, outcomes } = opts
@@ -124,7 +125,7 @@ async function writeSummary(opts: {
         f.name,
         f.locked,
         f.advisories.map((a) => a.id).join(', '),
-        advisoryStatus(f, outcomes, opts.isIgnoredFix(f.name)),
+        advisoryStatus(f, outcomes, opts.isIgnoredFix(f.name), opts.failures),
       ]),
     ])
   }
@@ -298,6 +299,12 @@ export async function run(): Promise<void> {
     outcomes,
     fixes,
     isIgnoredFix: (name) => proxy.isIgnoredFix(name),
+    failures: {
+      direct: new Set(deps.map((d) => d.name)),
+      uncertain: thePlan.uncertain,
+      failed: new Set(unitErrors.flatMap((e) => e.unit.members)),
+      minorFailed: unitErrors.some((e) => e.unit.kind === 'minor'),
+    },
     prUrl: (n) => `${serverUrl}/${repository}/pull/${n}`,
   })
   const errors = outcomes.filter((o) => o.error !== undefined).length

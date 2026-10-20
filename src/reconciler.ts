@@ -44,7 +44,8 @@ export interface UnitError {
 export type Op =
   | { op: 'create'; result: UnitResult; branch: string }
   | { op: 'regenerate'; pr: PrState; result: UnitResult; contentChanged: boolean }
-  | { op: 'notifyManual'; pr: PrState }
+  /** `result` is the unit matched with the pull request (for the job summary). */
+  | { op: 'notifyManual'; pr: PrState; result: UnitResult }
   | { op: 'commentError'; pr: PrState; log: string }
   | { op: 'close'; pr: PrState; supersededBy?: string } // supersededBy: the branch of the unit that takes over
   /** Only the advisories changed: the title, body and metadata are updated, not the commit. */
@@ -133,7 +134,7 @@ function decideBoth(pr: PrState, result: UnitResult, ctx: DecideContext): Op {
   const meta = pr.meta
   const contentChanged = meta !== undefined && !sameTargets(metaTargets(meta), targets(result))
   const regenerate: Op = { op: 'regenerate', pr, result, contentChanged }
-  if (meta && pr.headSha !== meta.commit && pr.headSha !== meta.previous && !checked) return { op: 'notifyManual', pr }
+  if (meta && pr.headSha !== meta.commit && pr.headSha !== meta.previous && !checked) return { op: 'notifyManual', pr, result }
   // The previous regeneration stopped before moving the branch.
   if (meta && meta.previous !== undefined && pr.headSha === meta.previous) return regenerate
   if (checked) return regenerate
@@ -404,7 +405,7 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
       }
       case 'notifyManual': {
         const { pr } = op
-        const base = { kind: prKind(pr), packages: prPackages(pr), pr: pr.number }
+        const base = { kind: prKind(pr), packages: prPackages(pr), pr: pr.number, ...fixedPackages(op.result) }
         numbers.set(pr.branch, pr.number)
         try {
           const marker = manualMarker(pr.headSha)
@@ -474,8 +475,20 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
 
 const FIXED_ACTIONS: Outcome['action'][] = ['created', 'regenerated', 'refreshed', 'unchanged']
 
+/** What failed in this run, for the status of the packages that no result fixes. */
+export interface PlanFailures {
+  /** Direct dependencies. */
+  direct: Set<string>
+  /** Packages whose planning failed. */
+  uncertain: Set<string>
+  /** Members of units that failed to apply. */
+  failed: Set<string>
+  /** Whether the minor and patch unit failed to apply: transitive dependencies are usually fixed there. */
+  minorFailed: boolean
+}
+
 /** How the advisories of a package are fixed, for the job summary. */
-export function advisoryStatus(fix: Fix, outcomes: Outcome[], ignoredFix: boolean): string {
+export function advisoryStatus(fix: Fix, outcomes: Outcome[], ignoredFix: boolean, failures: PlanFailures): string {
   if (fix.fix === undefined || ignoredFix) return 'No fixed version'
   const fixing = outcomes.filter((o) => o.fixes?.includes(fix.name))
   const numbers = (action: (a: Outcome['action']) => boolean) =>
@@ -485,8 +498,14 @@ export function advisoryStatus(fix: Fix, outcomes: Outcome[], ignoredFix: boolea
       .join(', ')
   const fixed = numbers((a) => FIXED_ACTIONS.includes(a))
   if (fixed) return `Fixed in ${fixed}`
+  const manual = numbers((a) => a === 'notified')
+  if (manual) return `Not updated in ${manual} (manual commits)`
   const closed = numbers((a) => a === 'skipped')
   if (closed) return `Closed in ${closed}`
   if (fixing.some((o) => o.action === 'error')) return 'Error'
+  const failed = failures.direct.has(fix.name)
+    ? failures.failed.has(fix.name) || failures.uncertain.has(fix.name)
+    : failures.minorFailed
+  if (failed) return 'Error'
   return 'Cannot be fixed with the current constraints'
 }

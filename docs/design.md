@@ -525,8 +525,9 @@ Versions with a release date are used before `min_release_age_days` has passed, 
 Status は次のどれか。
 
 - `Fixed in #n`: その PR で直る
+- `Not updated in #n (manual commits)`: その PR で直るが、人手のコミットがあるので更新しない
 - `Closed in #n`: 直す PR は、利用者がマージせずに閉じた PR と同じ内容なので作らない
-- `Error`: 直す PR の処理がエラーになった
+- `Error`: 直す PR の処理がエラーになった。または、そのパッケージの計画か適用に失敗した（推移的依存では、マイナー・パッチグループの適用に失敗した）
 - `No fixed version`: 修正版がない（修正版が `ignore` に該当する場合を含む）
 - `Cannot be fixed with the current constraints`: 修正版はあるが、どの PR でも上がらない（依存元の制約が許さない、修正版の依存が待機期間の中にある、など）
 

@@ -246,10 +246,10 @@ describe('execute', () => {
   test('manual commits are notified once per head', async () => {
     const pr = prOf(9, 'pubreform/single/http', { headSha: 'h2' })
     const first = fakeGitHub()
-    await execute([{ op: 'notifyManual', pr }], context(first.github))
+    await execute([{ op: 'notifyManual', pr, result: http }], context(first.github))
     expect(first.calls).toEqual(['comments 9', 'comment 9 This PR has commits that pubreform did not create, so pubreform will not update it automatically. Check "Rebase this PR" to discard those commits and regenerate it.'])
     const again = fakeGitHub({ comments: first.comments.get(9) })
-    await execute([{ op: 'notifyManual', pr }], context(again.github))
+    await execute([{ op: 'notifyManual', pr, result: http }], context(again.github))
     expect(again.calls).toEqual(['comments 9'])
   })
 

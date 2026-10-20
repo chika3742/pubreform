@@ -97,7 +97,7 @@ describe('decide: units with pull requests', () => {
   })
   test('manual commits', () => {
     const p = pr(http, { headSha: 'other' })
-    expect(op(http, p)).toEqual([{ op: 'notifyManual', pr: p }])
+    expect(op(http, p)).toEqual([{ op: 'notifyManual', pr: p, result: http }])
   })
   test('head at meta.commit after a regeneration is not a manual commit', () => {
     const p = pr(http, { headSha: 'c2', meta: { commit: 'c2', previous: 'c1' } })
@@ -109,7 +109,7 @@ describe('decide: units with pull requests', () => {
   })
   test('head different from both commit and previous is a manual commit', () => {
     const p = pr(http, { headSha: 'c3', meta: { commit: 'c2', previous: 'c1' } })
-    expect(op(http, p)).toEqual([{ op: 'notifyManual', pr: p }])
+    expect(op(http, p)).toEqual([{ op: 'notifyManual', pr: p, result: http }])
   })
   test('checked box regenerates even with manual commits', () => {
     const p = pr(http, { headSha: 'other' })
@@ -162,22 +162,34 @@ describe('decide: security advisories', () => {
     const changed = pr(http, { meta: { baseHash: 'old' } })
     expect(op(fixed, changed)).toEqual([{ op: 'regenerate', pr: changed, result: fixed, contentChanged: false }])
     const manual = pr(http, { headSha: 'other' })
-    expect(op(fixed, manual)).toEqual([{ op: 'notifyManual', pr: manual }])
+    expect(op(fixed, manual)).toEqual([{ op: 'notifyManual', pr: manual, result: fixed }])
   })
 })
 
 describe('advisoryStatus', () => {
   const fix: Fix = { name: 'x', locked: '1.0.0', advisories: [], affected: new Set(['1.0.0']), fix: { version: '1.0.1' } }
   const o = (action: Outcome['action'], pr?: number, fixes = ['x']): Outcome => ({ kind: 'minor', packages: [], action, pr, fixes })
+  const none = { direct: new Set(['x']), uncertain: new Set<string>(), failed: new Set<string>(), minorFailed: false }
   test('in order', () => {
-    expect(advisoryStatus({ ...fix, fix: undefined }, [o('created', 1)], false)).toBe('No fixed version')
-    expect(advisoryStatus(fix, [o('created', 1)], true)).toBe('No fixed version')
-    expect(advisoryStatus(fix, [o('unchanged', 5), o('refreshed', 2), o('skipped', 3), o('error', 4)], false)).toBe('Fixed in #2, #5')
-    expect(advisoryStatus(fix, [o('regenerated', 6)], false)).toBe('Fixed in #6')
-    expect(advisoryStatus(fix, [o('skipped', 3), o('error', 4)], false)).toBe('Closed in #3')
-    expect(advisoryStatus(fix, [o('error', undefined), o('created', 1, ['y'])], false)).toBe('Error')
-    expect(advisoryStatus(fix, [o('notified', 1)], false)).toBe('Cannot be fixed with the current constraints')
-    expect(advisoryStatus(fix, [], false)).toBe('Cannot be fixed with the current constraints')
+    expect(advisoryStatus({ ...fix, fix: undefined }, [o('created', 1)], false, none)).toBe('No fixed version')
+    expect(advisoryStatus(fix, [o('created', 1)], true, none)).toBe('No fixed version')
+    expect(advisoryStatus(fix, [o('unchanged', 5), o('refreshed', 2), o('notified', 7), o('skipped', 3), o('error', 4)], false, none)).toBe(
+      'Fixed in #2, #5',
+    )
+    expect(advisoryStatus(fix, [o('regenerated', 6)], false, none)).toBe('Fixed in #6')
+    expect(advisoryStatus(fix, [o('notified', 7), o('skipped', 3)], false, none)).toBe('Not updated in #7 (manual commits)')
+    expect(advisoryStatus(fix, [o('skipped', 3), o('error', 4)], false, none)).toBe('Closed in #3')
+    expect(advisoryStatus(fix, [o('error', undefined), o('created', 1, ['y'])], false, none)).toBe('Error')
+    expect(advisoryStatus(fix, [], false, none)).toBe('Cannot be fixed with the current constraints')
+  })
+  test('Error when the package failed to plan or apply', () => {
+    expect(advisoryStatus(fix, [], false, { ...none, uncertain: new Set(['x']) })).toBe('Error')
+    expect(advisoryStatus(fix, [], false, { ...none, failed: new Set(['x']) })).toBe('Error')
+    // A failed minor unit counts only for transitive dependencies.
+    expect(advisoryStatus(fix, [], false, { ...none, minorFailed: true })).toBe('Cannot be fixed with the current constraints')
+    const transitive = { ...none, direct: new Set<string>() }
+    expect(advisoryStatus(fix, [], false, { ...transitive, minorFailed: true })).toBe('Error')
+    expect(advisoryStatus(fix, [], false, { ...transitive, failed: new Set(['x']) })).toBe('Cannot be fixed with the current constraints')
   })
 })
 
