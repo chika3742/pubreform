@@ -1,6 +1,6 @@
 # pubreform 詳細設計
 
-> ステータス: 実装済み（2026-10-18。v1 は未リリース）。ローカル E2E と GitHub E2E で確かめた（§17）。更新後のコマンド（§19）は 2026-10-19 に Docker のコンテナで実行する方式で実装し、ローカル E2E と GitHub E2E（[run #6](https://github.com/chika3742/pubreform-e2e/actions/runs/39206665275)）で確かめた。挙動を変えるときは、先にこの設計書を直す。[基本設計](design.md)を前提に、実装に必要な決定を書く。節番号の「基本 §n」は基本設計の節を指す。セキュリティアドバイザリによる更新（基本 §14.2）の詳細設計は、未実装のあいだ[別のファイル](security-advisories-detailed.md)に置き、実装したらこの設計書に取り込む。
+> ステータス: 実装済み（2026-10-18。v1 は未リリース）。ローカル E2E と GitHub E2E で確かめた（§17）。更新後のコマンド（§19）は 2026-10-19 に Docker のコンテナで実行する方式で実装し、ローカル E2E と GitHub E2E（[run #6](https://github.com/chika3742/pubreform-e2e/actions/runs/39206665275)）で確かめた。セキュリティアドバイザリによる更新（基本 §14.2、§20）は 2026-10-20 に実装し、単体テストとローカル E2E（§17.1 の場面 12、13）で確かめた。挙動を変えるときは、先にこの設計書を直す。[基本設計](design.md)を前提に、実装に必要な決定を書く。節番号の「基本 §n」は基本設計の節を指す。
 
 ## 1. 技術スタック
 
@@ -33,6 +33,7 @@ src/
   pubspec.ts     pubspec / lockfile の読み取りと、作業用の書き換え（§7）
   pub.ts         pub コマンドの実行（§8）
   proxy.ts       中継サーバー（§9）
+  advisories.ts  セキュリティアドバイザリの読み取り、要修正のパッケージと修正版の判定（§20）
   planner.ts     更新単位の計画（§10）
   applier.ts     更新単位の適用（§11）
   render.ts      タイトル、本文、コミットメッセージ、コメント、メタデータ（§12）
@@ -75,6 +76,9 @@ runs:
    post_update があれば、実行できる環境か（Linux で docker が使えるか）を確かめる（§19.1）
 6. slot と cutoff を求める（§5）
 7. 中継サーバーを起動する（§9）
+7a. 要修正のパッケージを求める（§20）。fixes: Map<name, Fix>
+    失敗したら全体エラー（PR はまだ変更していない）
+7b. proxy.setFixes(fixes)（§9）
 8. 計画する（§10）→ 更新単位と、計画に失敗したパッケージ（uncertain）
 9. 各更新単位を適用する（§11）→ 結果、または単位ごとのエラー
 10. 既存 PR を集める（open と、直近 100 件の closed）（§13）
@@ -85,11 +89,14 @@ runs:
 （finally）中継サーバーを止める。post_update のイメージを消す
 ```
 
+- 7a の後でなければ計画を始めない。計画のどの解決にも、同じ見せ方を使うため
+- 手順 8 の `plan()` と手順 9 の `applyUnit()` に `fixes` を渡す（§10、§11）
+
 エラーは 2 種類に分ける。
 
 | 種類 | 例 | 扱い |
 |---|---|---|
-| 全体エラー | 設定の誤り、clone の失敗、U / R の解決の失敗、workspace、post_update を実行できない環境、post_update のイメージの作成や SDK の特定の失敗 | PR を一切変更せずに失敗終了する。手順 5 までの失敗なら手順 6 以降に、post_update のイメージと SDK の失敗なら手順 12 に進まない |
+| 全体エラー | 設定の誤り、clone の失敗、セキュリティアドバイザリの取得の失敗（§20）、U / R の解決の失敗、workspace、post_update を実行できない環境、post_update のイメージの作成や SDK の特定の失敗 | PR を一切変更せずに失敗終了する。手順 5 までの失敗なら手順 6 以降に、post_update のイメージと SDK の失敗なら手順 12 に進まない |
 | 単位のエラー | 1 つの更新単位の S の計算・適用・post_update のコマンド・コミット・PR 操作の失敗 | その単位だけを止め、他は続ける（§15） |
 
 ## 4. 設定（config.ts）
@@ -240,7 +247,21 @@ pub(args: string[], opts: { pubspec: string; lock: string }): Promise<{ pubspec:
 - pub.dev への取得は 30 秒で打ち切る。失敗したら 502 を返す（pub が失敗し、その解決のエラーになる）
 - テストのために、環境変数 `PUBREFORM_UPSTREAM` があれば、pub.dev の代わりにその URL から取得する（E2E でフィクスチャー用サーバーに向けるため。利用者向けの設定ではないので、README には書かない）
 - 計画のために `visibleVersions(name)`（絞り込み後のバージョン一覧）を公開する
-- ジョブサマリーのために `waitingVersion(name)` を公開する。cutoff より後に公開されたことだけが理由で隠した安定版のうち最新のもの（バージョンと公開日時）を返す。見せている安定版のどれよりも新しいときだけ返し、`ignore` に該当するものは含めない。一覧を取得できなければ返さない
+- ジョブサマリーのために `waitingVersion(name)` を公開する。cutoff より後に公開されたことだけが理由で隠した安定版のうち最新のもの（バージョンと公開日時）を返す。見せている安定版のどれよりも新しいときだけ返し、`ignore` に該当するものと、要修正のパッケージの影響を受けるバージョン（下記）は含めない。一覧を取得できなければ返さない。見せた修正版は「隠した」に入らないので、待機中の表には出ない
+- セキュリティアドバイザリ（§20）のために、次を公開する
+  - `upstreamListing(name)`: 保持している pub.dev の一覧をそのまま返す。取得に失敗したら例外を投げる。§20 と計画の解決が、同じ一覧を見るため
+  - `setFixes(fixes)`: 要修正のパッケージを渡す。計画の前に 1 回だけ呼ぶ
+  - `isIgnoredFix(name)`: 修正版が `ignore` に該当するか（ジョブサマリーの `No fixed version` の判定。§16）
+
+隠す判定は、次の表の上から順に、最初に当てはまるもので決める。
+
+| 条件 | 結果 |
+|---|---|
+| ロック済みのバージョン | 見せる |
+| 要修正のパッケージで、`affected` に入っている | 隠す |
+| 要修正のパッケージで、`fix.version` と同じ | `ignore` に該当すれば隠す。該当しなければ見せる |
+| cutoff より後の公開、または `ignore` に該当 | 隠す |
+| それ以外 | 見せる |
 
 `ignore` は、制約を書き換えるのではなく、ここで隠すことで実現する。U / R / S / 適用のすべての解決に同じように効き、制約の補集合を計算する必要がない。名前だけを指定したパッケージは、ロック済みのバージョンしか見えなくなるので、現在のバージョンに留まる。
 
@@ -296,7 +317,13 @@ interface Plan {
 }
 ```
 
-- `minor` が空なら minor の単位は作らない（推移的依存だけの変化は無視する。基本 §5.3）
+- `minor` が空で、`fixedTransitive` も空なら、minor の単位は作らない（推移的依存だけの変化は無視する。基本 §5.3）。`fixedTransitive` は、U で要修正の推移的依存が修正されるもの（下記）
+- `PlanInput` に `fixes: Map<string, Fix>`（§20）を渡す
+- `Unit.members` は今までどおり、U で変わる直接依存だけにする（`fixedTransitive` だけのときは空）
+
+```
+fixedTransitive = { t in fixes : t は直接依存でない, U(t) != c(t), U(t) が fixes[t].affected に入っていない }
+```
 - `unresolvable`: 直接依存ごとに、`visibleVersions` の安定版の最大値が `R(d)` より新しければ記録する（ジョブサマリー用）
 
 ## 11. 適用（applier.ts）
@@ -312,11 +339,26 @@ interface UnitResult {
   unit: Unit
   files: { pubspec: string; lock: string }
   changes: Record<string, Change>   // バージョンが変わった直接依存だけ
+  transitiveFixes: Record<string, { from: string; to: string }>  // 直した推移的依存
+  advisories: FixedAdvisory[]       // この結果で直るアドバイザリ
+}
+interface FixedAdvisory {
+  package: string
+  advisory: Advisory  // §20
+  from: string
+  to: string
+  early?: Date   // to が待機期間の中で、修正版として見せたものなら、その公開日時
 }
 ```
 
+- `applyUnit()` には `fixes`（§20）と `cutoff` も渡す
 - `changes` は、ベースと結果の lockfile を比べて求める。推移的依存は含めない
-- `changes` が空なら、その単位は捨てる（例: 他の単位とまったく同じ変化になった）
+- 直したパッケージ: 結果の lockfile で、`fixes` のパッケージ p のバージョンが `c(p)` と違い、`affected` に入っていないもの
+  - 直接依存なら `changes` に入っている。推移的依存なら `transitiveFixes` に入れる
+  - 直したパッケージの `fixes[p].advisories` をすべて `advisories` に入れる（パッケージ名、`id` の順）
+  - `early`: `to` が `fixes[p].fix.version` と同じで、その `published` が cutoff より後なら、`published`
+- 要修正の推移的依存が、単独 PR や同時更新グループの適用でも直ることがある（`pub add` が必要に応じて動かした場合）。そのときも同じように数える。同じパッケージを複数の PR が直すことがある
+- `changes` と `transitiveFixes` がどちらも空なら、その単位は捨てる（例: 他の単位とまったく同じ変化になった）
 - `--tighten` は、バージョンが変わっていない直接依存の下限も上げることがある。`pubspec.yaml` の差分には出るが、`changes` には含めない
 
 ## 12. 文面とメタデータ（render.ts）
@@ -329,14 +371,15 @@ interface UnitResult {
 | minor | `pubreform/minor-and-patch` | `Update minor and patch (<N> packages)` |
 | group | `pubreform/group/<作成時の members を並べ替えた先頭>` | `Update <name> to <to>, <name 2> to <to>, ...`（members を名前の順に並べる） |
 
-- N は `changes` の数
-- N = 1 のときは、minor / group でもタイトルを single と同じ `Update <name> from <from> to <to>` にする（ユーザーの決定）。ブランチ名と種類（`kind`）は変えない
+- N は `changes` と `transitiveFixes` の数の和
+- N = 1 のときは、minor / group でもタイトルを single と同じ `Update <name> from <from> to <to>` にする（ユーザーの決定）。その 1 つが推移的依存でも同じ。ブランチ名と種類（`kind`）は変えない
+- `advisories` が空でなければ、タイトルの前に `[Security] ` を付ける（基本 §14.2）
 - single と group の `changes` に、メンバー以外の直接依存（制約の範囲内で動いたもの）が含まれることがある。タイトルはメンバーだけで書き、表にはすべて載せる
 - group のタイトルの長さは制限しない。GitHub は 257 文字のタイトルへの変更も拒否しなかった（2026-10-18 に pubreform-e2e の PR で確認。保存時に切り詰められるかは確かめていない）
 
 ### 12.2 コミットメッセージ
 
-single と、N = 1 の minor / group はタイトルだけ。それ以外の minor / group は、タイトル、空行、表。
+single と、N = 1 の minor / group はタイトルだけ。それ以外の minor / group は、タイトル、空行、表。1 行目は、`[Security] ` を含めてタイトルと同じ。
 
 ```
 Update minor and patch (2 packages)
@@ -347,11 +390,32 @@ Update minor and patch (2 packages)
 | lints | 6.0.0 | 6.1.0 | dev |
 ```
 
-表の行はパッケージ名の順。Type は `dependencies` なら `direct`、`dev_dependencies` なら `dev`。
+表の行はパッケージ名の順。Type は `dependencies` なら `direct`、`dev_dependencies` なら `dev`。`transitiveFixes` の行も入れ、Type は `transitive`（本文の表も同じ）。
 
 ### 12.3 本文
 
-基本 §8 のテンプレートに従う。各パッケージの節に使う情報は、適用時に pub がキャッシュに展開したパッケージから読む。
+基本 §8 のテンプレートに従う。各パッケージの節に使う情報は、適用時に pub がキャッシュに展開したパッケージから読む。各パッケージの節は、`transitiveFixes` のパッケージにも作る。
+
+`advisories` が空でなければ、本文の先頭（`Updates the following packages.` の前）に次を置く。
+
+```markdown
+Fixes the following security advisories.
+
+| Package | Advisory | Severity | From | To |
+|---|---|---|---|---|
+| [archive](https://pub.dev/packages/archive) | [GHSA-9v85-q87q-g4vg](https://github.com/advisories/GHSA-9v85-q87q-g4vg) Path traversal in Archive | high | 3.3.7 | 3.3.8 (released 2026-10-18) |
+
+Versions with a release date are used before `min_release_age_days` has passed, to fix the advisory.
+
+```
+
+- 行は `advisories` の順（パッケージ名、`id` の順）
+- Advisory の列: `url` があれば `[<id>](<url>)`、なければ `<id>`。続けて空白と `summary`
+- `summary` はアドバイザリのデータベースから来る外部の文字列なので、更新履歴と同じ置き換え（`withoutBacklinks()`。ソースは渡さない）をしたうえで、改行を空白にし、`|` を `\|` にする。200 文字を超えたら切って `…` を付ける
+- Severity の列: `severity`。なければ空
+- To の列: `early` があれば `<to> (released <YYYY-MM-DD>)`。日付は設定のタイムゾーンで書く（ジョブサマリーと同じ）
+- 表の下の 1 文は、`early` のある行が 1 つでもあるときだけ入れる
+- 本文の上限（下記）の計算には、アドバイザリの表も含める。表は省かない
 
 - 場所: `$PUB_CACHE/hosted/localhost%588471/<name>-<to>/`（`PUB_CACHE` がなければ `~/.pub-cache`）
 - ソースへのリンク: その `pubspec.yaml` の `repository`、なければ `homepage`。`http://` か `https://` で始まり、空白、括弧（`()[]`）、`<>` を含まないものだけを使い、そうでなければソースへのリンクを載せない。値はパッケージの作者が書くもので、`)` や改行で Markdown のリンクの外に文字を出せる（メンションで人に通知を送れる）ため
@@ -396,8 +460,11 @@ interface Meta {
   commit: string
   previous?: string   // 再生成の直前のブランチの head（§14.4）
   closed?: true        // pubreform が閉じた PR（§14.3）
+  advisories?: string[]   // 直すアドバイザリの id（重複なし、順に並べる）。なければ空とみなす。空なら書かない
 }
 ```
+
+- `packages` には、`changes` に加えて `transitiveFixes` も入れる。内容の変更の判定（§14.3）、閉じた PR との照合、内容の変更のコメント（§12.6）は、推移的依存も含めて今までどおり行う
 
 - 読み取りは、本文から `<!-- pubreform:meta (.+?) -->` を探し、最後に現れたものを JSON として解釈する（更新履歴の中に似た文字列があっても、末尾のメタデータを優先するため）。見つからない、解釈できない、`v` が違う場合は「メタデータなし」とする
 - パッケージ名とバージョンには `-->` が現れないので、エスケープは不要
@@ -499,7 +566,8 @@ type Op =
   | { op: 'notifyManual'; pr: PrState }
   | { op: 'commentError'; pr: PrState; log: string }
   | { op: 'close'; pr: PrState; supersededBy?: string } // supersededBy: 引き継ぐ単位のブランチ
-  | { op: 'none'; pr: PrState }
+  | { op: 'refresh'; pr: PrState; result: UnitResult }   // コミットは作り直さず、タイトル、本文、メタデータだけを更新する
+  | { op: 'none'; pr: PrState; result?: UnitResult }     // result: 対応した単位の結果（ジョブサマリー用）
   | { op: 'skip'; result: UnitResult; closedPr: PrState } // 同じ内容のクローズ済み PR があるので作らない（サマリー用）
   | { op: 'error'; unit: Unit; log: string }              // PR がない単位の適用エラー（ログに出し、失敗の件数に数える）
 
@@ -533,9 +601,12 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 | `packages` の `to` の集合がメタデータと違う | `regenerate` |
 | `baseHash` または `configHash` がメタデータと違う | `regenerate` |
 | メタデータがない | `regenerate`（人手のコミットは確認できないので確認しない） |
+| メタデータの `advisories` と、結果の `advisories` の id の集合が違う | `refresh` |
 | どれでもない | `none` |
 
 `mergeable == null`（GitHub が未計算）のときは、コンフリクトの条件だけを判定しない。
+
+再生成の条件のどれかに当てはまれば、`regenerate` が新しい `advisories` を書くので、`refresh` は要らない。人手のコミットがある PR は、今までどおり `notifyManual` が先に決まり、`refresh` しない。
 
 `contentChanged` は、どの条件で再生成する場合も、メタデータがあれば `packages`（名前と `to`）の比較で決める。チェックボックスやコンフリクトが理由の再生成でも、内容が変わっていればコメントする（基本 §7.2）。メタデータがなければ `false` にする。
 
@@ -547,6 +618,7 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 - `create`: post_update のコマンドを実行する（§19。なければ飛ばす）→ コミットを作る → ブランチを作る → PR を作る → ラベルを付ける。メタデータの `commit` には作ったコミットを入れる
 - `regenerate`: post_update のコマンドを実行する → コミットを作る → タイトルと本文を更新する（メタデータの `commit` は新しいコミット、`previous` は今の head。チェックボックスは未チェックに戻る）→ ブランチを強制更新する → ラベルを付ける → `contentChanged` ならコメントする
   - 本文を先に更新するのは、途中で失敗しても次の実行が状態を判別できるようにするためである。本文の更新で失敗すれば何も変わらない。ブランチの更新で失敗すれば head は `previous` のままなので、次の実行で再生成する。逆の順序だと、本文の更新だけが失敗したときに head がメタデータの `commit` と違ってしまい、人手のコミットと誤って判定する
+- `refresh`: タイトルと本文を `PATCH /pulls/{n}` で更新する。メタデータは、`advisories` だけを新しくし、ほかの項目（`commit`、`previous`、`baseHash`、`configHash`、`packages`）は今のメタデータのまま書く。post_update のコマンドは実行しない。本文の `` Files changed by the `post_update` commands: <n> `` の行（§12.3）は、今の本文から `<n>` を読み取って同じ値で書く（今の本文になければ入れない）。コメントはしない。ラベルも付け直さない。チェックボックスの状態は変えない（チェックされていれば `regenerate` が先に決まるので、ここでは常に未チェック）。ジョブのログには `Refresh #<n> (<branch>): security advisories changed` を出す。ジョブサマリーの操作は `refreshed`
 - 操作の順序: `create` / `regenerate` などを先に行い、`close` を最後に行う。統合先の PR の番号を `Closing: superseded by #<n>.` に書くためである。統合先の操作が失敗して番号がなければ、`Closing: this update is no longer needed.` にする。新しく作るブランチが閉じる PR のブランチと重なることは、対応付け（§14.2）で通常は起きない。起きた場合は、ブランチの作成（§13）がその単位のエラーになり、次の実行で直る
 - 1 つの操作が途中で失敗したら、そこで止めて単位のエラーとする（§15）
 - 各操作は、実行する前に何をするか（作成するブランチ、対象の PR の番号、統合先の PR の番号など）を 1 行ずつジョブのログに出す。`create` は PR を作った後に、その番号も出す。エラーは §15 のとおり別に出す
@@ -569,18 +641,51 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 - 更新単位ごとの行: 種類、パッケージ、操作（作成 / 再生成 / 変更なし / クローズ / エラー）、PR のリンク
 - 待機期間で待っている更新（Waiting for the release age）: 直接依存ごとに `waitingVersion` があれば、パッケージ、種類（direct / dev）、今のバージョン、待っているバージョン、公開日時、使われ始める時刻。使われ始める時刻は、公開日時に `min_release_age_days` を足した時刻以降で、最初に cron が発火する時刻（その slot の cutoff で初めて見えるようになる）
 - 最新版に上げられない直接依存（Cannot update to the latest version）: `unresolvable` の、パッケージ、種類、今のバージョン、解決できるバージョン、最新の対象バージョン。最新の対象バージョンは待機期間を過ぎたものの中で決める（待機期間中のバージョンは、待っている更新の表に出る）
+- セキュリティアドバイザリ（Security advisories）: 要修正のパッケージ（`fixes`）があれば、下記の表
 - 計画に失敗したパッケージ（uncertain）
 - エラーの一覧
+
+Security advisories の表:
+
+| Package | Locked | Advisories | Status |
+|---|---|---|---|
+
+- 行は `fixes` のパッケージ名の順。Advisories は `id` を `, ` でつなぐ
+- Status は次の順に決める。結果と操作の対応は、各操作の結果（`Outcome`）に、その結果で直るパッケージを持たせて求める
+
+| 状況 | Status |
+|---|---|
+| `fix` がない、または `isIgnoredFix(name)` | `No fixed version` |
+| このパッケージを直す結果があり、その PR の操作が `create`、`regenerate`、`refresh`、`none` のどれか（成功したもの） | `Fixed in #<n>`（複数なら `, ` でつなぐ。番号の順） |
+| このパッケージを直す結果があり、その操作が `skip`（利用者が閉じた同じ内容の PR がある） | `Closed in #<n>` |
+| このパッケージを直す結果があり、その操作がエラーになった | `Error` |
+| それ以外 | `Cannot be fixed with the current constraints` |
 
 ## 17. テスト
 
 | 種類 | 対象 | 方法 |
 |---|---|---|
-| 単体 | version、clock、config、changelog の抜き出し、render（メタデータの往復、本文の長さの上限）、reconciler の `decide` と `execute`（`generate` を呼ぶのが `create` と `regenerate` だけであること、失敗の扱い）、planner（`closure` と併合）、generate（`git status -z` の解釈、tree の項目への変換、渡す環境変数、`docker run` の引数） | `bun test`。planner は偽の `resolve` を渡す。ネットワークは使わない |
+| 単体 | version、clock、config、changelog の抜き出し、render（メタデータの往復、本文の長さの上限）、reconciler の `decide` と `execute`（`generate` を呼ぶのが `create` と `regenerate` だけであること、失敗の扱い）、planner（`closure` と併合）、generate（`git status -z` の解釈、tree の項目への変換、渡す環境変数、`docker run` の引数）、セキュリティアドバイザリ（下記） | `bun test`。planner は偽の `resolve` を渡す。ネットワークは使わない |
 | 結合 | 中継サーバーと pub | プロトタイプの検証（基本 §4.2）を `bun test` に移す。pub.dev へのネットワークと Dart / fvm が必要なので、環境変数 `PUBREFORM_IT=1` のときだけ動かす |
 | 設定のスキーマ | `pubreform.schema.json` と config.ts | 同じ設定例を両方で判定し、結果が一致することを確かめる（§4.2） |
 | ローカル E2E | Action 全体（ビルドした `dist/main.js`） | フィクスチャー用サーバー、偽の GitHub API、bare リポジトリで、場面ごとに動かす（§17.1） |
 | GitHub E2E | 本物の GitHub でしか分からない挙動 | テスト用リポジトリで、本物の GitHub に対して動かす（§17.2） |
+
+セキュリティアドバイザリ（§20）の単体テスト:
+
+| 対象 | 確かめること |
+|---|---|
+| `parseAdvisories` | `withdrawn` の除外、`ecosystem` の大文字小文字、別のパッケージの `affected` の除外、形の誤りで例外、`url` の検証 |
+| `validAdvisories` | `id` と `aliases` による `ignored_advisories` の照合 |
+| `findFix` | バックポート（基本 §14.2 の例）、`retracted` の除外、プレリリースの除外、影響を受けないロック済みのバージョン（`undefined`）、修正版がない |
+| `collectFixes` | `advisoriesUpdated` がなければアドバイザリを取りに行かない、取得の失敗で例外、pub.dev 以外のホストの項目を見ない |
+| `RegistryProxy` の隠す判定 | §9 の表の各行 |
+| `plan` | 要修正の推移的依存だけが U で変わるとき、`members` が空のマイナー・パッチグループができる（偽の `resolve`） |
+| `applyUnit` | `transitiveFixes`、`advisories`、`early`、結果を捨てる条件 |
+| render | 接頭辞、N、`transitive` の行、アドバイザリの表（`summary` の置き換えと切り詰め）、`early` の 1 文、メタデータの往復 |
+| `decide` | `refresh` の条件と、`regenerate` と `notifyManual` が先に決まること |
+| `execute` | `refresh` がコミットを作らず、post_update を実行せず、メタデータの `commit` と `previous` を保つこと |
+| `advisoryStatus` | ジョブサマリーの Status の順序（§16） |
 
 pubreform 自身の CI では、main への push と pull request のたびに（PR のブランチへの push では動かさない。pull request と 2 回動くため） `tsc --noEmit`、単体テスト、ローカル E2E を動かす。
 
@@ -611,6 +716,10 @@ pubreform 自身の CI では、main への push と pull request のたびに�
 | `fx_sdk` | 2.0.0 は Dart SDK `^99.0.0` を要求 | 解決不能（PR なし、サマリーに記録） |
 | `fx_fresh` | 1.1.0（1 日前。`min_release_age_days: 3`） | 待機中なので PR なし |
 | `fx_ignored` | 1.1.0（30 日前）。設定の `ignore` に名前を入れる | PR なし |
+| `fx_vuln`、`fx_parent`、`fx_late` | 1.0.0 だけ。`fx_parent` 1.0.0 は `fx_child ^1.0.0` を要求する | 場面 12、13 まで変化なし |
+| `fx_child`（推移的依存） | 1.0.0 だけ | 同上 |
+
+フィクスチャー用サーバーは、セキュリティアドバイザリも配る。`startFixtureServer()` の `advisories`（パッケージごとの OSV の配列）か、実行中の `addAdvisory(name, advisory)` で渡す。アドバイザリのあるパッケージだけ、一覧に `advisoriesUpdated` を入れ、`/api/packages/<name>/advisories` でそれを返す。版には `retracted` を付けられる（一覧の `versions[]` に `retracted: true` が出る）。
 
 場面（前の場面の状態を引き継ぎ、順に実行する）:
 
@@ -625,6 +734,13 @@ pubreform 自身の CI では、main への push と pull request のたびに�
 9. 利用者がクローズ: 8 の単独 PR を、利用者の操作として（メタデータを変えずに）マージせずに閉じて実行すると、同じ内容の PR は作られない
 10. 途中の失敗: 偽の API でブランチの更新を 1 回だけ失敗させると、その PR にエラーコメントが出て、ジョブは失敗する。次の実行で再生成され、成功する
 11. 人の PR: 人が `pubreform/` で始まるブランチから作った PR（作成者が bot でない）は、計画と対応しなくても閉じず、ブランチも消さず、コメントもしない
+12. アドバイザリ: `fx_vuln` に 1.1.0（30 日前）と 1.0.1（1 日前）、`fx_child` に 1.0.1（1 日前）、`fx_late` に 2.0.0（30 日前）を足す。`fx_vuln` に 1.0.0 と 1.1.0 が影響を受けるアドバイザリ、`fx_child` に 1.0.0 が影響を受けるアドバイザリを足して実行すると、次のようになる
+    - マイナー・パッチグループの PR が作られ、タイトルは `[Security] Update minor and patch (2 packages)`、表は `fx_vuln` 1.0.0 → 1.0.1（direct）と `fx_child` 1.0.0 → 1.0.1（transitive）。本文の先頭にアドバイザリの表があり、To の列に公開日が入る。影響を受ける `fx_vuln` 1.1.0 は選ばれない
+    - `fx_late` の単独 PR（`Update fx_late from 1.0.0 to 2.0.0`）が作られる。接頭辞はない
+    - ジョブサマリーのアドバイザリの表で、2 つとも `Fixed in #<マイナー・パッチグループの番号>`。待機中の表に `fx_vuln` は出ない
+13. あとから出たアドバイザリ: `fx_late` に 1.0.0 だけが影響を受けるアドバイザリを足して実行すると、`fx_late` の単独 PR のタイトルが `[Security] Update fx_late from 1.0.0 to 2.0.0` になり、本文にアドバイザリの表が入り、メタデータの `advisories` が増える。head は変わらず、内容の変更のコメントも出ない
+
+GitHub E2E（§17.2）はセキュリティアドバイザリのために変えていない。本物の GitHub でしか分からない新しい挙動はないため（テスト用プロジェクトには、場面 12、13 のパッケージが 1.0.0 のまま入る）。
 
 更新後のコマンド（§19）は、別のテスト（`test/e2e/post-update.test.ts`）で、同じ構成の別のリポジトリに対して動かす。`docker version` が通る環境だけで動かす（GitHub Actions の CI では動く見込み）。テスト用プロジェクトは `makeProject({ postUpdate: true })` で作り、設定に次のコマンドを入れる（`make-project.ts` の `POST_UPDATE_CONFIG` と `POST_UPDATE_FILES`）。
 
@@ -857,7 +973,78 @@ Flutter のプロジェクトでも `post_update` を使える。ただし、コ
   - SDK と pub のキャッシュへの書き込みは `Read-only file system` で失敗した
   - Pigeon は試していない
 
-## 20. 未確認のこと
+## 20. セキュリティアドバイザリ（advisories.ts）
+
+基本 §14.2 の用語（有効なアドバイザリ、影響を受けるバージョン、要修正のパッケージ、修正版 `f(p)`）をそのまま使う。設定（`config.ts`、`pubreform.schema.json`）は変えない。この機能は常に有効である。
+
+### 20.1 対象
+
+- ベースの lockfile の項目のうち、`source` が `hosted` で `description.url` が `https://pub.dev` のもの（`parseLock()` の `url`）。直接依存か推移的依存かは問わない
+- `ignored_advisories` は、ベースの `pubspec.yaml` のトップレベルの `ignored_advisories` を読む（`pubspec.ts` の `ignoredAdvisories(pubspecText): Set<string>`）。文字列の配列でなければ空とみなす（pub はこの場合に解決を失敗させるが、pubreform は pub の解決で同じエラーに気づくので、ここでは止めない）
+
+### 20.2 取得
+
+1. 対象のパッケージごとに、中継サーバーが保持する一覧（`proxy.upstreamListing(name)`。§9）を読む。一覧に `advisoriesUpdated` がなければ、アドバイザリはないものとする（pub と同じ）
+2. `advisoriesUpdated` があれば、`GET <upstream>/api/packages/<name>/advisories`（`accept: application/vnd.pub.v2+json`、30 秒で打ち切る）を取得する。`<upstream>` は中継サーバーの取得元（pub.dev、テストでは `PUBREFORM_UPSTREAM`）
+3. 同時に取得するのは 8 件まで
+
+次の場合は例外を投げる（全体エラー。基本 §14.2 のエラー処理）。
+
+- 一覧かアドバイザリを取得できない（接続できない、打ち切った、成功以外の応答）
+- 応答が次の形でない: `advisories` が配列で、各要素の `id` が文字列、`affected` が配列、`affected[].package.name` と `affected[].package.ecosystem` が文字列、`affected[].versions` が文字列の配列（pub が `FormatException` にするものと同じ）
+
+### 20.3 読み取り
+
+```ts
+interface Advisory {
+  id: string
+  aliases: string[]
+  summary?: string
+  severity?: string   // database_specific.severity を小文字にしたもの
+  url?: string        // database_specific.pub_display_url。http(s) で、空白、括弧（()[]）、<> を含まないものだけ（ソースへのリンクと同じ。§12.3）
+  versions: Set<string>  // このパッケージの影響を受けるバージョン
+}
+
+function parseAdvisories(body: unknown, name: string): Advisory[]
+```
+
+- `withdrawn`（値は問わない）がある要素は捨てる
+- `affected[]` のうち、`package.name` が `name` で、`package.ecosystem` を小文字にしたものが `pub` の要素の `versions` を合わせる。そのような要素がなければ、そのアドバイザリは捨てる
+- `aliases` が文字列の配列でなければ空とみなす
+- `ignored_advisories` に `id` か `aliases` のどれかが入っているものは捨てる（`validAdvisories(list, ignored)`）
+
+### 20.4 修正版
+
+```ts
+interface Fix {
+  name: string
+  locked: string           // c(p)
+  advisories: Advisory[]   // c(p) が影響を受ける有効なアドバイザリ（id の順）
+  affected: Set<string>    // 有効なアドバイザリのどれかで影響を受けるバージョン
+  fix?: { version: string; published?: Date }  // f(p)。なければ修正版がない
+}
+
+function findFix(name: string, locked: string, listing: Listing, advisories: Advisory[]): Fix | undefined
+```
+
+- `c(p)` がどの有効なアドバイザリの影響も受けなければ `undefined`（要修正でない）
+- `f(p)`: 一覧の `versions` のうち、安定版（`isStable`）で、`compareVersions(v, c(p)) > 0`、`retracted` が `true` でなく、`affected` に入っていないものの最小（`compareVersions` の順）
+- バージョンの照合は文字列の一致で行う（pub は `canonicalizedVersion` で照合するが、pub.dev の一覧とアドバイザリはどちらも正規化された文字列を返す）
+
+`collectFixes(opts): Promise<Map<string, Fix>>` が 20.1〜20.4 をまとめて行う。取得の関数を引数で受け取り、テストでは偽の関数を渡す。
+
+### 20.5 確認済みのこと
+
+- 基本 §14.2 の「確かめたこと」（pub のソース、pub.dev の API の形、試作での解決の結果）
+- 2026-10-20 に、Dart 3.13.5 で次を確かめた
+  - ローカル E2E の場面 12、13（§17.1）: 要修正の直接依存と推移的依存を一緒に直すマイナー・パッチグループ、タイトル、本文、コミットメッセージ、メタデータ、`refresh`、ジョブサマリーの表
+  - 要修正の推移的依存だけが変わるマイナー・パッチグループ: `fx_parent` 1.0.0（`fx_child ^1.0.0` を要求）だけに依存し、`fx_child` 1.0.0 が影響を受け、1.0.1（1 日前）が修正版の場合、`plan()` は `members` が空の minor の単位を作り、`applyUnit()` は `transitiveFixes` に `fx_child` 1.0.0 → 1.0.1、`early` 付きのアドバイザリを返し、タイトルは `[Security] Update fx_child from 1.0.0 to 1.0.1` になった（本物の `dart pub` で、その場限りのスクリプトで確認）
+  - pub は、アドバイザリに `summary` がないときや `aliases` が配列でないときに `Failed to decode advisories for <name> …` と出すが、解決は続ける。pubreform は、これらを欠けていても受け付ける（§20.3）
+  - 取り下げ（retracted）された版: フィクスチャー用サーバーと中継サーバーで、1.0.0 が影響を受け、1.0.1（30 日前、取り下げ）、1.0.2（1 日前）、1.0.3（30 日前、取り下げ）がある場合、`f(p)` は 1.0.2 になり、中継サーバーは 1.0.0〜1.0.3 を見せ、`dart pub upgrade` は取り下げた 1.0.3 ではなく 1.0.2 を選んだ（その場限りのスクリプトで確認。テストには入れていない）
+  - 本物の pub.dev の `dio`、`http`、`archive` のアドバイザリを `collectFixes` と同じ関数（`parseAdvisories`、`validAdvisories`、`findFix`）で読み、`dio` の取り下げられたアドバイザリが除かれ、`severity`、`url`、修正版（`dio` 4.0.0 → 5.0.0、`http` 0.13.0 → 0.13.3、`archive` 3.3.7 → 3.3.8）が得られた
+- 未確認: 表の表示（§21）
+
+## 21. 未確認のこと
 
 | 項目 | 内容 |
 |---|---|
@@ -868,8 +1055,9 @@ Flutter のプロジェクトでも `post_update` を使える。ただし、コ
 | 更新後のコマンドと `ACTIONS_RUNTIME_TOKEN` | GitHub E2E は pubreform を `run:` のステップから起動するので、そのプロセスに `ACTIONS_RUNTIME_TOKEN` がない。`uses:` で起動したときにコンテナから読めないことは、直接は確かめていない（コンテナからは pubreform のプロセスが見えないことは確かめた） |
 | 更新後のコマンドと Flutter | Pigeon が動くか。GitHub のランナーで setup-fvm と組み合わせて動くか（build_runner はローカルのコンテナで確認済み。§19.9） |
 | 更新後のコマンドの実行時間 | PR ごとに生成が走るので、コマンドと PR が多く、作り直しが重なると長くなる。測っていない |
+| セキュリティアドバイザリの表示 | 本文のアドバイザリの表とジョブサマリーの表を、本物の GitHub で表示していない。ローカル E2E で文字列だけを確かめた（§20.5） |
 
-## 21. 基本設計からの変更点
+## 22. 基本設計からの変更点
 
 この詳細設計で、基本設計の次の点を具体化・変更した。どれも基本設計に反映済み。
 

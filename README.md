@@ -17,6 +17,7 @@ Each run compares the dependencies in `pubspec.yaml` with pub.dev and keeps thes
 - A pull request that updates only one package is titled like a major update
 - The description links each package to pub.dev, its source, and its changelog
 - When an update changes, for example because a newer version is released, the pull request is updated and a comment describes the change. When it is no longer needed, it is closed
+- Locked versions with a security advisory are updated without waiting. See [Security advisories](#security-advisories)
 - The job summary lists the newer versions that are still in the waiting period, with the time they will be used, and the dependencies that cannot be updated to the latest version because it does not resolve with the other dependencies
 
 ## Setup
@@ -117,7 +118,38 @@ Check "Rebase this PR" in the description to rebuild a pull request on the lates
 - If you push commits to a pubreform branch, pubreform stops updating that pull request and leaves a comment. Check the box to discard your commits
 - A pull request you close without merging is not opened again for the same versions
 - If an update fails, the error is posted to its pull request, and the job fails
-- Branches are named `pubreform/...`. Transitive dependencies are updated in `pubspec.lock` as needed, but are not listed
+- Branches are named `pubreform/...`. Transitive dependencies are updated in `pubspec.lock` as needed, but are not listed, except those that fix a security advisory
+
+### Security advisories
+
+pubreform reads the security advisories that pub.dev reports (from the GitHub Advisory Database) for every package locked in `pubspec.lock`, direct or transitive. When a locked version is affected, pubreform updates it to a version that is not:
+
+- The pull request that fixes it is titled with `[Security] `, for example `[Security] Update archive from 3.3.7 to 3.3.8`, and its description starts with a table of the advisories. A fixed transitive dependency is listed in the table of packages as `transitive`
+- The waiting period is skipped only for one version: the oldest stable version that is newer than the locked one and is not affected (nor retracted). Its release date is shown in the table. The other versions, including the dependencies of that version, still wait. The affected versions of that package are not used
+- A fix that fits the current constraints goes into the minor and patch pull request, even if no direct dependency changes. Otherwise it is a major update. A transitive dependency is fixed only when the packages that depend on it allow the fixed version
+- To skip an advisory, list its ID (or one of its aliases, such as a CVE) in `ignored_advisories` in `pubspec.yaml`, as for `dart pub`. An `ignore` rule in the config also wins over an advisory. The feature itself cannot be turned off
+- The job summary lists each affected package and whether a pull request fixes it
+- If the advisories cannot be read from pub.dev, the run fails without changing anything
+
+```yaml
+# pubspec.yaml
+ignored_advisories:
+  - GHSA-xxxx-xxxx-xxxx
+```
+
+Advisories are published at any time, not on the schedule. To get the fix soon, run the workflow every day and keep `schedule.cron` weekly: on days without new advisories, nothing changes.
+
+```yaml
+on:
+  schedule:
+    - cron: "0 9 * * *"   # the workflow: every day
+```
+
+```yaml
+# .github/pubreform.yaml
+schedule:
+  cron: "0 9 * * 1"       # new releases: once a week
+```
 
 ### Post-update commands
 
@@ -144,7 +176,6 @@ post_update:
 - Only packages hosted on pub.dev
 - No pre-release versions
 - `dependency_overrides` and the SDK constraints are not changed
-- Security advisories do not shorten the waiting period
 
 ## License
 
