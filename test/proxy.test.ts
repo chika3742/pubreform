@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import type { Fix } from '../src/advisories.ts'
 import { RegistryProxy } from '../src/proxy.ts'
 
 // A fake pub.dev.
@@ -129,6 +130,53 @@ describe('RegistryProxy', () => {
   test('returns 502 when pub.dev is unreachable', async () => {
     await withProxy({ upstream: 'http://127.0.0.1:1' }, async (proxy) => {
       expect((await fetch(`${proxy.url}/api/packages/foo`)).status).toBe(502)
+    })
+  })
+  describe('packages that security advisories affect', () => {
+    // Listing: 1.0.0 (Jan), 1.1.0 (Feb), 2.0.0 (Mar), 3.0.0 (May); the cutoff is in mid-March.
+    const fix = (version: string | undefined, affected: string[]): Map<string, Fix> =>
+      new Map([
+        [
+          'foo',
+          {
+            name: 'foo',
+            locked: '1.0.0',
+            advisories: [],
+            affected: new Set(affected),
+            ...(version ? { fix: { version, published: new Date('2026-05-01T00:00:00Z') } } : {}),
+          },
+        ],
+      ])
+    test('hides the affected versions but the locked one, and shows the fixed version before the cutoff', async () => {
+      await withProxy({ locked: new Map([['foo', '1.0.0']]) }, async (proxy) => {
+        proxy.setFixes(fix('3.0.0', ['1.0.0', '1.1.0', '2.0.0']))
+        expect(await proxy.visibleVersions('foo')).toEqual(['1.0.0', '3.0.0'])
+        expect(await proxy.visibleVersions('bar')).toEqual(['1.0.0', '1.1.0', '2.0.0'])
+        expect(proxy.isIgnoredFix('foo')).toBe(false)
+        // Shown versions are not waiting; hidden affected versions are not either.
+        expect(await proxy.waitingVersion('foo')).toBeUndefined()
+      })
+    })
+    test('the fixed version is hidden when ignored', async () => {
+      await withProxy({ locked: new Map([['foo', '1.0.0']]), ignore: [{ name: 'foo', versions: '>=3.0.0' }] }, async (proxy) => {
+        proxy.setFixes(fix('3.0.0', ['1.0.0']))
+        expect(await proxy.visibleVersions('foo')).toEqual(['1.0.0', '1.1.0', '2.0.0'])
+        expect(proxy.isIgnoredFix('foo')).toBe(true)
+        expect(proxy.isIgnoredFix('bar')).toBe(false)
+      })
+    })
+    test('without a fixed version, only affected versions are hidden', async () => {
+      await withProxy({ locked: new Map([['foo', '1.0.0']]) }, async (proxy) => {
+        proxy.setFixes(fix(undefined, ['1.0.0', '1.1.0']))
+        expect(await proxy.visibleVersions('foo')).toEqual(['1.0.0', '2.0.0'])
+        expect(await proxy.waitingVersion('foo')).toEqual({ version: '3.0.0', published: new Date('2026-05-01T00:00:00Z') })
+      })
+    })
+  })
+  test('upstreamListing returns the listing as fetched, and throws on errors', async () => {
+    await withProxy({}, async (proxy) => {
+      expect((await proxy.upstreamListing('foo')).versions.map((v) => v.version)).toEqual(['1.0.0', '1.1.0', '2.0.0', '3.0.0'])
+      await expect(proxy.upstreamListing('missing')).rejects.toThrow('HTTP 404')
     })
   })
   test('fails to start when the port is in use', async () => {

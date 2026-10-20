@@ -1,7 +1,10 @@
 // Registry proxy: relays pub.dev and hides versions published after the cutoff.
+// For packages locked at a version that security advisories affect, it hides the affected versions
+// and shows the version that fixes them even before the cutoff.
 // pub reads only `versions` from the listing, so `latest` is left as is.
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import type { Fix } from './advisories.ts'
 import type { IgnoreRule } from './config.ts'
 import { allows, compareVersions, isStable } from './version.ts'
 
@@ -18,8 +21,10 @@ export interface ProxyOptions {
   upstream?: string
 }
 
-interface Listing {
-  versions: { version: string; published?: string }[]
+export interface Listing {
+  versions: { version: string; published?: string; retracted?: boolean; [key: string]: unknown }[]
+  /** Present when the package has security advisories. */
+  advisoriesUpdated?: string
   [key: string]: unknown
 }
 
@@ -32,6 +37,8 @@ export class RegistryProxy {
   /** Listings fetched in this run, so that every resolution sees the same versions. */
   private listings = new Map<string, Promise<Upstream>>()
   private readonly upstream: string
+  /** Packages locked at a version that security advisories affect. */
+  private fixes = new Map<string, Fix>()
   port: number
 
   constructor(private readonly options: ProxyOptions) {
@@ -68,6 +75,29 @@ export class RegistryProxy {
     await new Promise((resolve) => server.close(resolve))
   }
 
+  /** The base URL that the proxy fetches from. */
+  get upstreamUrl(): string {
+    return this.upstream
+  }
+
+  /** Sets the packages to fix. Called once, before planning. */
+  setFixes(fixes: Map<string, Fix>): void {
+    this.fixes = fixes
+  }
+
+  /** The listing from pub.dev, as kept for this run. Throws when it cannot be fetched. */
+  async upstreamListing(name: string): Promise<Listing> {
+    const upstream = await this.listing(name)
+    if (!upstream.ok) throw new Error(`cannot get the versions of ${name}: HTTP ${upstream.status}`)
+    return upstream.listing
+  }
+
+  /** Whether the version that fixes the advisories of the package is ignored by the config. */
+  isIgnoredFix(name: string): boolean {
+    const version = this.fixes.get(name)?.fix?.version
+    return version !== undefined && this.isIgnored(name, version)
+  }
+
   /** Versions that the proxy shows for the package. */
   async visibleVersions(name: string): Promise<string[]> {
     const upstream = await this.listing(name)
@@ -88,7 +118,7 @@ export class RegistryProxy {
       if (!isStable(version)) continue
       if (!this.isHidden(name, version, published)) {
         if (shown === undefined || compareVersions(version, shown) > 0) shown = version
-      } else if (published !== undefined && !this.isIgnored(name, version)) {
+      } else if (published !== undefined && !this.isIgnored(name, version) && !this.fixes.get(name)?.affected.has(version)) {
         if (waiting === undefined || compareVersions(version, waiting.version) > 0) waiting = { version, published: new Date(published) }
       }
     }
@@ -97,6 +127,10 @@ export class RegistryProxy {
 
   private isHidden(name: string, version: string, published: string | undefined): boolean {
     if (this.options.locked.get(name) === version) return false
+    const fix = this.fixes.get(name)
+    if (fix?.affected.has(version)) return true
+    // The version that fixes the advisories is shown even before the cutoff.
+    if (fix?.fix?.version === version) return this.isIgnored(name, version)
     if (!(published !== undefined && new Date(published) <= this.options.cutoff)) return true
     return this.isIgnored(name, version)
   }

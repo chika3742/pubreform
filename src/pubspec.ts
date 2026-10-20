@@ -56,7 +56,7 @@ export function lockVersions(text: string): Map<string, string> {
   return new Map([...parseLock(text)].map(([name, p]) => [name, p.version]))
 }
 
-function isPubDev(url: string): boolean {
+export function isPubDev(url: string): boolean {
   return url.replace(/\/+$/, '') === PUB_DEV
 }
 
@@ -102,6 +102,12 @@ export function isFlutter(pubspecText: string): boolean {
     const entries = pubspec[section]
     return isObject(entries) && Object.values(entries).some((v) => isObject(v) && v.sdk === 'flutter')
   })
+}
+
+/** IDs in the top-level `ignored_advisories`. Empty unless it is a list of strings. */
+export function ignoredAdvisories(pubspecText: string): Set<string> {
+  const ignored = parsePubspec(pubspecText).ignored_advisories
+  return Array.isArray(ignored) && ignored.every((id) => typeof id === 'string') ? new Set(ignored) : new Set()
 }
 
 export function hasWorkspace(pubspecText: string): boolean {
