@@ -1,7 +1,7 @@
 // Planning update units.
 import type { Fix } from './advisories.ts'
 import { type DirectDep, type Section, withConstraints } from './pubspec.ts'
-import { allows, compareVersions, isStable, maxVersion } from './version.ts'
+import { allows, compareVersions, isPinned, isStable, maxVersion } from './version.ts'
 
 /** Resolves with pub and returns name -> version from the resulting lockfile. */
 export type Resolve = (args: string[], pubspec: string) => Promise<Map<string, string>>
@@ -12,7 +12,7 @@ export interface Unit {
   kind: UnitKind
   /** minor: direct dependencies that change in U (may be empty when only fixed transitive ones change). single / group: S. */
   members: string[]
-  /** single / group: the versions in R. */
+  /** single / group: the versions in R. minor: the versions in U of the pinned members. */
   targets: Record<string, string>
 }
 
@@ -52,7 +52,10 @@ export async function plan(input: PlanInput): Promise<Plan> {
     return v
   }
 
-  const U = await resolve(['upgrade'], basePubspec)
+  // Classification reads a pinned version as ^c(d), so that its minor and patch updates go into the minor unit.
+  const pins = new Map(deps.filter((d) => isPinned(d.constraint)).map((d) => [d.name, `^${d.current}`]))
+  const range = (d: DirectDep) => pins.get(d.name) ?? d.constraint
+  const U = await resolve(['upgrade'], pins.size > 0 ? withConstraints(basePubspec, pins) : basePubspec)
   const R = await resolve(['upgrade'], withConstraints(basePubspec, new Map(deps.map((d) => [d.name, `>=${d.current}`]))))
 
   const minor = deps.filter((d) => get(U, d.name, 'U') !== d.current).map((d) => d.name)
@@ -70,7 +73,7 @@ export async function plan(input: PlanInput): Promise<Plan> {
       const constraints = new Map<string, string>()
       for (const d of deps) constraints.set(d.name, S.has(d.name) ? R.get(d.name)! : `>=${d.current}`)
       const L = await resolve(['get'], withConstraints(basePubspec, constraints))
-      const K = deps.filter((e) => !S.has(e.name) && !allows(e.constraint, get(L, e.name, 'S')))
+      const K = deps.filter((e) => !S.has(e.name) && !allows(range(e), get(L, e.name, 'S')))
       if (K.length === 0) return S
       for (const e of K) S.add(e.name)
     }
@@ -119,7 +122,10 @@ export async function plan(input: PlanInput): Promise<Plan> {
   }
 
   const units: Unit[] = []
-  if (minor.length > 0 || fixedTransitive.length > 0) units.push({ kind: 'minor', members: minor, targets: {} })
+  if (minor.length > 0 || fixedTransitive.length > 0) {
+    const targets = Object.fromEntries(minor.filter((m) => pins.has(m)).map((m) => [m, U.get(m)!]))
+    units.push({ kind: 'minor', members: minor, targets })
+  }
   const updateUnits = sets.map((s): Unit => {
     const members = [...s].sort()
     return {

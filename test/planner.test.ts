@@ -141,6 +141,33 @@ describe('plan', () => {
     ])
   })
 
+  test('pinned versions are read as caret constraints', async () => {
+    // p is pinned: 1.1.0 goes into the minor unit and 2.0.0 into a single unit.
+    // q is pinned, and r 2.0.0 needs q 1.0.1: q moves within ^1.0.0, so it stays out of S(r).
+    const u: Universe = {
+      p: { '1.0.0': {}, '1.1.0': {}, '2.0.0': {} },
+      q: { '1.0.0': {}, '1.0.1': {} },
+      r: { '1.0.0': {}, '2.0.0': { q: '>=1.0.1' } },
+    }
+    const ds: DirectDep[] = [
+      { name: 'p', section: 'dependencies', constraint: '1.0.0', current: '1.0.0' },
+      { name: 'q', section: 'dev_dependencies', constraint: '1.0.0', current: '1.0.0' },
+      { name: 'r', section: 'dependencies', constraint: '^1.0.0', current: '1.0.0' },
+    ]
+    const result = await plan({
+      deps: ds,
+      basePubspec: 'name: app\ndependencies:\n  p: 1.0.0\n  r: ^1.0.0\ndev_dependencies:\n  q: 1.0.0\n',
+      resolve: fakeResolve(u, new Map(ds.map((d) => [d.name, d.current]))),
+      visibleVersions: async (name) => Object.keys(u[name]!),
+      fixes,
+    })
+    expect(result.units).toEqual([
+      { kind: 'minor', members: ['p', 'q'], targets: { p: '1.1.0', q: '1.0.1' } },
+      { kind: 'single', members: ['p'], targets: { p: '2.0.0' } },
+      { kind: 'single', members: ['r'], targets: { r: '2.0.0' } },
+    ])
+  })
+
   test('a minor unit without members when only a fixed transitive dependency changes', async () => {
     // t is a transitive dependency of d: 1.0.0 is affected, 1.0.1 fixes it. pub upgrade moves t only.
     const ds: DirectDep[] = [{ name: 'd', section: 'dependencies', constraint: '^1.0.0', current: '1.0.0' }]

@@ -4,7 +4,7 @@ import type { Versioning } from './config.ts'
 import type { Unit } from './planner.ts'
 import type { PubFiles } from './pub.ts'
 import { type DirectDep, type Section, lockVersions } from './pubspec.ts'
-import { parseVersion } from './version.ts'
+import { isPinned } from './version.ts'
 
 export interface Change {
   from: string
@@ -34,25 +34,21 @@ export interface FixedAdvisory {
 
 export type RunPub = (args: string[], files: PubFiles) => Promise<PubFiles>
 
-export function applyArgs(unit: Unit, deps: DirectDep[], versioning: Versioning): string[] {
-  if (unit.kind === 'minor') return versioning === 'increase' ? ['upgrade', '--tighten'] : ['upgrade']
+/** The pub commands to run in order, each on the files that the previous one wrote. */
+export function applyArgs(unit: Unit, deps: DirectDep[], versioning: Versioning): string[][] {
   const byName = new Map(deps.map((d) => [d.name, d]))
-  const specs = unit.members.map((name) => {
-    const dep = byName.get(name)
-    // A constraint pinned to one version stays pinned.
-    const spec = `${name}:${dep && isVersion(dep.constraint) ? '' : '^'}${unit.targets[name]}`
-    return dep?.section === 'dev_dependencies' ? `dev:${spec}` : spec
-  })
-  return ['add', ...specs]
-}
-
-function isVersion(constraint: string): boolean {
-  try {
-    parseVersion(constraint.trim())
-    return true
-  } catch {
-    return false
-  }
+  const specs = (names: string[]) =>
+    names.map((name) => {
+      const dep = byName.get(name)
+      // A constraint pinned to one version stays pinned.
+      const spec = `${name}:${dep && isPinned(dep.constraint) ? '' : '^'}${unit.targets[name]}`
+      return dep?.section === 'dev_dependencies' ? `dev:${spec}` : spec
+    })
+  if (unit.kind !== 'minor') return [['add', ...specs(unit.members)]]
+  const upgrade = versioning === 'increase' ? ['upgrade', '--tighten'] : ['upgrade']
+  // pub upgrade does not move pinned versions, so they are raised to their versions in U first.
+  const pinned = Object.keys(unit.targets)
+  return pinned.length > 0 ? [['add', ...specs(pinned)], upgrade] : [upgrade]
 }
 
 /** Direct dependencies whose version differs between the base lockfile and `lock`. */
@@ -71,7 +67,8 @@ export async function applyUnit(
   unit: Unit,
   opts: { base: PubFiles; deps: DirectDep[]; versioning: Versioning; pub: RunPub; fixes: Map<string, Fix>; cutoff: Date },
 ): Promise<UnitResult | undefined> {
-  const files = await opts.pub(applyArgs(unit, opts.deps, opts.versioning), opts.base)
+  let files = opts.base
+  for (const args of applyArgs(unit, opts.deps, opts.versioning)) files = await opts.pub(args, files)
   const changes = directChanges(opts.deps, files.lock)
   const versions = lockVersions(files.lock)
   const transitiveFixes: UnitResult['transitiveFixes'] = {}
