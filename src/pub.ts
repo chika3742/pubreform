@@ -4,10 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 import * as core from '@actions/core'
 import * as exec from '@actions/exec'
-import { PUB_DEV } from './pubspec.ts'
+import { PUB_DEV, type Pubspecs } from './pubspec.ts'
 
 export interface PubFiles {
-  pubspec: string
+  pubspecs: Pubspecs
   lock: string
 }
 
@@ -26,7 +26,7 @@ export class PubError extends Error {
   override name = 'PubError'
 }
 
-const NO_EXAMPLE = new Set(['get', 'upgrade', 'add'])
+const NO_EXAMPLE = new Set(['get', 'upgrade'])
 
 export function pubCommand(flutter: boolean, fvm: boolean): string[] {
   const tool = flutter ? 'flutter' : 'dart'
@@ -42,14 +42,13 @@ export class Pub {
   constructor(private readonly options: PubOptions) {}
 
   /**
-   * Writes the two files, runs `pub <args>` through the proxy, and returns the resulting files.
+   * Writes the files, runs `pub <args>` through the proxy, and returns the resulting files.
    * An empty `lock` means no lockfile. The lockfile URLs are rewritten to the proxy while pub runs, so that pub keeps the locked versions.
    */
   async run(args: string[], files: PubFiles): Promise<PubFiles> {
     const { dir, hostedUrl } = this.options
-    const pubspecPath = path.join(dir, 'pubspec.yaml')
     const lockPath = path.join(dir, 'pubspec.lock')
-    await fs.writeFile(pubspecPath, files.pubspec)
+    for (const [p, text] of Object.entries(files.pubspecs)) await fs.writeFile(path.join(dir, p), text)
     if (files.lock === '') {
       await fs.rm(lockPath, { force: true })
     } else {
@@ -70,11 +69,33 @@ export class Pub {
       )
     }
 
+    const pubspecs: Pubspecs = {}
+    for (const p of Object.keys(files.pubspecs)) pubspecs[p] = await fs.readFile(path.join(dir, p), 'utf8')
     return {
-      pubspec: await fs.readFile(pubspecPath, 'utf8'),
+      pubspecs,
       lock: (await fs.readFile(lockPath, 'utf8')).replaceAll(urlLine(hostedUrl), urlLine(PUB_DEV)),
     }
   }
+}
+
+/** The pubspec.yaml paths of the workspace members, from the root of `dir`, with the root's. */
+export async function workspacePubspecs(dir: string, fvm: boolean): Promise<string[]> {
+  // dart, not flutter: the root pubspec.yaml does not tell whether a member uses Flutter.
+  const [cmd, ...args] = pubCommand(false, fvm)
+  const { stdout } = await exec.getExecOutput(cmd!, [...args, 'workspace', 'list', '--json'], { cwd: dir })
+  const packages = (JSON.parse(stdout) as { packages?: { path?: unknown }[] }).packages
+  if (!Array.isArray(packages)) throw new Error(`unexpected output of pub workspace list: ${stdout}`)
+  const root = await fs.realpath(dir)
+  const result: string[] = []
+  for (const p of packages) {
+    if (typeof p.path !== 'string') throw new Error(`unexpected output of pub workspace list: ${stdout}`)
+    const relative = path.relative(root, await fs.realpath(p.path))
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error(`workspace member outside the repository: ${p.path}`)
+    }
+    result.push(path.posix.join(...relative.split(path.sep), 'pubspec.yaml'))
+  }
+  return result
 }
 
 /** The pub cache that pub uses, also when PUB_CACHE is not set. */

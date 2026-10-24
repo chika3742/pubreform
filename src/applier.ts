@@ -3,7 +3,7 @@ import type { Advisory, Fix } from './advisories.ts'
 import type { Versioning } from './config.ts'
 import type { Unit } from './planner.ts'
 import type { PubFiles } from './pub.ts'
-import { type DirectDep, type Section, lockVersions } from './pubspec.ts'
+import { type DirectDep, type Section, lockVersions, parsePubspec, restoreValues, withConstraints } from './pubspec.ts'
 import { parseVersion } from './version.ts'
 
 export interface Change {
@@ -34,16 +34,22 @@ export interface FixedAdvisory {
 
 export type RunPub = (args: string[], files: PubFiles) => Promise<PubFiles>
 
-export function applyArgs(unit: Unit, deps: DirectDep[], versioning: Versioning): string[] {
-  if (unit.kind === 'minor') return versioning === 'increase' ? ['upgrade', '--tighten'] : ['upgrade']
-  const byName = new Map(deps.map((d) => [d.name, d]))
-  const specs = unit.members.map((name) => {
-    const dep = byName.get(name)
-    // A constraint pinned to one version stays pinned.
-    const spec = `${name}:${dep && isVersion(dep.constraint) ? '' : '^'}${unit.targets[name]}`
-    return dep?.section === 'dev_dependencies' ? `dev:${spec}` : spec
-  })
-  return ['add', ...specs]
+/** Runs pub for the unit on the base. */
+export async function applyPub(unit: Unit, base: PubFiles, versioning: Versioning, pub: RunPub): Promise<PubFiles> {
+  if (unit.kind === 'minor') {
+    const files = await pub(versioning === 'increase' ? ['upgrade', '--tighten'] : ['upgrade'], base)
+    // --tighten turns `a: any` on a workspace member into `a: ^0.0.0`, as the member has no version.
+    const members = new Set(Object.values(base.pubspecs).map((text) => String(parsePubspec(text).name)))
+    return { ...files, pubspecs: restoreValues(files.pubspecs, base.pubspecs, members) }
+  }
+  const constraints = new Map(
+    unit.members.map((name) => {
+      const target = unit.targets[name]!
+      // A constraint pinned to one version stays pinned.
+      return [name, (old: string) => (isVersion(old) ? target : `^${target}`)] as const
+    }),
+  )
+  return pub(['get'], { ...base, pubspecs: withConstraints(base.pubspecs, constraints) })
 }
 
 function isVersion(constraint: string): boolean {
@@ -71,7 +77,7 @@ export async function applyUnit(
   unit: Unit,
   opts: { base: PubFiles; deps: DirectDep[]; versioning: Versioning; pub: RunPub; fixes: Map<string, Fix>; cutoff: Date },
 ): Promise<UnitResult | undefined> {
-  const files = await opts.pub(applyArgs(unit, opts.deps, opts.versioning), opts.base)
+  const files = await applyPub(unit, opts.base, opts.versioning, opts.pub)
   const changes = directChanges(opts.deps, files.lock)
   const versions = lockVersions(files.lock)
   const transitiveFixes: UnitResult['transitiveFixes'] = {}

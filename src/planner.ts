@@ -1,10 +1,10 @@
 // Planning update units.
 import type { Fix } from './advisories.ts'
-import { type DirectDep, type Section, withConstraints } from './pubspec.ts'
+import { type DirectDep, type Pubspecs, type Section, withConstraints } from './pubspec.ts'
 import { allows, compareVersions, isStable, maxVersion } from './version.ts'
 
 /** Resolves with pub and returns name -> version from the resulting lockfile. */
-export type Resolve = (args: string[], pubspec: string) => Promise<Map<string, string>>
+export type Resolve = (args: string[], pubspecs: Pubspecs) => Promise<Map<string, string>>
 
 export type UnitKind = 'single' | 'minor' | 'group'
 
@@ -33,7 +33,7 @@ export interface Plan {
 
 export interface PlanInput {
   deps: DirectDep[]
-  basePubspec: string
+  basePubspecs: Pubspecs
   resolve: Resolve
   /** Versions shown by the registry proxy. */
   visibleVersions: (name: string) => Promise<string[]>
@@ -44,7 +44,7 @@ export interface PlanInput {
 
 /** Errors in U or R are global errors and are thrown. */
 export async function plan(input: PlanInput): Promise<Plan> {
-  const { deps, basePubspec, resolve } = input
+  const { deps, basePubspecs, resolve } = input
   const log = input.log ?? (() => {})
   const get = (versions: Map<string, string>, name: string, label: string) => {
     const v = versions.get(name)
@@ -52,8 +52,8 @@ export async function plan(input: PlanInput): Promise<Plan> {
     return v
   }
 
-  const U = await resolve(['upgrade'], basePubspec)
-  const R = await resolve(['upgrade'], withConstraints(basePubspec, new Map(deps.map((d) => [d.name, `>=${d.current}`]))))
+  const U = await resolve(['upgrade'], basePubspecs)
+  const R = await resolve(['upgrade'], withConstraints(basePubspecs, new Map(deps.map((d) => [d.name, () => `>=${d.current}`]))))
 
   const minor = deps.filter((d) => get(U, d.name, 'U') !== d.current).map((d) => d.name)
   // Transitive dependencies that U moves off the versions that the advisories affect.
@@ -67,10 +67,14 @@ export async function plan(input: PlanInput): Promise<Plan> {
   async function closure(start: Set<string>): Promise<Set<string>> {
     const S = new Set(start)
     for (;;) {
-      const constraints = new Map<string, string>()
-      for (const d of deps) constraints.set(d.name, S.has(d.name) ? R.get(d.name)! : `>=${d.current}`)
-      const L = await resolve(['get'], withConstraints(basePubspec, constraints))
-      const K = deps.filter((e) => !S.has(e.name) && !allows(e.constraint, get(L, e.name, 'S')))
+      const constraints = new Map<string, () => string>()
+      for (const d of deps) constraints.set(d.name, () => (S.has(d.name) ? R.get(d.name)! : `>=${d.current}`))
+      const L = await resolve(['get'], withConstraints(basePubspecs, constraints))
+      const K = deps.filter((e) => {
+        if (S.has(e.name)) return false
+        const v = get(L, e.name, 'S')
+        return e.declarations.some((d) => !allows(d.constraint, v))
+      })
       if (K.length === 0) return S
       for (const e of K) S.add(e.name)
     }

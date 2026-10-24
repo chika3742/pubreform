@@ -30,7 +30,7 @@ import {
 
 const single: UnitResult = {
   unit: { kind: 'single', members: ['http'], targets: { http: '2.0.0' } },
-  files: { pubspec: '', lock: '' },
+  files: { pubspecs: { 'pubspec.yaml': '' }, lock: '' },
   changes: {
     http: { from: '1.5.0', to: '2.0.0', section: 'dependencies' },
     async: { from: '2.13.0', to: '2.13.1', section: 'dependencies' },
@@ -40,7 +40,7 @@ const single: UnitResult = {
 }
 const group: UnitResult = {
   unit: { kind: 'group', members: ['lints', 'http'], targets: {} },
-  files: { pubspec: '', lock: '' },
+  files: { pubspecs: { 'pubspec.yaml': '' }, lock: '' },
   changes: {
     lints: { from: '6.0.0', to: '6.1.0', section: 'dev_dependencies' },
     http: { from: '1.5.0', to: '1.6.0', section: 'dependencies' },
@@ -69,7 +69,7 @@ describe('names', () => {
   test('minor and group with one change are titled like single', () => {
     const one: UnitResult = {
       unit: { kind: 'minor', members: ['http'], targets: {} },
-      files: { pubspec: '', lock: '' },
+      files: { pubspecs: { 'pubspec.yaml': '' }, lock: '' },
       changes: { http: { from: '1.5.0', to: '1.6.0', section: 'dependencies' } },
       transitiveFixes: {},
       advisories: [],
@@ -94,7 +94,7 @@ describe('security advisories', () => {
   // A minor unit that fixes a direct and a transitive dependency.
   const fixing: UnitResult = {
     unit: { kind: 'minor', members: ['vuln'], targets: {} },
-    files: { pubspec: '', lock: '' },
+    files: { pubspecs: { 'pubspec.yaml': '' }, lock: '' },
     changes: { vuln: { from: '1.0.0', to: '1.0.1', section: 'dependencies' } },
     transitiveFixes: { child: { from: '1.0.0', to: '1.0.1' } },
     advisories: [
@@ -321,7 +321,7 @@ ${renderMeta(meta)}
   test('drops all changelogs when the body exceeds 65,000 characters', () => {
     const many: UnitResult = {
       unit: { kind: 'minor', members: [], targets: {} },
-      files: { pubspec: '', lock: '' },
+      files: { pubspecs: { 'pubspec.yaml': '' }, lock: '' },
       changes: {},
       transitiveFixes: {},
       advisories: [],

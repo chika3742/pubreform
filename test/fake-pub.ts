@@ -6,19 +6,23 @@ import { allows, compareVersions } from '../src/version.ts'
 export type Universe = Record<string, Record<string, Record<string, string>>>
 
 export function fakeResolve(universe: Universe, locked: Map<string, string>, calls: string[][] = []) {
-  return async (args: string[], pubspec: string): Promise<Map<string, string>> => {
+  return async (args: string[], pubspecs: Record<string, string>): Promise<Map<string, string>> => {
     calls.push(args)
-    const doc = parse(pubspec)
-    const constraints = new Map<string, string>()
-    for (const section of ['dependencies', 'dev_dependencies']) {
-      for (const [name, c] of Object.entries(doc[section] ?? {})) {
-        constraints.set(name, c === null ? 'any' : typeof c === 'string' ? c : (c as { version: string }).version)
+    // Every declaration of a package must allow its version, as in a pub workspace.
+    const constraints = new Map<string, string[]>()
+    for (const pubspec of Object.values(pubspecs)) {
+      const doc = parse(pubspec)
+      for (const section of ['dependencies', 'dev_dependencies']) {
+        for (const [name, c] of Object.entries(doc[section] ?? {})) {
+          const constraint = c === null ? 'any' : typeof c === 'string' ? c : (c as { version: string }).version
+          constraints.set(name, [...(constraints.get(name) ?? []), constraint])
+        }
       }
     }
-    const names = [...constraints.keys()]
+    const names = [...constraints.keys()].filter((name) => universe[name])
     const candidates = names.map((name) => {
       const versions = Object.keys(universe[name] ?? {})
-        .filter((v) => allows(constraints.get(name)!, v))
+        .filter((v) => constraints.get(name)!.every((c) => allows(c, v)))
         .sort((a, b) => compareVersions(b, a))
       const lockedVersion = locked.get(name)
       if (args[0] === 'get' && lockedVersion && versions.includes(lockedVersion)) {
