@@ -45,6 +45,7 @@ interface Waiting {
 
 const typeOf = (section: Section) => (section === 'dev_dependencies' ? 'dev' : 'direct')
 
+const escapeHtml = (text: string) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 const pkgLink = (name: string) => `<a href="https://pub.dev/packages/${name}">${name}</a>`
 
 function formatTime(date: Date, timeZone: string): string {
@@ -111,11 +112,12 @@ async function writeSummary(opts: {
   }
   if (opts.plan && opts.plan.unresolvable.length > 0) {
     s.addHeading('Cannot update to the latest version', 3)
-    s.addRaw('<p>No version of the other dependencies resolves with the latest version.</p>', true)
+    s.addRaw('<p>pub upgrade does not choose the latest version. The reason for each package is below the table.</p>', true)
     s.addTable([
       ['Package', 'Type', 'Current', 'Resolvable', 'Latest'].map((data) => ({ data, header: true })),
       ...opts.plan.unresolvable.map((u) => [pkgLink(u.name), typeOf(u.section), u.current, u.resolvable, u.latest]),
     ])
+    for (const u of opts.plan.unresolvable) s.addDetails(u.name, `<pre>${escapeHtml(u.reason)}</pre>`)
   }
   if (opts.fixes.size > 0) {
     s.addHeading('Security advisories', 3)

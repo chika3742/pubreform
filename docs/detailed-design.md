@@ -321,7 +321,7 @@ interface Unit {
 interface Plan {
   units: Unit[]
   uncertain: Set<string>                                         // 計画に失敗したパッケージ
-  unresolvable: { name: string; section: Section; current: string; resolvable: string; latest: string }[]
+  unresolvable: { name: string; section: Section; current: string; resolvable: string; latest: string; reason: string }[]
 }
 ```
 
@@ -333,6 +333,9 @@ interface Plan {
 fixedTransitive = { t in fixes : t は直接依存でない, U(t) != c(t), U(t) が fixes[t].affected に入っていない }
 ```
 - `unresolvable`: 直接依存ごとに、`visibleVersions` の安定版の最大値が `R(d)` より新しければ記録する（ジョブサマリー用）
+- `reason`: 最新版に上げられない原因。`withConstraints(ベース, { d: 最新版 } ∪ { e: '>=' + c(e) for e in deps − {d} })` で `resolve(['get'])` を 1 回実行し、次のように決める
+  - 失敗したとき: 例外のメッセージから 1 行目（実行したコマンド）を除き、`version solving failed.` を含む行までを使う。その行がなければ残りすべてを使う。後ろに続く `You can try the following suggestion` 以降は、pubreform が一時的に緩めた制約をもとにした提案なので使わない。プロキシの URL は説明に出ない（Dart 3.13.5 で、path 依存が `http: ^0.13.0` を要求するところで `http: 1.6.0` に固定して確認済み。出力は `Because app depends on old from path which depends on http ^0.13.0, http ^0.13.0 is required.` と `So, because app depends on http 1.6.0, version solving failed.` の 2 行）
+  - 成功したとき（ほかの依存を別のバージョンにすれば最新版で解決でき、pub の upgrade が最新版を含まない組み合わせを選んだとき）: その旨を固定の文で書く。解決結果のバージョンは並べない。ベースの lockfile を残して `get` を実行するので、解決結果には、最新版のために変える必要のない依存もロック中のバージョンのまま残るから
 
 ## 11. 適用（applier.ts）
 
@@ -651,6 +654,8 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 - 更新単位ごとの行: 種類、パッケージ、操作（作成 / 再生成 / 変更なし / クローズ / エラー）、PR のリンク
 - 待機期間で待っている更新（Waiting for the release age）: 直接依存ごとに `waitingVersion` があれば、パッケージ、種類（direct / dev）、今のバージョン、待っているバージョン、公開日時、使われ始める時刻。使われ始める時刻は、公開日時に `min_release_age_days` を足した時刻以降で、最初に cron が発火する時刻（その slot の cutoff で初めて見えるようになる）
 - 最新版に上げられない直接依存（Cannot update to the latest version）: `unresolvable` の、パッケージ、種類、今のバージョン、解決できるバージョン、最新の対象バージョン。最新の対象バージョンは待機期間を過ぎたものの中で決める（待機期間中のバージョンは、待っている更新の表に出る）
+  - 表の上に、pub の upgrade が最新版を選ばないことと、原因は表の下にあることを書く（成功したときもあるので、ほかのどのバージョンでも解決できないとは書かない）
+  - 表の下に、パッケージごとに折りたたみ（`<details>`。見出しはパッケージ名）を置き、中に `reason` を整形済みテキスト（`<pre>`。`&`、`<`、`>` はエスケープする）で書く。説明は複数行で、`|` や `<` を含むので、表のセルには入れない
 - セキュリティアドバイザリ（Security advisories）: 要修正のパッケージ（`fixes`）があれば、下記の表
 - 計画に失敗したパッケージ（uncertain）
 - エラーの一覧

@@ -22,6 +22,8 @@ export interface Unresolvable {
   current: string
   resolvable: string
   latest: string
+  /** Why the latest version does not resolve. */
+  reason: string
 }
 
 export interface Plan {
@@ -152,7 +154,8 @@ export async function plan(input: PlanInput): Promise<Plan> {
       const latest = maxVersion((await input.visibleVersions(d.name)).filter(isStable))
       const resolvable = R.get(d.name)!
       if (latest !== undefined && compareVersions(latest, resolvable) > 0) {
-        unresolvable.push({ name: d.name, section: d.section, current: d.current, resolvable, latest })
+        const reason = await whyUnresolvable(input, d.name, latest)
+        unresolvable.push({ name: d.name, section: d.section, current: d.current, resolvable, latest, reason })
       }
     } catch (e) {
       log(`Failed to get the versions of ${d.name}: ${(e as Error).message}`)
@@ -160,4 +163,22 @@ export async function plan(input: PlanInput): Promise<Plan> {
   }
 
   return { units, uncertain, unresolvable }
+}
+
+/** Resolves with `name` at `latest` and the other direct dependencies loosened, and returns pub's explanation. */
+async function whyUnresolvable(input: PlanInput, name: string, latest: string): Promise<string> {
+  const constraints = new Map(input.deps.map((d) => [d.name, d.name === name ? latest : `>=${d.current}`]))
+  try {
+    await input.resolve(['get'], withConstraints(input.basePubspec, constraints))
+    return 'Resolves with other versions of the other dependencies, but pub upgrade chooses a combination without the latest version.'
+  } catch (e) {
+    return solveFailure((e as Error).message)
+  }
+}
+
+/** pub's explanation in an error from `resolve`: the lines after the command, up to `version solving failed.`. */
+export function solveFailure(message: string): string {
+  const lines = message.split('\n').slice(1)
+  const end = lines.findIndex((l) => l.includes('version solving failed.'))
+  return (end === -1 ? lines : lines.slice(0, end + 1)).join('\n').trim()
 }

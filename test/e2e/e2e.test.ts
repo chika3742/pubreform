@@ -156,6 +156,8 @@ describe.skipIf(!E2E)('local E2E', () => {
     expect(github.prs.some((pr) => /fx_(fresh|ignored|sdk)/.test(pr.body))).toBe(false)
     expect(summary).toContain('Cannot update to the latest version')
     expect(summary).toContain('<td><a href="https://pub.dev/packages/fx_sdk">fx_sdk</a></td><td>direct</td><td>1.0.0</td><td>1.0.0</td><td>2.0.0</td>')
+    expect(summary).toContain('<details><summary>fx_sdk</summary><pre>The current Dart SDK version is ')
+    expect(summary).toContain('which requires SDK version ^99.0.0, version solving failed.</pre></details>')
     // fx_fresh 1.1.0 was published a day ago, and min_release_age_days is 3.
     expect(summary).toContain('Waiting for the release age')
     expect(summary).toContain('<td><a href="https://pub.dev/packages/fx_fresh">fx_fresh</a></td><td>direct</td><td>1.0.0</td><td>1.1.0</td>')
