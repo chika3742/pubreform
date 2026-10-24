@@ -80,6 +80,12 @@ async function cleanup() {
 }
 
 async function checkFirst() {
+  // The step summary of the runner, which the 1st run is the first to write.
+  const summary = fs.readFileSync(process.env.GITHUB_STEP_SUMMARY!, 'utf8')
+  check(
+    /<details><summary>fx_sdk<\/summary><pre>[^<]*requires SDK version \^99\.0\.0, version solving failed\.<\/pre>/.test(summary),
+    'the job summary shows why fx_sdk cannot be updated',
+  )
   const pulls = await openPulls()
   check(
     ['pubreform/group/fx_b', 'pubreform/minor-and-patch', SINGLE].every((b) => pulls.some((p) => p.head.ref === b)),

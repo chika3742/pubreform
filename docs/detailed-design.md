@@ -1,6 +1,6 @@
 # pubreform 詳細設計
 
-> ステータス: 実装済み（2026-10-18。v1 は未リリース）。ローカル E2E と GitHub E2E で確かめた（§17）。更新後のコマンド（§19）は 2026-10-19 に Docker のコンテナで実行する方式で実装し、ローカル E2E と GitHub E2E（[run #6](https://github.com/chika3742/pubreform-e2e/actions/runs/39206665275)）で確かめた。セキュリティアドバイザリによる更新（基本 §14.2、§20）は 2026-10-20 に実装し、単体テストとローカル E2E（§17.1 の場面 12、13）で確かめた。挙動を変えるときは、先にこの設計書を直す。[基本設計](design.md)を前提に、実装に必要な決定を書く。節番号の「基本 §n」は基本設計の節を指す。
+> ステータス: 実装済み（2026-10-18。v1 は未リリース）。ローカル E2E と GitHub E2E で確かめた（§17）。更新後のコマンド（§19）は 2026-10-19 に Docker のコンテナで実行する方式で実装し、ローカル E2E と GitHub E2E（[run #6](https://github.com/chika3742/pubreform-e2e/actions/runs/39206665275)）で確かめた。セキュリティアドバイザリによる更新（基本 §14.2、§20）は 2026-10-20 に実装し、単体テストとローカル E2E（§17.1 の場面 12、13）で確かめた。固定したバージョンの分類（基本 §5.1、§10.1、§11）は 2026-10-23 に変更し、単体テストとローカル E2E（§17.1 の場面 1）で確かめた。挙動を変えるときは、先にこの設計書を直す。[基本設計](design.md)を前提に、実装に必要な決定を書く。節番号の「基本 §n」は基本設計の節を指す。
 
 ## 1. 技術スタック
 
@@ -169,6 +169,7 @@ pub の書式のうち、必要な分だけを扱う。
 | `compareVersions(a, b)` | semver の順序。pub に合わせて、build 付きは build なしより後ろ |
 | `parseConstraint(s)` | `any`、`^v`、`>=v`、`>v`、`<=v`、`<v`、`v`（完全一致）と、それらを並べた積（例: `>=1.0.0 <2.0.0`）。pub と同じく、演算子の後の空白（`>= 1.0.0`、`^ 1.0.0`）と、比較の間の空白なし（`>=1.0.0<2.0.0`）も受け付ける（Dart 3.13.5 の pub が受け付けることを確認済み）。設定の `ignore.versions` だけは、JSON スキーマと判定をそろえるため、config.ts で空白区切りの厳密な書式に限る |
 | `allows(constraint, version)` | 制約を満たすか |
+| `isPinned(constraint)` | 制約がバージョンそのもの（`1.2.3` のように 1 つに固定したもの）か |
 
 - `^v` は pub の規則で展開する。`major > 0` なら `<(major+1).0.0`、`major == 0` なら `<0.(minor+1).0`
 - プレリリースの細かい規則（`<2.0.0` が `2.0.0-dev` を含むかなど）は扱わない。判定に使うのは、解決後の安定版が元の制約を満たすかと、`ignore.versions` だけのため
@@ -298,8 +299,9 @@ type Resolve = (args: string[], pubspecs: Pubspecs) => Promise<Map<string, strin
 
 ```
 deps = 直接依存（§7.1）
+範囲(d) = 元の制約(d) がバージョンそのもの（固定）なら '^' + c(d)、そうでなければ元の制約(d)   // 分類用の制約（基本 §5.1）
 
-U = resolve(['upgrade'], ベースの pubspec)
+U = resolve(['upgrade'], withConstraints(ベース, { d: '^' + c(d) for d in deps : d は固定 }))
 R = resolve(['upgrade'], withConstraints(ベース, { d: '>=' + c(d) for d in deps }))
   （U / R の失敗は全体エラー）
 
@@ -317,10 +319,12 @@ closure(S):
   loop:
     pubspec = withConstraints(ベース, { m: R(m) for m in S } ∪ { e: '>=' + c(e) for e in deps − S })
     L = resolve(['get'], pubspec)       // ベースの lockfile を残すので、必要なものだけが動く
-    K = { e in deps − S : e のどれかの宣言の元の制約が L(e) を許さない }
-    if K が空: return S
+    K = { e in deps − S : e のどれかの宣言について !allows(範囲(宣言), L(e)) }
+    if K が空: return (S, L)
     S = S ∪ K
 ```
+
+単位の `targets` には、S の要素の `R(m)` に加えて、S の外の固定した直接依存のうち `L(e) != c(e)` のものの `L(e)` を入れる（基本 §5.4）。L は、その単位の S を確定させた closure の最後の解決。併合した集合がその一部と同じなら、その一部の L を使う。
 
 ### 10.2 出力
 
@@ -329,12 +333,12 @@ type UnitKind = 'single' | 'minor' | 'group'
 interface Unit {
   kind: UnitKind
   members: string[]               // minor: U で変わる直接依存、single / group: S
-  targets: Record<string, string> // single / group: R のバージョン
+  targets: Record<string, string> // single / group: members の R のバージョンと、S の外で動く固定した依存の L のバージョン。minor: members のうち固定したものの U のバージョン
 }
 interface Plan {
   units: Unit[]
   uncertain: Set<string>                                         // 計画に失敗したパッケージ
-  unresolvable: { name: string; section: Section; current: string; resolvable: string; latest: string }[]
+  unresolvable: { name: string; section: Section; current: string; resolvable: string; latest: string; reason: string }[]
 }
 ```
 
@@ -346,13 +350,18 @@ interface Plan {
 fixedTransitive = { t in fixes : t は直接依存でない, U(t) != c(t), U(t) が fixes[t].affected に入っていない }
 ```
 - `unresolvable`: 直接依存ごとに、`visibleVersions` の安定版の最大値が `R(d)` より新しければ記録する（ジョブサマリー用）
+- `reason`: 最新版に上げられない原因。`withConstraints(ベース, { d: 最新版 } ∪ { e: '>=' + c(e) for e in deps − {d} })` で `resolve(['get'])` を 1 回実行し、次のように決める
+  - 失敗したとき: 例外のメッセージから 1 行目（実行したコマンド）を除き、`version solving failed.` を含む行までを使う。その行がなければ残りすべてを使う。後ろに続く `You can try the following suggestion` 以降は、pubreform が一時的に緩めた制約をもとにした提案なので使わない。プロキシの URL は説明に出ない（Dart 3.13.5 で、path 依存が `http: ^0.13.0` を要求するところで `http: 1.6.0` に固定して確認済み。出力は `Because app depends on old from path which depends on http ^0.13.0, http ^0.13.0 is required.` と `So, because app depends on http 1.6.0, version solving failed.` の 2 行）
+  - 成功したとき（ほかの依存を別のバージョンにすれば最新版で解決でき、pub の upgrade が最新版を含まない組み合わせを選んだとき）: その旨を固定の文で書く。解決結果のバージョンは並べない。ベースの lockfile を残して `get` を実行するので、解決結果には、最新版のために変える必要のない依存もロック中のバージョンのまま残るから
 
 ## 11. 適用（applier.ts）
 
 | 単位 | 実行するコマンド |
 |---|---|
-| minor | `pub upgrade`（`versioning: increase` なら `--tighten` も付ける） |
-| single / group | `withConstraints`（§7.2）で、単位のすべての依存の、すべての宣言を `^R(name)` に書き換えてから `pub get`。元の制約がバージョンそのもの（`1.2.3` のように 1 つに固定したもの）なら、固定のまま `R(name)` にする。宣言ごとに決めるので、workspace で固定した宣言とそうでない宣言が混ざっていてもよい |
+| minor | `targets` が空でなければ、`withConstraints`（§7.2）で、その依存の固定した宣言を `U(name)` に書き換える（固定のまま。固定していない宣言はそのまま）。その上で `pub upgrade`（`versioning: increase` なら `--tighten` も付ける） |
+| single / group | `withConstraints`（§7.2）で、単位のメンバーのすべての宣言を `^targets(name)` に書き換えてから `pub get`。元の制約がバージョンそのもの（`1.2.3` のように 1 つに固定したもの）なら、固定のまま `targets(name)` にする。宣言ごとに決めるので、workspace で固定した宣言とそうでない宣言が混ざっていてもよい。メンバーでない `targets`（S の外で動く固定した依存）は、固定した宣言だけを書き換える |
+
+minor では、固定した依存を U のバージョンに書き換えてから、`pub upgrade` で残りを上げる。Dart 3.13.7 で、固定した `path: 1.9.0` と `dev_dependencies` の `args: 2.6.0` に対し、`^` に緩めた `pub upgrade`（U）と、`pub add path:1.9.1 dev:args:2.7.0` → `pub upgrade --tighten` の結果の lockfile が同じになり、固定の形とコメントが残ることを確認済み。Dart 3.13.5 で、`pub add` の代わりに制約を書き換えてから `pub upgrade --tighten` を実行しても、lockfile と `pubspec.yaml` が同じになることを確認済み。build メタデータ付きの `^1.9.0+1` も制約として受け付け、1.9.1 に解決することを確認済み（`flutter_hooks: 0.21.3+1` のような固定があるため）。
 
 minor では、pub の結果の `pubspec.yaml` で、workspace のメンバーへの依存の制約を元に戻す（§23）。
 
@@ -658,12 +667,14 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 
 ## 16. ジョブサマリー
 
-`core.summary` に次を書く。全体エラーのときはサマリーを書かず、`core.setFailed` だけを行う。時刻はすべて設定のタイムゾーンで書く。
+`core.summary` に次を書く。全体エラーのときはサマリーを書かず、`core.setFailed` だけを行う。時刻はすべて設定のタイムゾーンで書く。表のパッケージ名は `https://pub.dev/packages/<name>` へのリンクにする（本文の表と同じ）。
 
 - slot と cutoff
 - 更新単位ごとの行: 種類、パッケージ、操作（作成 / 再生成 / 変更なし / クローズ / エラー）、PR のリンク
 - 待機期間で待っている更新（Waiting for the release age）: 直接依存ごとに `waitingVersion` があれば、パッケージ、種類（direct / dev）、今のバージョン、待っているバージョン、公開日時、使われ始める時刻。使われ始める時刻は、公開日時に `min_release_age_days` を足した時刻以降で、最初に cron が発火する時刻（その slot の cutoff で初めて見えるようになる）
 - 最新版に上げられない直接依存（Cannot update to the latest version）: `unresolvable` の、パッケージ、種類、今のバージョン、解決できるバージョン、最新の対象バージョン。最新の対象バージョンは待機期間を過ぎたものの中で決める（待機期間中のバージョンは、待っている更新の表に出る）
+  - 表の上に、pub の upgrade が最新版を選ばないことと、原因は表の下にあることを書く（成功したときもあるので、ほかのどのバージョンでも解決できないとは書かない）
+  - 表の下に、パッケージごとに折りたたみ（`<details>`。見出しはパッケージ名）を置き、中に `reason` を整形済みテキスト（`<pre>`。`&`、`<`、`>` はエスケープする）で書く。説明は複数行で、`|` や `<` を含むので、表のセルには入れない
 - セキュリティアドバイザリ（Security advisories）: 要修正のパッケージ（`fixes`）があれば、下記の表
 - 計画に失敗したパッケージ（uncertain）
 - エラーの一覧
@@ -735,8 +746,10 @@ pubreform 自身の CI では、main への push と pull request のたびに�
 
 | パッケージ | 用意する版 | 期待する結果 |
 |---|---|---|
-| `fx_patch`、`fx_minor` | 1.0.1、1.2.0（30 日前） | マイナー・パッチグループ（N = 2、表あり） |
+| `fx_patch`、`fx_minor` | 1.0.1、1.2.0（30 日前） | マイナー・パッチグループ（`fx_pinned`、`fx_pinned_dep` と合わせて N = 4、表あり） |
 | `fx_major` | 2.0.0（30 日前） | 単独 PR |
+| `fx_pinned`（pubspec で `1.0.0` に固定） | 1.1.0、2.0.0（30 日前） | 1.1.0 はマイナー・パッチグループに、2.0.0 は単独 PR に入る。どちらも固定のまま（`fx_pinned: 1.1.0`、`fx_pinned: 2.0.0`）書き換わる |
+| `fx_needs_pinned`、`fx_pinned_dep`（`1.0.0` に固定） | `fx_needs_pinned` 2.0.0 は `fx_pinned_dep ^1.0.1` を要求。`fx_pinned_dep` 1.0.1（どちらも 30 日前） | `fx_pinned_dep` 1.0.1 はマイナー・パッチグループに入る。`fx_needs_pinned` の単独 PR では、`fx_pinned_dep` も固定のまま `1.0.1` に上がり、本文の表にだけ載る（基本 §5.4） |
 | `fx_needs_b`、`fx_b` | `fx_needs_b` 1.1.0 は `fx_b ^2.0.0` を要求。`fx_b` 2.0.0（どちらも 30 日前） | 同時更新グループ {fx_b, fx_needs_b} |
 | `fx_sdk` | 2.0.0 は Dart SDK `^99.0.0` を要求 | 解決不能（PR なし、サマリーに記録） |
 | `fx_fresh` | 1.1.0（1 日前。`min_release_age_days: 3`） | 待機中なので PR なし |
@@ -752,7 +765,7 @@ pubreform 自身の CI では、main への push と pull request のたびに�
 2. 何も変わらない: もう一度実行し、どの PR の head も変わらず、コメントも増えない
 3. チェックボックス: 単独 PR のチェックボックスにチェックを入れて実行すると、再生成され、チェックが外れる。内容は同じなのでコメントは出ない。その直後に、PR の `head.sha` が前の head のまま（偽の API で、本物の GitHub の反映の遅れを再現する）でもう一度実行しても、何も変わらない（§13）
 4. 新しいリリース: `fx_major` に 2.1.0（30 日前）を追加して実行すると、単独 PR が再生成され、内容の変更のコメントが出る
-5. ベースの更新: マイナー・パッチグループの PR をマージしたことにする（PR のブランチの内容をベースに反映し、PR を閉じる）。実行すると、ほかの PR は再生成されるが、内容の変更のコメントは出ない
+5. ベースの更新: マイナー・パッチグループの PR をマージしたことにする（PR のブランチの内容をベースに反映し、PR を閉じる）。実行すると、ほかの PR は再生成される。`fx_pinned` の単独 PR は、タイトルが `Update fx_pinned from 1.1.0 to 2.0.0` になる。内容の変更のコメントは、`fx_needs_pinned` の単独 PR にだけ出る（`fx_pinned_dep` がベースで 1.0.1 になり、表から消えるため。基本 §13）。テストは `fx_needs_pinned` の単独 PR を確かめていない
 6. 人手のコミット: 同時更新グループの PR のブランチにコミットを追加して実行すると、通知のコメントが 1 回だけ出て、再生成されない。もう一度実行しても、通知は増えない
 7. 設定の変更: `ignore` に `fx_major` を足して実行すると、単独 PR が「no longer needed」でクローズされ、ブランチが消える。閉じた PR のメタデータに `closed: true` が入る
 8. 設定を戻す: `ignore` から `fx_major` を外して実行すると、単独 PR が作り直される（pubreform が閉じた PR は、作り直しを止めない）
@@ -779,7 +792,7 @@ GitHub E2E（§17.2）はセキュリティアドバイザリのために変え�
 
 場面:
 
-1. 作成: 3 つの PR のコミットに、`lib/versions.g.dart`（その PR のバージョン）、`probe.txt`（どれも読めない・書けない・接続できない）、`network-on.txt`（`ok`）、`run.sh`（`100755`）、リンク（`120000`、リンク先の文字列）、バイナリ、削除が入る。`.gitignore` で除外したもの、`.dart_tool/`、コマンドが書いた `pubspec.yaml` は入らない。本文に `` Files changed by the `post_update` commands: 7 `` が入る。`sleep` がホストに残っていない（コンテナと一緒に止まる）。`pubreform-` のコンテナと `pubreform-run` のイメージが残っていない
+1. 作成: 5 つの PR のコミットに、`lib/versions.g.dart`（その PR のバージョン）、`probe.txt`（どれも読めない・書けない・接続できない）、`network-on.txt`（`ok`）、`run.sh`（`100755`）、リンク（`120000`、リンク先の文字列）、バイナリ、削除が入る。`.gitignore` で除外したもの、`.dart_tool/`、コマンドが書いた `pubspec.yaml` は入らない。本文に `` Files changed by the `post_update` commands: 7 `` が入る。`sleep` がホストに残っていない（コンテナと一緒に止まる）。`pubreform-` のコンテナと `pubreform-run` のイメージが残っていない
 2. 何も変わらない: もう一度実行すると、コマンドは実行されず、どの PR の head も変わらない
 3. 失敗: ベースの設定を、終了コード 3 で失敗し、実行のたびに違う出力を出すコマンドに変えて実行すると、ジョブは失敗し、どの PR の head も変わらず、各 PR に失敗したコマンドと出力を含むエラーコメントが出る。もう一度実行しても、コメントは増えない（§19.7）
 

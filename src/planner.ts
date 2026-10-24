@@ -1,7 +1,7 @@
 // Planning update units.
 import type { Fix } from './advisories.ts'
 import { type DirectDep, type Pubspecs, type Section, withConstraints } from './pubspec.ts'
-import { allows, compareVersions, isStable, maxVersion } from './version.ts'
+import { allows, compareVersions, isPinned, isStable, maxVersion } from './version.ts'
 
 /** Resolves with pub and returns name -> version from the resulting lockfile. */
 export type Resolve = (args: string[], pubspecs: Pubspecs) => Promise<Map<string, string>>
@@ -12,7 +12,7 @@ export interface Unit {
   kind: UnitKind
   /** minor: direct dependencies that change in U (may be empty when only fixed transitive ones change). single / group: S. */
   members: string[]
-  /** single / group: the versions in R. */
+  /** single / group: the versions in R of the members, and in S's resolution of the pinned dependencies outside S that it moves. minor: the versions in U of the pinned members. */
   targets: Record<string, string>
 }
 
@@ -22,6 +22,8 @@ export interface Unresolvable {
   current: string
   resolvable: string
   latest: string
+  /** Why the latest version does not resolve. */
+  reason: string
 }
 
 export interface Plan {
@@ -52,7 +54,16 @@ export async function plan(input: PlanInput): Promise<Plan> {
     return v
   }
 
-  const U = await resolve(['upgrade'], basePubspecs)
+  // Classification reads a pinned version as ^c(d), so that its minor and patch updates go into the minor unit.
+  const range = (d: DirectDep, constraint: string) => (isPinned(constraint) ? `^${d.current}` : constraint)
+  const pinnedDeps = deps.filter((d) => d.declarations.some((x) => isPinned(x.constraint)))
+  const pins = new Set(pinnedDeps.map((d) => d.name))
+  const U = await resolve(
+    ['upgrade'],
+    pins.size > 0
+      ? withConstraints(basePubspecs, new Map(pinnedDeps.map((d) => [d.name, (old: string) => range(d, old)])))
+      : basePubspecs,
+  )
   const R = await resolve(['upgrade'], withConstraints(basePubspecs, new Map(deps.map((d) => [d.name, () => `>=${d.current}`]))))
 
   const minor = deps.filter((d) => get(U, d.name, 'U') !== d.current).map((d) => d.name)
@@ -64,6 +75,8 @@ export async function plan(input: PlanInput): Promise<Plan> {
   })
   const X = deps.filter((d) => compareVersions(get(R, d.name, 'R'), get(U, d.name, 'U')) > 0).map((d) => d.name)
 
+  // The last resolution of the closure that settled each set.
+  const lockOf = new Map<Set<string>, Map<string, string>>()
   async function closure(start: Set<string>): Promise<Set<string>> {
     const S = new Set(start)
     for (;;) {
@@ -73,9 +86,12 @@ export async function plan(input: PlanInput): Promise<Plan> {
       const K = deps.filter((e) => {
         if (S.has(e.name)) return false
         const v = get(L, e.name, 'S')
-        return e.declarations.some((d) => !allows(d.constraint, v))
+        return e.declarations.some((x) => !allows(range(e, x.constraint), v))
       })
-      if (K.length === 0) return S
+      if (K.length === 0) {
+        lockOf.set(S, L)
+        return S
+      }
       for (const e of K) S.add(e.name)
     }
   }
@@ -108,8 +124,9 @@ export async function plan(input: PlanInput): Promise<Plan> {
     const next: Set<string>[] = []
     for (const m of merged) {
       // A merged set equal to one of its parts is already closed.
-      if (m.parts.some((p) => p.size === m.set.size)) {
-        next.push(m.set)
+      const closed = m.parts.find((p) => p.size === m.set.size)
+      if (closed) {
+        next.push(closed)
         continue
       }
       try {
@@ -123,13 +140,19 @@ export async function plan(input: PlanInput): Promise<Plan> {
   }
 
   const units: Unit[] = []
-  if (minor.length > 0 || fixedTransitive.length > 0) units.push({ kind: 'minor', members: minor, targets: {} })
+  if (minor.length > 0 || fixedTransitive.length > 0) {
+    const targets = Object.fromEntries(minor.filter((m) => pins.has(m)).map((m) => [m, U.get(m)!]))
+    units.push({ kind: 'minor', members: minor, targets })
+  }
   const updateUnits = sets.map((s): Unit => {
     const members = [...s].sort()
+    const L = lockOf.get(s)!
+    // pub add can move a caret dependency within its range, but not a pinned one, so it is passed too.
+    const moved = deps.filter((e) => !s.has(e.name) && pins.has(e.name) && L.get(e.name) !== e.current)
     return {
       kind: members.length === 1 ? 'single' : 'group',
       members,
-      targets: Object.fromEntries(members.map((m) => [m, R.get(m)!])),
+      targets: Object.fromEntries([...members.map((m) => [m, R.get(m)!]), ...moved.map((e) => [e.name, L.get(e.name)!])]),
     }
   })
   updateUnits.sort((a, b) => (a.members[0]! < b.members[0]! ? -1 : 1))
@@ -141,7 +164,8 @@ export async function plan(input: PlanInput): Promise<Plan> {
       const latest = maxVersion((await input.visibleVersions(d.name)).filter(isStable))
       const resolvable = R.get(d.name)!
       if (latest !== undefined && compareVersions(latest, resolvable) > 0) {
-        unresolvable.push({ name: d.name, section: d.section, current: d.current, resolvable, latest })
+        const reason = await whyUnresolvable(input, d.name, latest)
+        unresolvable.push({ name: d.name, section: d.section, current: d.current, resolvable, latest, reason })
       }
     } catch (e) {
       log(`Failed to get the versions of ${d.name}: ${(e as Error).message}`)
@@ -149,4 +173,22 @@ export async function plan(input: PlanInput): Promise<Plan> {
   }
 
   return { units, uncertain, unresolvable }
+}
+
+/** Resolves with `name` at `latest` and the other direct dependencies loosened, and returns pub's explanation. */
+async function whyUnresolvable(input: PlanInput, name: string, latest: string): Promise<string> {
+  const constraints = new Map(input.deps.map((d) => [d.name, () => (d.name === name ? latest : `>=${d.current}`)]))
+  try {
+    await input.resolve(['get'], withConstraints(input.basePubspecs, constraints))
+    return 'Resolves with other versions of the other dependencies, but pub upgrade chooses a combination without the latest version.'
+  } catch (e) {
+    return solveFailure((e as Error).message)
+  }
+}
+
+/** pub's explanation in an error from `resolve`: the lines after the command, up to `version solving failed.`. */
+export function solveFailure(message: string): string {
+  const lines = message.split('\n').slice(1)
+  const end = lines.findIndex((l) => l.includes('version solving failed.'))
+  return (end === -1 ? lines : lines.slice(0, end + 1)).join('\n').trim()
 }

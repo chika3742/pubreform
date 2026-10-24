@@ -4,7 +4,7 @@ import type { Versioning } from './config.ts'
 import type { Unit } from './planner.ts'
 import type { PubFiles } from './pub.ts'
 import { type DirectDep, type Section, lockVersions, parsePubspec, restoreValues, withConstraints } from './pubspec.ts'
-import { parseVersion } from './version.ts'
+import { isPinned } from './version.ts'
 
 export interface Change {
   from: string
@@ -36,29 +36,21 @@ export type RunPub = (args: string[], files: PubFiles) => Promise<PubFiles>
 
 /** Runs pub for the unit on the base. */
 export async function applyPub(unit: Unit, base: PubFiles, versioning: Versioning, pub: RunPub): Promise<PubFiles> {
-  if (unit.kind === 'minor') {
-    const files = await pub(versioning === 'increase' ? ['upgrade', '--tighten'] : ['upgrade'], base)
-    // --tighten turns `a: any` on a workspace member into `a: ^0.0.0`, as the member has no version.
-    const members = new Set(Object.values(base.pubspecs).map((text) => String(parsePubspec(text).name)))
-    return { ...files, pubspecs: restoreValues(files.pubspecs, base.pubspecs, members) }
-  }
+  const members = new Set(unit.kind === 'minor' ? [] : unit.members)
   const constraints = new Map(
-    unit.members.map((name) => {
-      const target = unit.targets[name]!
-      // A constraint pinned to one version stays pinned.
-      return [name, (old: string) => (isVersion(old) ? target : `^${target}`)] as const
+    Object.entries(unit.targets).map(([name, target]) => {
+      // A constraint pinned to one version stays pinned. Pinned dependencies outside the members (in minor, every
+      // target) are moved to their targets, as pub does not move them; their other constraints stay.
+      const constraint = (old: string) => (isPinned(old) ? target : members.has(name) ? `^${target}` : old)
+      return [name, constraint] as const
     }),
   )
-  return pub(['get'], { ...base, pubspecs: withConstraints(base.pubspecs, constraints) })
-}
-
-function isVersion(constraint: string): boolean {
-  try {
-    parseVersion(constraint.trim())
-    return true
-  } catch {
-    return false
-  }
+  const files = constraints.size > 0 ? { ...base, pubspecs: withConstraints(base.pubspecs, constraints) } : base
+  if (unit.kind !== 'minor') return pub(['get'], files)
+  const upgraded = await pub(versioning === 'increase' ? ['upgrade', '--tighten'] : ['upgrade'], files)
+  // --tighten turns `a: any` on a workspace member into `a: ^0.0.0`, as the member has no version.
+  const workspace = new Set(Object.values(base.pubspecs).map((text) => String(parsePubspec(text).name)))
+  return { ...upgraded, pubspecs: restoreValues(upgraded.pubspecs, base.pubspecs, workspace) }
 }
 
 /** Direct dependencies whose version differs between the base lockfile and `lock`. */

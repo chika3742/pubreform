@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { plan } from '../src/planner.ts'
+import { plan, solveFailure } from '../src/planner.ts'
 import type { DirectDep } from '../src/pubspec.ts'
 import { type Universe, fakeResolve } from './fake-pub.ts'
 
@@ -57,7 +57,7 @@ describe('plan', () => {
     ])
     expect(result.uncertain).toEqual(new Set())
     expect(result.unresolvable).toEqual([
-      { name: 'c', section: 'dependencies', current: deps.find((d) => d.name === 'c')!.current, resolvable: '2.0.0', latest: '3.0.0' },
+      { name: 'c', section: 'dependencies', current: deps.find((d) => d.name === 'c')!.current, resolvable: '2.0.0', latest: '3.0.0', reason: 'version solving failed.' },
     ])
   })
 
@@ -143,6 +143,34 @@ describe('plan', () => {
     ])
   })
 
+  test('pinned versions are read as caret constraints', async () => {
+    // p is pinned: 1.1.0 goes into the minor unit and 2.0.0 into a single unit.
+    // q is pinned, and r 2.0.0 needs q 1.0.1: q moves within ^1.0.0, so it stays out of S(r),
+    // but goes into the targets, as pub add cannot move a pinned version.
+    const u: Universe = {
+      p: { '1.0.0': {}, '1.1.0': {}, '2.0.0': {} },
+      q: { '1.0.0': {}, '1.0.1': {} },
+      r: { '1.0.0': {}, '2.0.0': { q: '>=1.0.1' } },
+    }
+    const ds: DirectDep[] = [
+      dep('p', 'dependencies', '1.0.0', '1.0.0'),
+      dep('q', 'dev_dependencies', '1.0.0', '1.0.0'),
+      dep('r', 'dependencies', '^1.0.0', '1.0.0'),
+    ]
+    const result = await plan({
+      deps: ds,
+      basePubspecs: { 'pubspec.yaml': 'name: app\ndependencies:\n  p: 1.0.0\n  r: ^1.0.0\ndev_dependencies:\n  q: 1.0.0\n' },
+      resolve: fakeResolve(u, new Map(ds.map((d) => [d.name, d.current]))),
+      visibleVersions: async (name) => Object.keys(u[name]!),
+      fixes,
+    })
+    expect(result.units).toEqual([
+      { kind: 'minor', members: ['p', 'q'], targets: { p: '1.1.0', q: '1.0.1' } },
+      { kind: 'single', members: ['p'], targets: { p: '2.0.0' } },
+      { kind: 'single', members: ['r'], targets: { r: '2.0.0', q: '1.0.1' } },
+    ])
+  })
+
   test('a minor unit without members when only a fixed transitive dependency changes', async () => {
     // t is a transitive dependency of d: 1.0.0 is affected, 1.0.1 fixes it. pub upgrade moves t only.
     const ds: DirectDep[] = [dep('d', 'dependencies', '^1.0.0', '1.0.0')]
@@ -184,5 +212,24 @@ describe('plan', () => {
       fixes,
     })
     expect(result.units).toEqual([{ kind: 'group', members: ['m', 'n'], targets: { m: '2.0.0', n: '2.0.0' } }])
+  })
+})
+
+describe('solveFailure', () => {
+  test("keeps pub's explanation and drops the command and the suggestion", () => {
+    // From dart pub get (Dart 3.13.5).
+    const message = `dart pub get --no-example failed with exit code 1
+Because app depends on old from path which depends on http ^0.13.0, http ^0.13.0 is required.
+So, because app depends on http 1.6.0, version solving failed.
+
+
+You can try the following suggestion to make the pubspec resolve:
+* Consider downgrading your constraint on http: dart pub add http:^0.13.6`
+    expect(solveFailure(message)).toBe(`Because app depends on old from path which depends on http ^0.13.0, http ^0.13.0 is required.
+So, because app depends on http 1.6.0, version solving failed.`)
+  })
+
+  test('keeps everything after the command for other errors', () => {
+    expect(solveFailure('dart pub get failed with exit code 69\nGot socket error.\n')).toBe('Got socket error.')
   })
 })

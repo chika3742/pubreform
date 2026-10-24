@@ -88,6 +88,8 @@ describe.skipIf(!E2E)('local E2E', () => {
   const MINOR = 'pubreform/minor-and-patch'
   const SINGLE = 'pubreform/single/fx_major'
   const GROUP = 'pubreform/group/fx_b'
+  const PINNED = 'pubreform/single/fx_pinned'
+  const NEEDS_PINNED = 'pubreform/single/fx_needs_pinned'
   const snapshot = () => github.prs.map((pr) => ({ n: pr.number, head: github.headOf(pr), comments: pr.comments.length }))
   const commitMessage = (sha: string) => github.git(['log', '-1', '--format=%B', sha])
   const lockVersion = (ref: string, name: string) =>
@@ -98,34 +100,46 @@ describe.skipIf(!E2E)('local E2E', () => {
     const { summary } = await runOk()
     expect(open().map((pr) => [pr.branch, pr.title]).sort()).toEqual([
       [GROUP, 'Update fx_b to 2.0.0, fx_needs_b to 1.1.0'],
-      [MINOR, 'Update minor and patch (2 packages)'],
+      [MINOR, 'Update minor and patch (4 packages)'],
       [SINGLE, 'Update fx_major from 1.0.0 to 2.0.0'],
+      [NEEDS_PINNED, 'Update fx_needs_pinned from 1.0.0 to 2.0.0'],
+      [PINNED, 'Update fx_pinned from 1.0.0 to 2.0.0'],
     ])
 
     const minor = openOn(MINOR)
     expect(minor.body).toContain('| [fx_minor](https://pub.dev/packages/fx_minor) | 1.0.0 | 1.2.0 | dev |')
     expect(minor.body).toContain('| [fx_patch](https://pub.dev/packages/fx_patch) | 1.0.0 | 1.0.1 | direct |')
+    expect(minor.body).toContain('| [fx_pinned](https://pub.dev/packages/fx_pinned) | 1.0.0 | 1.1.0 | direct |')
+    expect(minor.body).toContain('| [fx_pinned_dep](https://pub.dev/packages/fx_pinned_dep) | 1.0.0 | 1.0.1 | direct |')
     expect(minor.body).toContain('[pub.dev](https://pub.dev/packages/fx_minor/versions/1.2.0) · [Source](https://example.com/fx_minor)')
     expect(minor.body).toContain('<summary>Changelog</summary>\n\n## 1.2.0\n\n- fx_minor 1.2.0.\n\n</details>')
     expect(minor.body).toContain('- [ ] Rebase this PR <!-- pubreform:rebase -->')
     const meta = parseMeta(minor.body)!
     expect(meta).toMatchObject({
       kind: 'minor',
-      packages: { fx_minor: ['1.0.0', '1.2.0'], fx_patch: ['1.0.0', '1.0.1'] },
+      packages: { fx_minor: ['1.0.0', '1.2.0'], fx_patch: ['1.0.0', '1.0.1'], fx_pinned: ['1.0.0', '1.1.0'], fx_pinned_dep: ['1.0.0', '1.0.1'] },
       commit: github.headOf(minor),
     })
     expect(commitMessage(github.headOf(minor))).toBe(
-      'Update minor and patch (2 packages)\n\n| Package | From | To | Type |\n|---|---|---|---|\n| fx_minor | 1.0.0 | 1.2.0 | dev |\n| fx_patch | 1.0.0 | 1.0.1 | direct |',
+      'Update minor and patch (4 packages)\n\n| Package | From | To | Type |\n|---|---|---|---|\n| fx_minor | 1.0.0 | 1.2.0 | dev |\n| fx_patch | 1.0.0 | 1.0.1 | direct |\n| fx_pinned | 1.0.0 | 1.1.0 | direct |\n| fx_pinned_dep | 1.0.0 | 1.0.1 | direct |',
     )
     // versioning: increase raises the lower bounds; the lockfile keeps pub.dev URLs.
     const minorPubspec = github.readFile(github.headOf(minor), 'pubspec.yaml')
     expect(minorPubspec).toContain('fx_minor: ^1.2.0')
     expect(minorPubspec).toContain('fx_patch: ^1.0.1')
+    // A pinned version stays pinned.
+    expect(minorPubspec).toContain('fx_pinned: 1.1.0')
     expect(github.readFile(github.headOf(minor), 'pubspec.lock')).not.toContain('127.0.0.1')
 
     const single = openOn(SINGLE)
     expect(commitMessage(github.headOf(single))).toBe('Update fx_major from 1.0.0 to 2.0.0')
     expect(github.readFile(github.headOf(single), 'pubspec.yaml')).toContain('fx_major: ^2.0.0')
+    expect(github.readFile(github.headOf(openOn(PINNED)), 'pubspec.yaml')).toContain('fx_pinned: 2.0.0')
+    // The pinned dependency that it moves is raised in place, and listed in the table only.
+    const needsPinned = openOn(NEEDS_PINNED)
+    expect(github.readFile(github.headOf(needsPinned), 'pubspec.yaml')).toContain('fx_pinned_dep: 1.0.1')
+    expect(lockVersion(github.headOf(needsPinned), 'fx_pinned_dep')).toBe('1.0.1')
+    expect(needsPinned.body).toContain('| [fx_pinned_dep](https://pub.dev/packages/fx_pinned_dep) | 1.0.0 | 1.0.1 | direct |')
 
     const group = openOn(GROUP)
     expect(parseMeta(group.body)!.packages).toEqual({ fx_b: ['1.0.0', '2.0.0'], fx_needs_b: ['1.0.0', '1.1.0'] })
@@ -141,11 +155,13 @@ describe.skipIf(!E2E)('local E2E', () => {
     // No pull requests for fresh, ignored or unresolvable updates.
     expect(github.prs.some((pr) => /fx_(fresh|ignored|sdk)/.test(pr.body))).toBe(false)
     expect(summary).toContain('Cannot update to the latest version')
-    expect(summary).toContain('<td>fx_sdk</td><td>direct</td><td>1.0.0</td><td>1.0.0</td><td>2.0.0</td>')
+    expect(summary).toContain('<td><a href="https://pub.dev/packages/fx_sdk">fx_sdk</a></td><td>direct</td><td>1.0.0</td><td>1.0.0</td><td>2.0.0</td>')
+    expect(summary).toContain('<details><summary>fx_sdk</summary><pre>The current Dart SDK version is ')
+    expect(summary).toContain('which requires SDK version ^99.0.0, version solving failed.</pre></details>')
     // fx_fresh 1.1.0 was published a day ago, and min_release_age_days is 3.
     expect(summary).toContain('Waiting for the release age')
-    expect(summary).toContain('<td>fx_fresh</td><td>direct</td><td>1.0.0</td><td>1.1.0</td>')
-    expect(summary).not.toContain('<td>fx_ignored</td>')
+    expect(summary).toContain('<td><a href="https://pub.dev/packages/fx_fresh">fx_fresh</a></td><td>direct</td><td>1.0.0</td><td>1.1.0</td>')
+    expect(summary).not.toContain('<td><a href="https://pub.dev/packages/fx_ignored">fx_ignored</a></td>')
   })
 
   test('2. a second run changes nothing', async () => {
@@ -188,7 +204,7 @@ describe.skipIf(!E2E)('local E2E', () => {
     github.merge(openOn(MINOR).number)
     const before = snapshot()
     await runOk()
-    for (const branch of [SINGLE, GROUP]) {
+    for (const branch of [SINGLE, GROUP, PINNED]) {
       const pr = openOn(branch)
       const old = before.find((b) => b.n === pr.number)!
       expect(github.headOf(pr)).not.toBe(old.head)
@@ -196,6 +212,8 @@ describe.skipIf(!E2E)('local E2E', () => {
       expect(github.git(['rev-parse', `${github.headOf(pr)}^`])).toBe(github.refSha('main')!)
     }
     expect(open().some((pr) => pr.branch === MINOR)).toBe(false)
+    // Only the version that it updates from changed.
+    expect(openOn(PINNED).title).toBe('Update fx_pinned from 1.1.0 to 2.0.0')
   })
 
   test('6. manual commits are notified once and not overwritten', async () => {
@@ -316,10 +334,10 @@ describe.skipIf(!E2E)('local E2E', () => {
     expect(parseMeta(late.body)!.advisories).toBeUndefined()
 
     expect(summary).toContain('Security advisories')
-    expect(summary).toContain(`<td>fx_child</td><td>1.0.0</td><td>GHSA-e2e0-chld-0001</td><td>Fixed in #${minor.number}</td>`)
-    expect(summary).toContain(`<td>fx_vuln</td><td>1.0.0</td><td>GHSA-e2e0-vuln-0001</td><td>Fixed in #${minor.number}</td>`)
+    expect(summary).toContain(`<td><a href="https://pub.dev/packages/fx_child">fx_child</a></td><td>1.0.0</td><td>GHSA-e2e0-chld-0001</td><td>Fixed in #${minor.number}</td>`)
+    expect(summary).toContain(`<td><a href="https://pub.dev/packages/fx_vuln">fx_vuln</a></td><td>1.0.0</td><td>GHSA-e2e0-vuln-0001</td><td>Fixed in #${minor.number}</td>`)
     // Neither the shown fixed version nor the hidden affected one is waiting for the release age.
-    expect(summary).not.toContain('<td>fx_vuln</td><td>direct</td>')
+    expect(summary).not.toContain('<td><a href="https://pub.dev/packages/fx_vuln">fx_vuln</a></td><td>direct</td>')
   })
 
   test('13. an advisory on the version that a pull request updates from refreshes it without a new commit', async () => {
@@ -335,7 +353,7 @@ describe.skipIf(!E2E)('local E2E', () => {
     expect(output).toContain(`Refresh #${late.number} (${LATE}): security advisories changed`)
     // No new commit and no comment anywhere.
     expect(snapshot()).toEqual(before)
-    expect(summary).toContain(`<td>fx_late</td><td>1.0.0</td><td>GHSA-e2e0-late-0001</td><td>Fixed in #${late.number}</td>`)
+    expect(summary).toContain(`<td><a href="https://pub.dev/packages/fx_late">fx_late</a></td><td>1.0.0</td><td>GHSA-e2e0-late-0001</td><td>Fixed in #${late.number}</td>`)
   })
 })
 

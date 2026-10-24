@@ -44,6 +44,21 @@ describe('applyPub', () => {
     await applyPub(unit, base, 'lockfile-only', pub)
     expect(calls.map((c) => c.args)).toEqual([['upgrade', '--tighten'], ['upgrade']])
   })
+  test('minor moves pinned versions to their targets before upgrading', async () => {
+    const unit: Unit = { kind: 'minor', members: ['http', 'lints', 'meta'], targets: { http: '1.6.0', lints: '5.1.0' } }
+    const pinned = {
+      pubspecs: { 'pubspec.yaml': 'name: app\ndependencies:\n  http: 1.5.0\n  meta: ^1.16.0\ndev_dependencies:\n  lints: 5.0.0\n' },
+      lock: base.lock,
+    }
+    const { calls, pub } = recorder()
+    await applyPub(unit, pinned, 'increase', pub)
+    expect(calls).toEqual([
+      {
+        args: ['upgrade', '--tighten'],
+        pubspecs: { 'pubspec.yaml': 'name: app\ndependencies:\n  http: 1.6.0\n  meta: ^1.16.0\ndev_dependencies:\n  lints: 5.1.0\n' },
+      },
+    ])
+  })
   test('minor keeps the constraints on workspace members', async () => {
     const unit: Unit = { kind: 'minor', members: ['http'], targets: {} }
     const ws = {
@@ -81,6 +96,28 @@ describe('applyPub', () => {
           'a/pubspec.yaml': 'name: a\ndependencies:\n  http: ^2.0.0 # c\n',
           // A constraint pinned to one version stays pinned.
           'b/pubspec.yaml': 'name: b\ndev_dependencies:\n  http:\n    version: 2.0.0\n',
+        },
+      },
+    ])
+  })
+  test('single with a pinned dependency that it moves', async () => {
+    const unit: Unit = { kind: 'single', members: ['http'], targets: { http: '2.0.0', lints: '5.0.1' } }
+    const ws = {
+      pubspecs: {
+        'pubspec.yaml': 'name: root\ndependencies:\n  http: ^1.5.0\ndev_dependencies:\n  lints: 5.0.0\n',
+        // Only the pinned constraint of lints moves: lints is not a member.
+        'b/pubspec.yaml': 'name: b\ndev_dependencies:\n  lints: ^5.0.0\n',
+      },
+      lock: base.lock,
+    }
+    const { calls, pub } = recorder()
+    await applyPub(unit, ws, 'increase', pub)
+    expect(calls).toEqual([
+      {
+        args: ['get'],
+        pubspecs: {
+          'pubspec.yaml': 'name: root\ndependencies:\n  http: ^2.0.0\ndev_dependencies:\n  lints: 5.0.1\n',
+          'b/pubspec.yaml': 'name: b\ndev_dependencies:\n  lints: ^5.0.0\n',
         },
       },
     ])

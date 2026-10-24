@@ -44,7 +44,7 @@ export function fakeResolve(universe: Universe, locked: Map<string, string>, cal
       chosen.delete(names[i]!)
       return false
     }
-    if (!search(0)) throw new Error('version solving failed')
+    if (!search(0)) throw new Error(`pub ${args.join(' ')} failed\nversion solving failed.\n\nYou can try the following suggestion`)
     return chosen
   }
 }

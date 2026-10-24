@@ -23,6 +23,11 @@ export function parseVersion(s: string): Version {
   }
 }
 
+/** Whether a constraint pins one version (`1.2.3`). */
+export function isPinned(constraint: string): boolean {
+  return VERSION.test(constraint.trim())
+}
+
 export function isStable(v: string): boolean {
   return parseVersion(v).pre.length === 0
 }
