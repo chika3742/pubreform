@@ -139,7 +139,7 @@ export async function plan(input: PlanInput): Promise<Plan> {
       const latest = maxVersion((await input.visibleVersions(d.name)).filter(isStable))
       const resolvable = R.get(d.name)!
       if (latest !== undefined && compareVersions(latest, resolvable) > 0) {
-        const reason = await whyUnresolvable(input, d.name, latest, R)
+        const reason = await whyUnresolvable(input, d.name, latest)
         unresolvable.push({ name: d.name, section: d.section, current: d.current, resolvable, latest, reason })
       }
     } catch (e) {
@@ -151,12 +151,11 @@ export async function plan(input: PlanInput): Promise<Plan> {
 }
 
 /** Resolves with `name` at `latest` and the other direct dependencies loosened, and returns pub's explanation. */
-async function whyUnresolvable(input: PlanInput, name: string, latest: string, R: Map<string, string>): Promise<string> {
+async function whyUnresolvable(input: PlanInput, name: string, latest: string): Promise<string> {
   const constraints = new Map(input.deps.map((d) => [d.name, d.name === name ? latest : `>=${d.current}`]))
   try {
-    const L = await input.resolve(['get'], withConstraints(input.basePubspec, constraints))
-    const changed = input.deps.filter((d) => d.name !== name && L.get(d.name) !== R.get(d.name))
-    return `Resolves with: ${changed.map((d) => `${d.name} ${L.get(d.name)}`).join(', ')}`
+    await input.resolve(['get'], withConstraints(input.basePubspec, constraints))
+    return 'Resolves with other versions of the other dependencies, but pub upgrade chooses a combination without the latest version.'
   } catch (e) {
     return solveFailure((e as Error).message)
   }
