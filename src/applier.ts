@@ -44,7 +44,7 @@ export function applyArgs(unit: Unit, deps: DirectDep[], versioning: Versioning)
       const spec = `${name}:${dep && isPinned(dep.constraint) ? '' : '^'}${unit.targets[name]}`
       return dep?.section === 'dev_dependencies' ? `dev:${spec}` : spec
     })
-  if (unit.kind !== 'minor') return [['add', ...specs(unit.members)]]
+  if (unit.kind !== 'minor') return [['add', ...specs(Object.keys(unit.targets))]]
   const upgrade = versioning === 'increase' ? ['upgrade', '--tighten'] : ['upgrade']
   // pub upgrade does not move pinned versions, so they are raised to their versions in U first.
   const pinned = Object.keys(unit.targets)

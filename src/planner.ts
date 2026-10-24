@@ -12,7 +12,7 @@ export interface Unit {
   kind: UnitKind
   /** minor: direct dependencies that change in U (may be empty when only fixed transitive ones change). single / group: S. */
   members: string[]
-  /** single / group: the versions in R. minor: the versions in U of the pinned members. */
+  /** single / group: the versions in R of the members, and in S's resolution of the pinned dependencies outside S that it moves. minor: the versions in U of the pinned members. */
   targets: Record<string, string>
 }
 
@@ -67,6 +67,8 @@ export async function plan(input: PlanInput): Promise<Plan> {
   })
   const X = deps.filter((d) => compareVersions(get(R, d.name, 'R'), get(U, d.name, 'U')) > 0).map((d) => d.name)
 
+  // The last resolution of the closure that settled each set.
+  const lockOf = new Map<Set<string>, Map<string, string>>()
   async function closure(start: Set<string>): Promise<Set<string>> {
     const S = new Set(start)
     for (;;) {
@@ -74,7 +76,10 @@ export async function plan(input: PlanInput): Promise<Plan> {
       for (const d of deps) constraints.set(d.name, S.has(d.name) ? R.get(d.name)! : `>=${d.current}`)
       const L = await resolve(['get'], withConstraints(basePubspec, constraints))
       const K = deps.filter((e) => !S.has(e.name) && !allows(range(e), get(L, e.name, 'S')))
-      if (K.length === 0) return S
+      if (K.length === 0) {
+        lockOf.set(S, L)
+        return S
+      }
       for (const e of K) S.add(e.name)
     }
   }
@@ -107,8 +112,9 @@ export async function plan(input: PlanInput): Promise<Plan> {
     const next: Set<string>[] = []
     for (const m of merged) {
       // A merged set equal to one of its parts is already closed.
-      if (m.parts.some((p) => p.size === m.set.size)) {
-        next.push(m.set)
+      const closed = m.parts.find((p) => p.size === m.set.size)
+      if (closed) {
+        next.push(closed)
         continue
       }
       try {
@@ -128,10 +134,13 @@ export async function plan(input: PlanInput): Promise<Plan> {
   }
   const updateUnits = sets.map((s): Unit => {
     const members = [...s].sort()
+    const L = lockOf.get(s)!
+    // pub add can move a caret dependency within its range, but not a pinned one, so it is passed too.
+    const moved = deps.filter((e) => !s.has(e.name) && pins.has(e.name) && L.get(e.name) !== e.current)
     return {
       kind: members.length === 1 ? 'single' : 'group',
       members,
-      targets: Object.fromEntries(members.map((m) => [m, R.get(m)!])),
+      targets: Object.fromEntries([...members.map((m) => [m, R.get(m)!]), ...moved.map((e) => [e.name, L.get(e.name)!])]),
     }
   })
   updateUnits.sort((a, b) => (a.members[0]! < b.members[0]! ? -1 : 1))

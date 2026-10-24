@@ -143,7 +143,8 @@ describe('plan', () => {
 
   test('pinned versions are read as caret constraints', async () => {
     // p is pinned: 1.1.0 goes into the minor unit and 2.0.0 into a single unit.
-    // q is pinned, and r 2.0.0 needs q 1.0.1: q moves within ^1.0.0, so it stays out of S(r).
+    // q is pinned, and r 2.0.0 needs q 1.0.1: q moves within ^1.0.0, so it stays out of S(r),
+    // but goes into the targets, as pub add cannot move a pinned version.
     const u: Universe = {
       p: { '1.0.0': {}, '1.1.0': {}, '2.0.0': {} },
       q: { '1.0.0': {}, '1.0.1': {} },
@@ -164,7 +165,7 @@ describe('plan', () => {
     expect(result.units).toEqual([
       { kind: 'minor', members: ['p', 'q'], targets: { p: '1.1.0', q: '1.0.1' } },
       { kind: 'single', members: ['p'], targets: { p: '2.0.0' } },
-      { kind: 'single', members: ['r'], targets: { r: '2.0.0' } },
+      { kind: 'single', members: ['r'], targets: { r: '2.0.0', q: '1.0.1' } },
     ])
   })
 

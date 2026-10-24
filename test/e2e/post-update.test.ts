@@ -95,7 +95,7 @@ describe.skipIf(!DOCKER)('local E2E: post_update', () => {
   test('1. the files that the commands change are committed, and the commands reach nothing they must not', async () => {
     const { status, output } = await runAction()
     if (status !== 0) throw new Error(`pubreform failed:\n${output.split('\n').slice(-60).join('\n')}`)
-    expect(open()).toHaveLength(4)
+    expect(open()).toHaveLength(5)
     expect(output).toContain('::group::Post update: dart run tool/gen.dart')
 
     for (const pr of open()) {

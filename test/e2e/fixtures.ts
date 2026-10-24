@@ -25,13 +25,16 @@ export function defaultFixtures(): Fixtures {
   const old = (version: string, extra: Partial<FixtureVersion> = {}) => ({ version, daysAgo: 30, ...extra })
   const base = { version: '1.0.0', daysAgo: 60 }
   return {
-    // Minor and patch group (N = 3, with fx_pinned).
+    // Minor and patch group (N = 4, with fx_pinned and fx_pinned_dep).
     fx_patch: [base, old('1.0.1')],
     fx_minor: [base, old('1.2.0')],
     // Single.
     fx_major: [base, old('2.0.0')],
     // Pinned (fx_pinned: 1.0.0): 1.1.0 goes into the minor and patch group, 2.0.0 into a single.
     fx_pinned: [base, old('1.1.0'), old('2.0.0')],
+    // fx_needs_pinned 2.0.0 needs fx_pinned_dep (pinned) 1.0.1, within ^1.0.0: a single that also raises the pin.
+    fx_needs_pinned: [base, old('2.0.0', { dependencies: { fx_pinned_dep: '^1.0.1' } })],
+    fx_pinned_dep: [base, old('1.0.1')],
     // Group {fx_b, fx_needs_b}.
     fx_needs_b: [base, old('1.1.0', { dependencies: { fx_b: '^2.0.0' } })],
     fx_b: [base, old('2.0.0')],

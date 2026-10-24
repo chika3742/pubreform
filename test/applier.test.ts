@@ -43,6 +43,11 @@ describe('applyArgs', () => {
     const unit: Unit = { kind: 'group', members: ['http', 'lints'], targets: { http: '2.0.0', lints: '6.0.0' } }
     expect(applyArgs(unit, pinned, 'increase')).toEqual([['add', 'http:^2.0.0', 'dev:lints:6.0.0']])
   })
+  test('single with a pinned dependency that it moves', () => {
+    const pinned = deps.map((d) => (d.name === 'lints' ? { ...d, constraint: '5.0.0' } : d))
+    const unit: Unit = { kind: 'single', members: ['http'], targets: { http: '2.0.0', lints: '5.0.1' } }
+    expect(applyArgs(unit, pinned, 'increase')).toEqual([['add', 'http:^2.0.0', 'dev:lints:5.0.1']])
+  })
 })
 
 describe('applyUnit', () => {
