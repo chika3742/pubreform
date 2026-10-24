@@ -642,7 +642,7 @@ decide(results, unitErrors, plan, openPrs, closedPrs, ctx): Op[]   // 純粋関�
 
 ## 16. ジョブサマリー
 
-`core.summary` に次を書く。全体エラーのときはサマリーを書かず、`core.setFailed` だけを行う。時刻はすべて設定のタイムゾーンで書く。
+`core.summary` に次を書く。全体エラーのときはサマリーを書かず、`core.setFailed` だけを行う。時刻はすべて設定のタイムゾーンで書く。表のパッケージ名は `https://pub.dev/packages/<name>` へのリンクにする（本文の表と同じ）。
 
 - slot と cutoff
 - 更新単位ごとの行: 種類、パッケージ、操作（作成 / 再生成 / 変更なし / クローズ / エラー）、PR のリンク

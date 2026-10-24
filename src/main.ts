@@ -46,6 +46,7 @@ interface Waiting {
 const typeOf = (section: Section) => (section === 'dev_dependencies' ? 'dev' : 'direct')
 
 const escapeHtml = (text: string) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+const pkgLink = (name: string) => `<a href="https://pub.dev/packages/${name}">${name}</a>`
 
 function formatTime(date: Date, timeZone: string): string {
   return `${date.toLocaleString('sv-SE', { timeZone })} (${timeZone})`
@@ -88,7 +89,7 @@ async function writeSummary(opts: {
       ],
       ...outcomes.map((o) => [
         o.kind ?? '',
-        o.packages.join(', '),
+        o.packages.map(pkgLink).join(', '),
         actions[o.action],
         o.pr === undefined ? '' : `<a href="${opts.prUrl(o.pr)}">#${o.pr}</a>`,
       ]),
@@ -100,7 +101,7 @@ async function writeSummary(opts: {
     s.addTable([
       ['Package', 'Type', 'Current', 'Version', 'Published', 'Used from'].map((data) => ({ data, header: true })),
       ...opts.waiting.map((w) => [
-        w.name,
+        pkgLink(w.name),
         typeOf(w.section),
         w.current,
         w.version,
@@ -114,7 +115,7 @@ async function writeSummary(opts: {
     s.addRaw('<p>No version of the other dependencies resolves with the latest version.</p>', true)
     s.addTable([
       ['Package', 'Type', 'Current', 'Resolvable', 'Latest'].map((data) => ({ data, header: true })),
-      ...opts.plan.unresolvable.map((u) => [u.name, typeOf(u.section), u.current, u.resolvable, u.latest]),
+      ...opts.plan.unresolvable.map((u) => [pkgLink(u.name), typeOf(u.section), u.current, u.resolvable, u.latest]),
     ])
     for (const u of opts.plan.unresolvable) s.addDetails(u.name, `<pre>${escapeHtml(u.reason)}</pre>`)
   }
@@ -123,7 +124,7 @@ async function writeSummary(opts: {
     s.addTable([
       ['Package', 'Locked', 'Advisories', 'Status'].map((data) => ({ data, header: true })),
       ...[...opts.fixes.values()].map((f) => [
-        f.name,
+        pkgLink(f.name),
         f.locked,
         f.advisories.map((a) => a.id).join(', '),
         advisoryStatus(f, outcomes, opts.failures),

@@ -518,9 +518,9 @@ Versions with a release date are used before `min_release_age_days` has passed, 
 
 | Package | Locked | Advisories | Status |
 |---|---|---|---|
-| archive | 3.3.7 | GHSA-9v85-q87q-g4vg | Fixed in #12 |
-| foo | 1.0.0 | GHSA-xxxx | No fixed version |
-| bar | 2.1.0 | GHSA-yyyy | Cannot be fixed with the current constraints |
+| [archive](https://pub.dev/packages/archive) | 3.3.7 | GHSA-9v85-q87q-g4vg | Fixed in #12 |
+| [foo](https://pub.dev/packages/foo) | 1.0.0 | GHSA-xxxx | No fixed version |
+| [bar](https://pub.dev/packages/bar) | 2.1.0 | GHSA-yyyy | Cannot be fixed with the current constraints |
 
 Status は次のどれか。
 

@@ -141,13 +141,13 @@ describe.skipIf(!E2E)('local E2E', () => {
     // No pull requests for fresh, ignored or unresolvable updates.
     expect(github.prs.some((pr) => /fx_(fresh|ignored|sdk)/.test(pr.body))).toBe(false)
     expect(summary).toContain('Cannot update to the latest version')
-    expect(summary).toContain('<td>fx_sdk</td><td>direct</td><td>1.0.0</td><td>1.0.0</td><td>2.0.0</td>')
+    expect(summary).toContain('<td><a href="https://pub.dev/packages/fx_sdk">fx_sdk</a></td><td>direct</td><td>1.0.0</td><td>1.0.0</td><td>2.0.0</td>')
     expect(summary).toContain('<details><summary>fx_sdk</summary><pre>The current Dart SDK version is ')
     expect(summary).toContain('which requires SDK version ^99.0.0, version solving failed.</pre></details>')
     // fx_fresh 1.1.0 was published a day ago, and min_release_age_days is 3.
     expect(summary).toContain('Waiting for the release age')
-    expect(summary).toContain('<td>fx_fresh</td><td>direct</td><td>1.0.0</td><td>1.1.0</td>')
-    expect(summary).not.toContain('<td>fx_ignored</td>')
+    expect(summary).toContain('<td><a href="https://pub.dev/packages/fx_fresh">fx_fresh</a></td><td>direct</td><td>1.0.0</td><td>1.1.0</td>')
+    expect(summary).not.toContain('<td><a href="https://pub.dev/packages/fx_ignored">fx_ignored</a></td>')
   })
 
   test('2. a second run changes nothing', async () => {
@@ -318,10 +318,10 @@ describe.skipIf(!E2E)('local E2E', () => {
     expect(parseMeta(late.body)!.advisories).toBeUndefined()
 
     expect(summary).toContain('Security advisories')
-    expect(summary).toContain(`<td>fx_child</td><td>1.0.0</td><td>GHSA-e2e0-chld-0001</td><td>Fixed in #${minor.number}</td>`)
-    expect(summary).toContain(`<td>fx_vuln</td><td>1.0.0</td><td>GHSA-e2e0-vuln-0001</td><td>Fixed in #${minor.number}</td>`)
+    expect(summary).toContain(`<td><a href="https://pub.dev/packages/fx_child">fx_child</a></td><td>1.0.0</td><td>GHSA-e2e0-chld-0001</td><td>Fixed in #${minor.number}</td>`)
+    expect(summary).toContain(`<td><a href="https://pub.dev/packages/fx_vuln">fx_vuln</a></td><td>1.0.0</td><td>GHSA-e2e0-vuln-0001</td><td>Fixed in #${minor.number}</td>`)
     // Neither the shown fixed version nor the hidden affected one is waiting for the release age.
-    expect(summary).not.toContain('<td>fx_vuln</td><td>direct</td>')
+    expect(summary).not.toContain('<td><a href="https://pub.dev/packages/fx_vuln">fx_vuln</a></td><td>direct</td>')
   })
 
   test('13. an advisory on the version that a pull request updates from refreshes it without a new commit', async () => {
@@ -337,7 +337,7 @@ describe.skipIf(!E2E)('local E2E', () => {
     expect(output).toContain(`Refresh #${late.number} (${LATE}): security advisories changed`)
     // No new commit and no comment anywhere.
     expect(snapshot()).toEqual(before)
-    expect(summary).toContain(`<td>fx_late</td><td>1.0.0</td><td>GHSA-e2e0-late-0001</td><td>Fixed in #${late.number}</td>`)
+    expect(summary).toContain(`<td><a href="https://pub.dev/packages/fx_late">fx_late</a></td><td>1.0.0</td><td>GHSA-e2e0-late-0001</td><td>Fixed in #${late.number}</td>`)
   })
 })
 
