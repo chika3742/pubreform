@@ -53,7 +53,7 @@ on:
       timezone: Asia/Tokyo
   push:
     branches: [main]
-    paths: [pubspec.yaml, pubspec.lock, .fvmrc, .github/pubreform.yaml]
+    paths: ["**/pubspec.yaml", pubspec.lock, .fvmrc, .github/pubreform.yaml]
   pull_request:
     types: [edited]
   workflow_dispatch:

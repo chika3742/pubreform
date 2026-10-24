@@ -83,7 +83,8 @@ export async function workspacePubspecs(dir: string, fvm: boolean): Promise<stri
   // dart, not flutter: the root pubspec.yaml does not tell whether a member uses Flutter.
   const [cmd, ...args] = pubCommand(false, fvm)
   const { stdout } = await exec.getExecOutput(cmd!, [...args, 'workspace', 'list', '--json'], { cwd: dir })
-  const packages = (JSON.parse(stdout) as { packages?: { path?: unknown }[] }).packages
+  // fvm may print before the JSON.
+  const packages = (JSON.parse(stdout.slice(stdout.indexOf('{'))) as { packages?: { path?: unknown }[] }).packages
   if (!Array.isArray(packages)) throw new Error(`unexpected output of pub workspace list: ${stdout}`)
   const root = await fs.realpath(dir)
   const result: string[] = []

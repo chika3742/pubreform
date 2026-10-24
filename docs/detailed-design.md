@@ -810,7 +810,7 @@ workspace（§23）は、別のテスト（`test/e2e/workspace.test.ts`）で、
 - 本物の API で、`mode: 100755` と `120000`、`POST /git/blobs` の blob、`sha: null` の削除が tree に入る
 - 本文の行と `lib/versions.g.dart` の内容
 
-テスト用プロジェクトは pub workspace にする（§23）。ルートに今までの依存を置き、`fx_major` だけを宣言するメンバー `pkgs/member` を足す。本物のランナーの `dart` で `pub workspace list` が動くことと、単独 PR のコミットに、ディレクトリの下の `pkgs/member/pubspec.yaml`（`fx_major: ^2.0.0`）が入ることを確かめる。
+テスト用プロジェクトは pub workspace にする（§23）。ルートに今までの依存を置き、`fx_major` だけを宣言するメンバー `pkgs/member` を足す。本物のランナーの `dart` で `pub workspace list` が動くことと、単独 PR のコミットに、ディレクトリの下の `pkgs/member/pubspec.yaml`（`fx_major: ^2.0.0`）が入ることを確かめる。2026-10-24 に実行し、確認済み（[run #11](https://github.com/chika3742/pubreform-e2e/actions/runs/40079510586)。ランナーの Dart は 3.13.7）。
 
 ワークフローの `run:` のステップに `ACTIONS_RUNTIME_TOKEN` がなければ、`probe.txt` のその確認は意味を持たない。スクリプトは、自分の環境にあるかをログに出す。
 
@@ -1121,6 +1121,7 @@ function findFix(name: string, locked: string, listing: Listing, advisories: Adv
 
 ルートの `pubspec.yaml` に `workspace:` があれば、ベースの clone で `dart pub workspace list --json`（`.fvmrc` があれば `fvm dart pub workspace list --json`）を実行する。Flutter の workspace でも `dart` を使う。ルートの `pubspec.yaml` だけでは Flutter かどうかが分からないため。
 
+- 出力の最初の `{` から後ろを JSON として読む（fvm が前に何かを出すことがあるため）
 - 出力の `packages[].path`（絶対パス）を clone からの相対パスにし、`<path>/pubspec.yaml` を読む。ルートは `pubspec.yaml`
 - clone の外を指すパスは全体エラーにする
 - 失敗したら全体エラー（PR はまだ変更していない）

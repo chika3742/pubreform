@@ -214,7 +214,7 @@ Update minor and patch (2 packages)
 | キー | 用途 |
 |---|---|
 | `kind`, `packages` | 計画との突き合わせ、内容の変更の検出、クローズ済み PR の再作成の抑止 |
-| `baseHash` | 生成時のベースの `pubspec.yaml`、`pubspec.lock`、`.fvmrc` のハッシュ。ベースの更新と Flutter のバージョン変更を検出する |
+| `baseHash` | 生成時のベースの `pubspec.yaml`（workspace ならメンバーの分も）、`pubspec.lock`、`.fvmrc` のハッシュ。ベースの更新と Flutter のバージョン変更を検出する |
 | `configHash` | 設定の変更を検出する |
 | `advisories` | 直すセキュリティアドバイザリの ID。直すアドバイザリだけが変わったことを検出する（§14.2） |
 | `commit` | 生成したコミットの SHA。PR の head がこれとも、再生成の直前の head（`previous`）とも違えば、人手のコミットがある（詳細 §14.3） |
@@ -243,10 +243,10 @@ PR の識別にはブランチ名の接頭辞、作成者、メタデータを�
 | 本文のチェックボックスがチェックされた | 本文中のマーカー付きチェックボックスが `[x]` |
 | ベースとコンフリクトしている | PR の `mergeable_state` が `dirty`。`mergeable` が未計算なら今回は判定しない |
 | 更新内容が変わった | 適用結果の `packages` がメタデータと違う |
-| ベースの `pubspec.yaml` / `pubspec.lock`（と `.fvmrc`）が更新された | ベースのハッシュがメタデータの `baseHash` と違う |
+| ベースの `pubspec.yaml`（workspace ならメンバーの分も） / `pubspec.lock`（と `.fvmrc`）が更新された | ベースのハッシュがメタデータの `baseHash` と違う |
 | 設定が変わった | 設定のハッシュがメタデータの `configHash` と違う |
 
-PR が変更するのは pubspec の 2 ファイルだけなので、コンフリクトはほぼ `baseHash` の比較で検出できる。`mergeable_state` は念のために見る。
+PR が変更するのは `pubspec.yaml`（workspace ならメンバーの分も）と `pubspec.lock`、更新後のコマンドが変えたファイルだけなので、コンフリクトはほぼ `baseHash` の比較で検出できる。`mergeable_state` は念のために見る。
 
 再生成の手順:
 
@@ -354,7 +354,7 @@ on:
       timezone: Asia/Tokyo
   push:
     branches: [main]
-    paths: [pubspec.yaml, pubspec.lock, .fvmrc, .github/pubreform.yaml]
+    paths: ["**/pubspec.yaml", pubspec.lock, .fvmrc, .github/pubreform.yaml]
   pull_request:
     types: [edited]          # チェックボックスへの即時対応
   workflow_dispatch:
@@ -387,7 +387,7 @@ jobs:
 
 - PR の作成、コミット、コメント、ラベル付けは、`token` に渡した GitHub App のインストールトークンで行う。`GITHUB_TOKEN` は使わない（`GITHUB_TOKEN` で作った PR では、`pull_request` で起動する CI が承認待ちになるため）
 - App に必要な権限（Repository permissions）: Contents（Read and write）、Pull requests（Read and write）。コメントとラベルの API は Pull requests の権限で使える
-- コミットは git の push ではなく、GitHub API（blob → tree → commit → ref の更新）で作る。App として認証し author / committer を指定しなければ、コミットは App の bot ユーザーの名義になり、GitHub の署名で Verified と表示される。変更するのは 2 ファイルだけなので、API の呼び出しは数回で済む
+- コミットは git の push ではなく、GitHub API（blob → tree → commit → ref の更新）で作る。App として認証し author / committer を指定しなければ、コミットは App の bot ユーザーの名義になり、GitHub の署名で Verified と表示される。変更するファイルは少ないので、API の呼び出しは数回で済む
 - ref を更新する REST API には「head が想定どおりなら更新する」という条件を付けられないため、§7.3 のとおり直前に確認する
 - App による push や PR の作成では、通常どおり CI などの他のワークフローが起動する。App 自身が本文を更新したときも `pull_request: edited` で起動するので、ワークフロー側で除外する（§10.3）
 
@@ -422,7 +422,7 @@ jobs:
 
 ### 14.1 pub workspace
 
-> 実装済み（2026-10-24）。Dart 3.13.5 で、単体テスト、ローカル E2E（詳細 §17.1 の workspace の場面）、本物の `dart pub` での確認（詳細 §23）を行った。Flutter の workspace と、本物の GitHub では確かめていない。
+> 実装済み（2026-10-24）。Dart 3.13.5 で、単体テスト、ローカル E2E（詳細 §17.1 の workspace の場面）、本物の `dart pub` での確認（詳細 §23）、Dart の workspace での GitHub E2E（詳細 §17.2、[run #11](https://github.com/chika3742/pubreform-e2e/actions/runs/40079510586)）を行った。Flutter の workspace は確かめていない。
 
 pub workspace では、lockfile はルートに 1 つで、制約は各メンバーの `pubspec.yaml` にある。解決は workspace 全体で 1 回で、1 つのパッケージは workspace 全体で 1 つのバージョンになる（メンバーの制約が重ならなければ解決に失敗する）。そのため、ロックしているバージョン、計画、PR の単位とブランチ名は単体のパッケージと同じでよく、workspace 全体で 1 組の PR になる。メンバーが複数になって増えるのは、制約を書き換える場所だけである。
 
