@@ -88,6 +88,8 @@ describe.skipIf(!E2E)('local E2E', () => {
   const MINOR = 'pubreform/minor-and-patch'
   const SINGLE = 'pubreform/single/fx_major'
   const GROUP = 'pubreform/group/fx_b'
+  const PINNED = 'pubreform/single/fx_pinned'
+  const NEEDS_PINNED = 'pubreform/single/fx_needs_pinned'
   const snapshot = () => github.prs.map((pr) => ({ n: pr.number, head: github.headOf(pr), comments: pr.comments.length }))
   const commitMessage = (sha: string) => github.git(['log', '-1', '--format=%B', sha])
   const lockVersion = (ref: string, name: string) =>
@@ -98,34 +100,46 @@ describe.skipIf(!E2E)('local E2E', () => {
     const { summary } = await runOk()
     expect(open().map((pr) => [pr.branch, pr.title]).sort()).toEqual([
       [GROUP, 'Update fx_b to 2.0.0, fx_needs_b to 1.1.0'],
-      [MINOR, 'Update minor and patch (2 packages)'],
+      [MINOR, 'Update minor and patch (4 packages)'],
       [SINGLE, 'Update fx_major from 1.0.0 to 2.0.0'],
+      [NEEDS_PINNED, 'Update fx_needs_pinned from 1.0.0 to 2.0.0'],
+      [PINNED, 'Update fx_pinned from 1.0.0 to 2.0.0'],
     ])
 
     const minor = openOn(MINOR)
     expect(minor.body).toContain('| [fx_minor](https://pub.dev/packages/fx_minor) | 1.0.0 | 1.2.0 | dev |')
     expect(minor.body).toContain('| [fx_patch](https://pub.dev/packages/fx_patch) | 1.0.0 | 1.0.1 | direct |')
+    expect(minor.body).toContain('| [fx_pinned](https://pub.dev/packages/fx_pinned) | 1.0.0 | 1.1.0 | direct |')
+    expect(minor.body).toContain('| [fx_pinned_dep](https://pub.dev/packages/fx_pinned_dep) | 1.0.0 | 1.0.1 | direct |')
     expect(minor.body).toContain('[pub.dev](https://pub.dev/packages/fx_minor/versions/1.2.0) · [Source](https://example.com/fx_minor)')
     expect(minor.body).toContain('<summary>Changelog</summary>\n\n## 1.2.0\n\n- fx_minor 1.2.0.\n\n</details>')
     expect(minor.body).toContain('- [ ] Rebase this PR <!-- pubreform:rebase -->')
     const meta = parseMeta(minor.body)!
     expect(meta).toMatchObject({
       kind: 'minor',
-      packages: { fx_minor: ['1.0.0', '1.2.0'], fx_patch: ['1.0.0', '1.0.1'] },
+      packages: { fx_minor: ['1.0.0', '1.2.0'], fx_patch: ['1.0.0', '1.0.1'], fx_pinned: ['1.0.0', '1.1.0'], fx_pinned_dep: ['1.0.0', '1.0.1'] },
       commit: github.headOf(minor),
     })
     expect(commitMessage(github.headOf(minor))).toBe(
-      'Update minor and patch (2 packages)\n\n| Package | From | To | Type |\n|---|---|---|---|\n| fx_minor | 1.0.0 | 1.2.0 | dev |\n| fx_patch | 1.0.0 | 1.0.1 | direct |',
+      'Update minor and patch (4 packages)\n\n| Package | From | To | Type |\n|---|---|---|---|\n| fx_minor | 1.0.0 | 1.2.0 | dev |\n| fx_patch | 1.0.0 | 1.0.1 | direct |\n| fx_pinned | 1.0.0 | 1.1.0 | direct |\n| fx_pinned_dep | 1.0.0 | 1.0.1 | direct |',
     )
     // versioning: increase raises the lower bounds; the lockfile keeps pub.dev URLs.
     const minorPubspec = github.readFile(github.headOf(minor), 'pubspec.yaml')
     expect(minorPubspec).toContain('fx_minor: ^1.2.0')
     expect(minorPubspec).toContain('fx_patch: ^1.0.1')
+    // A pinned version stays pinned.
+    expect(minorPubspec).toContain('fx_pinned: 1.1.0')
     expect(github.readFile(github.headOf(minor), 'pubspec.lock')).not.toContain('127.0.0.1')
 
     const single = openOn(SINGLE)
     expect(commitMessage(github.headOf(single))).toBe('Update fx_major from 1.0.0 to 2.0.0')
     expect(github.readFile(github.headOf(single), 'pubspec.yaml')).toContain('fx_major: ^2.0.0')
+    expect(github.readFile(github.headOf(openOn(PINNED)), 'pubspec.yaml')).toContain('fx_pinned: 2.0.0')
+    // The pinned dependency that it moves is raised in place, and listed in the table only.
+    const needsPinned = openOn(NEEDS_PINNED)
+    expect(github.readFile(github.headOf(needsPinned), 'pubspec.yaml')).toContain('fx_pinned_dep: 1.0.1')
+    expect(lockVersion(github.headOf(needsPinned), 'fx_pinned_dep')).toBe('1.0.1')
+    expect(needsPinned.body).toContain('| [fx_pinned_dep](https://pub.dev/packages/fx_pinned_dep) | 1.0.0 | 1.0.1 | direct |')
 
     const group = openOn(GROUP)
     expect(parseMeta(group.body)!.packages).toEqual({ fx_b: ['1.0.0', '2.0.0'], fx_needs_b: ['1.0.0', '1.1.0'] })
@@ -188,7 +202,7 @@ describe.skipIf(!E2E)('local E2E', () => {
     github.merge(openOn(MINOR).number)
     const before = snapshot()
     await runOk()
-    for (const branch of [SINGLE, GROUP]) {
+    for (const branch of [SINGLE, GROUP, PINNED]) {
       const pr = openOn(branch)
       const old = before.find((b) => b.n === pr.number)!
       expect(github.headOf(pr)).not.toBe(old.head)
@@ -196,6 +210,8 @@ describe.skipIf(!E2E)('local E2E', () => {
       expect(github.git(['rev-parse', `${github.headOf(pr)}^`])).toBe(github.refSha('main')!)
     }
     expect(open().some((pr) => pr.branch === MINOR)).toBe(false)
+    // Only the version that it updates from changed.
+    expect(openOn(PINNED).title).toBe('Update fx_pinned from 1.1.0 to 2.0.0')
   })
 
   test('6. manual commits are notified once and not overwritten', async () => {

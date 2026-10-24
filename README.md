@@ -8,7 +8,7 @@ Each run compares the dependencies in `pubspec.yaml` with pub.dev and keeps thes
 
 | Pull request | Title | Contents |
 |---|---|---|
-| Minor and patch updates | `Update minor and patch (N packages)` | All updates that fit the current version constraints, in one pull request |
+| Minor and patch updates | `Update minor and patch (N packages)` | All updates that fit the current version constraints, in one pull request. A version pinned in `pubspec.yaml` (`foo: 1.2.3`) counts as `^1.2.3` here, and stays pinned |
 | Major update | `Update <package> from <old> to <new>` | One package that needs a new constraint |
 | Packages updated together | `Update <a> to <new>, <b> to <new>` | Major updates that only resolve when made together |
 
@@ -91,7 +91,7 @@ The workflow decides when the action runs. This one runs it every Monday, after 
 | `schedule.timezone` | `UTC` | IANA time zone name for `schedule.cron` |
 | `min_release_age_days` | `0` | Days a version must have been out before it is used |
 | `labels` | `[]` | Labels added to the pull requests. Missing labels are created |
-| `versioning` | `increase` | `increase` also raises the lower bounds in `pubspec.yaml` for minor and patch updates. `lockfile-only` changes only `pubspec.lock` for them |
+| `versioning` | `increase` | `increase` also raises the lower bounds in `pubspec.yaml` for minor and patch updates. `lockfile-only` changes only `pubspec.lock` for them, except for pinned versions, which are always rewritten |
 | `ignore` | `[]` | Updates to skip. `{ name }` skips the package, `{ name, versions }` skips the versions in a constraint such as `">=3.0.0"` |
 | `post_update` | `[]` | Commands to run before each pull request is committed, such as code generation. See [Post-update commands](#post-update-commands) |
 | `post_update[].run` | (required) | The command, run with `sh -c` at the repository root |
@@ -121,7 +121,7 @@ pubreform reads the security advisories that pub.dev reports (from the GitHub Ad
 
 - The pull request that fixes it is titled with `[Security] `, for example `[Security] Update archive from 3.3.7 to 3.3.8`, and its description starts with a table of the advisories. A fixed transitive dependency is listed in the table of packages as `transitive`
 - The waiting period is skipped only for one version: the oldest stable version that is newer than the locked one and is not affected, retracted or covered by `ignore`. Its release date is shown in the table. The other versions, including the dependencies of that version, still wait. The affected versions of that package are not used
-- A fix that fits the current constraints goes into the minor and patch pull request, even if no direct dependency changes. Otherwise it is a major update. A transitive dependency is fixed only when the packages that depend on it allow the fixed version
+- A fix that fits the current constraints (with a pinned version read as a caret constraint) goes into the minor and patch pull request, even if no direct dependency changes. Otherwise it is a major update. A transitive dependency is fixed only when the packages that depend on it allow the fixed version
 - To skip an advisory, list its ID (or one of its aliases, such as a CVE) in `ignored_advisories` in `pubspec.yaml`, as for `dart pub`. Versions that an `ignore` rule in the config covers are never used: the oldest fix that it does not cover is used instead. The feature itself cannot be turned off
 - The job summary lists each affected package and whether a pull request fixes it
 - If the advisories cannot be read from pub.dev, the run fails without changing anything

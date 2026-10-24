@@ -24,17 +24,29 @@ const base = { pubspec: 'name: app\n', lock: lock({ http: '1.5.0', lints: '5.0.0
 describe('applyArgs', () => {
   test('minor', () => {
     const unit: Unit = { kind: 'minor', members: ['http'], targets: {} }
-    expect(applyArgs(unit, deps, 'increase')).toEqual(['upgrade', '--tighten'])
-    expect(applyArgs(unit, deps, 'lockfile-only')).toEqual(['upgrade'])
+    expect(applyArgs(unit, deps, 'increase')).toEqual([['upgrade', '--tighten']])
+    expect(applyArgs(unit, deps, 'lockfile-only')).toEqual([['upgrade']])
+  })
+  test('minor raises pinned versions before upgrading', () => {
+    const pinned = deps.map((d) => (d.name === 'meta' ? d : { ...d, constraint: d.current }))
+    const unit: Unit = { kind: 'minor', members: ['http', 'lints', 'meta'], targets: { http: '1.6.0', lints: '5.1.0' } }
+    const add = ['add', 'http:1.6.0', 'dev:lints:5.1.0']
+    expect(applyArgs(unit, pinned, 'increase')).toEqual([add, ['upgrade', '--tighten']])
+    expect(applyArgs(unit, pinned, 'lockfile-only')).toEqual([add, ['upgrade']])
   })
   test('group with a dev dependency', () => {
     const unit: Unit = { kind: 'group', members: ['http', 'lints'], targets: { http: '2.0.0', lints: '6.0.0+1' } }
-    expect(applyArgs(unit, deps, 'increase')).toEqual(['add', 'http:^2.0.0', 'dev:lints:^6.0.0+1'])
+    expect(applyArgs(unit, deps, 'increase')).toEqual([['add', 'http:^2.0.0', 'dev:lints:^6.0.0+1']])
   })
   test('pinned versions stay pinned', () => {
     const pinned = deps.map((d) => (d.name === 'lints' ? { ...d, constraint: '5.0.0' } : d))
     const unit: Unit = { kind: 'group', members: ['http', 'lints'], targets: { http: '2.0.0', lints: '6.0.0' } }
-    expect(applyArgs(unit, pinned, 'increase')).toEqual(['add', 'http:^2.0.0', 'dev:lints:6.0.0'])
+    expect(applyArgs(unit, pinned, 'increase')).toEqual([['add', 'http:^2.0.0', 'dev:lints:6.0.0']])
+  })
+  test('single with a pinned dependency that it moves', () => {
+    const pinned = deps.map((d) => (d.name === 'lints' ? { ...d, constraint: '5.0.0' } : d))
+    const unit: Unit = { kind: 'single', members: ['http'], targets: { http: '2.0.0', lints: '5.0.1' } }
+    expect(applyArgs(unit, pinned, 'increase')).toEqual([['add', 'http:^2.0.0', 'dev:lints:5.0.1']])
   })
 })
 
@@ -65,6 +77,30 @@ describe('applyUnit', () => {
       transitiveFixes: {},
       advisories: [],
     })
+  })
+  test('runs each command on the files that the previous one wrote', async () => {
+    const pinned = deps.map((d) => (d.name === 'http' ? { ...d, constraint: '1.5.0' } : d))
+    const unit: Unit = { kind: 'minor', members: ['http', 'meta'], targets: { http: '1.6.0' } }
+    const added = { pubspec: 'added\n', lock: lock({ http: '1.6.0', lints: '5.0.0', meta: '1.16.0', async: '2.13.0' }) }
+    const upgraded = { pubspec: 'upgraded\n', lock: lock({ http: '1.6.0', lints: '5.0.0', meta: '1.17.0', async: '2.13.0' }) }
+    const calls: [string[], unknown][] = []
+    const result = await applyUnit(unit, {
+      base,
+      deps: pinned,
+      versioning: 'increase',
+      fixes: new Map(),
+      cutoff: new Date(),
+      pub: async (args, files) => {
+        calls.push([args, files])
+        return args[0] === 'add' ? added : upgraded
+      },
+    })
+    expect(calls).toEqual([
+      [['add', 'http:1.6.0'], base],
+      [['upgrade', '--tighten'], added],
+    ])
+    expect(result!.files).toBe(upgraded)
+    expect(Object.keys(result!.changes)).toEqual(['http', 'meta'])
   })
   test('returns undefined when no direct dependency changes', async () => {
     const unit: Unit = { kind: 'minor', members: ['http'], targets: {} }

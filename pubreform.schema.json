@@ -46,7 +46,7 @@
       "default": []
     },
     "versioning": {
-      "description": "Whether the minor and patch group also raises lower bounds in pubspec.yaml (`increase`) or only updates pubspec.lock (`lockfile-only`).",
+      "description": "Whether the minor and patch group also raises lower bounds in pubspec.yaml (`increase`) or only updates pubspec.lock (`lockfile-only`). Pinned versions are rewritten either way.",
       "enum": ["increase", "lockfile-only"],
       "default": "increase"
     },
