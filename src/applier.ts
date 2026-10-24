@@ -3,7 +3,7 @@ import type { Advisory, Fix } from './advisories.ts'
 import type { Versioning } from './config.ts'
 import type { Unit } from './planner.ts'
 import type { PubFiles } from './pub.ts'
-import { type DirectDep, type Section, lockVersions } from './pubspec.ts'
+import { type DirectDep, type Section, lockVersions, parsePubspec, restoreValues, withConstraints } from './pubspec.ts'
 import { isPinned } from './version.ts'
 
 export interface Change {
@@ -34,21 +34,23 @@ export interface FixedAdvisory {
 
 export type RunPub = (args: string[], files: PubFiles) => Promise<PubFiles>
 
-/** The pub commands to run in order, each on the files that the previous one wrote. */
-export function applyArgs(unit: Unit, deps: DirectDep[], versioning: Versioning): string[][] {
-  const byName = new Map(deps.map((d) => [d.name, d]))
-  const specs = (names: string[]) =>
-    names.map((name) => {
-      const dep = byName.get(name)
-      // A constraint pinned to one version stays pinned.
-      const spec = `${name}:${dep && isPinned(dep.constraint) ? '' : '^'}${unit.targets[name]}`
-      return dep?.section === 'dev_dependencies' ? `dev:${spec}` : spec
-    })
-  if (unit.kind !== 'minor') return [['add', ...specs(Object.keys(unit.targets))]]
-  const upgrade = versioning === 'increase' ? ['upgrade', '--tighten'] : ['upgrade']
-  // pub upgrade does not move pinned versions, so they are raised to their versions in U first.
-  const pinned = Object.keys(unit.targets)
-  return pinned.length > 0 ? [['add', ...specs(pinned)], upgrade] : [upgrade]
+/** Runs pub for the unit on the base. */
+export async function applyPub(unit: Unit, base: PubFiles, versioning: Versioning, pub: RunPub): Promise<PubFiles> {
+  const members = new Set(unit.kind === 'minor' ? [] : unit.members)
+  const constraints = new Map(
+    Object.entries(unit.targets).map(([name, target]) => {
+      // A constraint pinned to one version stays pinned. Pinned dependencies outside the members (in minor, every
+      // target) are moved to their targets, as pub does not move them; their other constraints stay.
+      const constraint = (old: string) => (isPinned(old) ? target : members.has(name) ? `^${target}` : old)
+      return [name, constraint] as const
+    }),
+  )
+  const files = constraints.size > 0 ? { ...base, pubspecs: withConstraints(base.pubspecs, constraints) } : base
+  if (unit.kind !== 'minor') return pub(['get'], files)
+  const upgraded = await pub(versioning === 'increase' ? ['upgrade', '--tighten'] : ['upgrade'], files)
+  // --tighten turns `a: any` on a workspace member into `a: ^0.0.0`, as the member has no version.
+  const workspace = new Set(Object.values(base.pubspecs).map((text) => String(parsePubspec(text).name)))
+  return { ...upgraded, pubspecs: restoreValues(upgraded.pubspecs, base.pubspecs, workspace) }
 }
 
 /** Direct dependencies whose version differs between the base lockfile and `lock`. */
@@ -67,8 +69,7 @@ export async function applyUnit(
   unit: Unit,
   opts: { base: PubFiles; deps: DirectDep[]; versioning: Versioning; pub: RunPub; fixes: Map<string, Fix>; cutoff: Date },
 ): Promise<UnitResult | undefined> {
-  let files = opts.base
-  for (const args of applyArgs(unit, opts.deps, opts.versioning)) files = await opts.pub(args, files)
+  const files = await applyPub(unit, opts.base, opts.versioning, opts.pub)
   const changes = directChanges(opts.deps, files.lock)
   const versions = lockVersions(files.lock)
   const transitiveFixes: UnitResult['transitiveFixes'] = {}

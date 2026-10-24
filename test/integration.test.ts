@@ -9,7 +9,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { Pub, cachedPackageDir, pubCommand } from '../src/pub.ts'
-import { lockVersions } from '../src/pubspec.ts'
+import { lockVersions, withConstraints } from '../src/pubspec.ts'
 import { PROXY_PORT, RegistryProxy } from '../src/proxy.ts'
 import { compareVersions } from '../src/version.ts'
 
@@ -105,12 +105,13 @@ for (const fx of FIXTURES) {
       lock: string,
       cutoff: string,
       locked = new Map<string, string>(),
+      text = pubspec,
     ) {
       const proxy = new RegistryProxy({ cutoff: new Date(cutoff), locked, ignore: [] })
       await proxy.start()
       try {
         return await new Pub({ dir, flutter: fx.flutter, fvm: fx.flutter, hostedUrl: proxy.url, env }).run(args, {
-          pubspec,
+          pubspecs: { 'pubspec.yaml': text },
           lock,
         })
       } finally {
@@ -172,13 +173,12 @@ for (const fx of FIXTURES) {
       expect(versions(upgraded.lock)).toEqual(versions(lockLatest))
     })
 
-    test('pub add rejects a hidden version and applies a visible one', async () => {
+    test('pub get with a rewritten constraint rejects a hidden version and applies a visible one', async () => {
       const dir = newDir()
-      await expect(proxied(dir, ['add', `${fx.direct}:${fx.add}`], lockOld, fx.OLD)).rejects.toThrow(
-        /version solving failed/i,
-      )
-      const added = await proxied(dir, ['add', `${fx.direct}:${fx.add}`], lockOld, fx.NEW)
-      expect(added.pubspec).toContain(`${fx.direct}: ${fx.add}`)
+      const rewritten = withConstraints({ 'pubspec.yaml': pubspec }, new Map([[fx.direct, () => fx.add]]))['pubspec.yaml']!
+      await expect(proxied(dir, ['get'], lockOld, fx.OLD, undefined, rewritten)).rejects.toThrow(/version solving failed/i)
+      const added = await proxied(dir, ['get'], lockOld, fx.NEW, undefined, rewritten)
+      expect(added.pubspecs['pubspec.yaml']).toContain(`${fx.direct}: ${fx.add}`)
       expect(versions(added.lock)).toEqual(fx.added)
       // The package is extracted where render.ts reads CHANGELOG.md from.
       const cached = cachedPackageDir(PROXY, fx.direct, fx.added[0]!, env)

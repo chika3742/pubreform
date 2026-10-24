@@ -21,9 +21,6 @@ const CONTAINER_HOME = '/tmp'
 /** Variables passed to the commands when pubreform has them, besides the defaults. */
 const PASSED_ENV = ['LANG', 'LC_ALL', 'CI']
 
-/** The files that the update itself writes, from the result of the update. */
-const UPDATE_FILES = new Set(['pubspec.yaml', 'pubspec.lock'])
-
 const OUTPUT_TAIL_LINES = 100
 
 /** A post_update command that exited with a non-zero code. */
@@ -46,7 +43,7 @@ export class PostUpdateError extends Error {
 
 export type FileMode = '100644' | '100755' | '120000'
 
-/** A change to the tree of the commit, besides pubspec.yaml and pubspec.lock. */
+/** A change to the tree of the commit, besides the files that the update itself writes. */
 export type TreeEntry =
   | { path: string; mode: FileMode; content: string }
   /** Not valid UTF-8, or contains NUL: sent as a blob. */
@@ -106,13 +103,14 @@ function throughLink(root: string, p: string): boolean {
 
 /**
  * Turns the changed paths in `dir` into tree entries. The contents are untrusted: paths outside the tree are dropped,
- * and links are committed as links instead of being followed.
+ * and links are committed as links instead of being followed. `updated` are the files that the update itself writes,
+ * which come from the result of the update instead.
  */
-export function treeEntries(dir: string, changes: StatusEntry[]): TreeEntry[] {
+export function treeEntries(dir: string, changes: StatusEntry[], updated: Set<string>): TreeEntry[] {
   const entries: TreeEntry[] = []
   for (const change of changes) {
     const p = change.path
-    if (!isInside(p) || UPDATE_FILES.has(p)) continue
+    if (!isInside(p) || updated.has(p)) continue
     if (change.deleted) {
       entries.push({ path: p, deleted: true })
       continue
@@ -353,7 +351,8 @@ export class Generator {
       const pub = new Pub({ dir, flutter: this.options.flutter, fvm: this.options.fvm, hostedUrl: this.options.hostedUrl })
       await pub.run(['get', '--offline'], result.files)
       for (const command of this.options.commands) await this.runCommand(command, dir)
-      return treeEntries(dir, await changedFiles(baseDir, dir))
+      const updated = new Set([...Object.keys(result.files.pubspecs), 'pubspec.lock'])
+      return treeEntries(dir, await changedFiles(baseDir, dir), updated)
     } finally {
       await fsp.rm(dir, { recursive: true, force: true })
     }

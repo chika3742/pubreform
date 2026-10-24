@@ -3,6 +3,13 @@ import { plan, solveFailure } from '../src/planner.ts'
 import type { DirectDep } from '../src/pubspec.ts'
 import { type Universe, fakeResolve } from './fake-pub.ts'
 
+const dep = (name: string, section: DirectDep['section'], constraint: string, current: string): DirectDep => ({
+  name,
+  section,
+  declarations: [{ path: 'pubspec.yaml', section, constraint }],
+  current,
+})
+
 const universe: Universe = {
   // a 1.5.0 needs b 3: a 1.2→1.4 is minor, 1.4→1.5 goes into a group with b.
   a: { '1.2.0': {}, '1.4.0': {}, '1.5.0': { b: '>=3.0.0' } },
@@ -17,15 +24,15 @@ const universe: Universe = {
 }
 
 const deps: DirectDep[] = [
-  { name: 'a', section: 'dependencies', constraint: '^1.2.0', current: '1.2.0' },
-  { name: 'b', section: 'dependencies', constraint: '^2.0.0', current: '2.0.0' },
-  { name: 'c', section: 'dependencies', constraint: '^1.0.0', current: '1.0.0' },
-  { name: 'd', section: 'dependencies', constraint: '^1.0.0', current: '1.0.0' },
-  { name: 'e', section: 'dev_dependencies', constraint: '^0.1.0', current: '0.1.0' },
-  { name: 'f', section: 'dev_dependencies', constraint: '^1.0.0', current: '1.0.0' },
+  dep('a', 'dependencies', '^1.2.0', '1.2.0'),
+  dep('b', 'dependencies', '^2.0.0', '2.0.0'),
+  dep('c', 'dependencies', '^1.0.0', '1.0.0'),
+  dep('d', 'dependencies', '^1.0.0', '1.0.0'),
+  dep('e', 'dev_dependencies', '^0.1.0', '0.1.0'),
+  dep('f', 'dev_dependencies', '^1.0.0', '1.0.0'),
 ]
 
-const basePubspec = `name: app
+const basePubspecs = { 'pubspec.yaml': `name: app
 dependencies:
   a: ^1.2.0
   b: ^2.0.0
@@ -34,14 +41,14 @@ dependencies:
 dev_dependencies:
   e: ^0.1.0
   f: ^1.0.0
-`
+` }
 const locked = new Map(deps.map((d) => [d.name, d.current]))
 const fixes = new Map()
 const visibleVersions = async (name: string) => Object.keys(universe[name]!)
 
 describe('plan', () => {
   test('splits updates into minor, single and group units', async () => {
-    const result = await plan({ deps, basePubspec, resolve: fakeResolve(universe, locked), visibleVersions, fixes })
+    const result = await plan({ deps, basePubspecs, resolve: fakeResolve(universe, locked), visibleVersions, fixes })
     expect(result.units).toEqual([
       { kind: 'minor', members: ['a', 'd'], targets: {} },
       { kind: 'group', members: ['a', 'b'], targets: { a: '1.5.0', b: '3.0.0' } },
@@ -57,7 +64,7 @@ describe('plan', () => {
   test('ignores pre-releases for unresolvable', async () => {
     const result = await plan({
       deps,
-      basePubspec,
+      basePubspecs,
       resolve: fakeResolve(universe, locked),
       visibleVersions: async (name) => (name === 'd' ? ['1.0.0', '1.1.0', '2.0.0-dev.1'] : visibleVersions(name)),
       fixes,
@@ -67,8 +74,8 @@ describe('plan', () => {
 
   test('no units when everything is up to date', async () => {
     const result = await plan({
-      deps: [{ name: 'd', section: 'dependencies', constraint: '^1.0.0', current: '1.1.0' }],
-      basePubspec: 'name: app\ndependencies:\n  d: ^1.0.0\n',
+      deps: [dep('d', 'dependencies', '^1.0.0', '1.1.0')],
+      basePubspecs: { 'pubspec.yaml': 'name: app\ndependencies:\n  d: ^1.0.0\n' },
       resolve: fakeResolve(universe, new Map([['d', '1.1.0']])),
       visibleVersions,
       fixes,
@@ -81,10 +88,10 @@ describe('plan', () => {
     const logs: string[] = []
     const result = await plan({
       deps,
-      basePubspec,
-      resolve: async (args, pubspec) => {
-        if (args[0] === 'get' && /\bc: 2\.0\.0/.test(pubspec)) throw new Error('network')
-        return resolve(args, pubspec)
+      basePubspecs,
+      resolve: async (args, pubspecs) => {
+        if (args[0] === 'get' && /\bc: 2\.0\.0/.test(pubspecs['pubspec.yaml']!)) throw new Error('network')
+        return resolve(args, pubspecs)
       },
       visibleVersions,
       fixes,
@@ -100,10 +107,10 @@ describe('plan', () => {
     await expect(
       plan({
         deps,
-        basePubspec,
-        resolve: async (args, pubspec) => {
-          if (args[0] === 'upgrade' && pubspec.includes('>=')) throw new Error('R failed')
-          return resolve(args, pubspec)
+        basePubspecs,
+        resolve: async (args, pubspecs) => {
+          if (args[0] === 'upgrade' && pubspecs['pubspec.yaml']!.includes('>=')) throw new Error('R failed')
+          return resolve(args, pubspecs)
         },
         visibleVersions,
         fixes,
@@ -119,15 +126,10 @@ describe('plan', () => {
       z: { '1.0.0': {}, '2.0.0': { y: '>=2.0.0', w: '>=2.0.0' } },
       w: { '1.0.0': {}, '2.0.0': {} },
     }
-    const ds: DirectDep[] = ['w', 'x', 'y', 'z'].map((name) => ({
-      name,
-      section: 'dependencies',
-      constraint: '^1.0.0',
-      current: '1.0.0',
-    }))
+    const ds: DirectDep[] = ['w', 'x', 'y', 'z'].map((name) => dep(name, 'dependencies', '^1.0.0', '1.0.0'))
     const result = await plan({
       deps: ds,
-      basePubspec: 'name: app\ndependencies:\n  w: ^1.0.0\n  x: ^1.0.0\n  y: ^1.0.0\n  z: ^1.0.0\n',
+      basePubspecs: { 'pubspec.yaml': 'name: app\ndependencies:\n  w: ^1.0.0\n  x: ^1.0.0\n  y: ^1.0.0\n  z: ^1.0.0\n' },
       resolve: fakeResolve(u, new Map(ds.map((d) => [d.name, d.current]))),
       visibleVersions: async (name) => Object.keys(u[name]!),
       fixes,
@@ -151,13 +153,13 @@ describe('plan', () => {
       r: { '1.0.0': {}, '2.0.0': { q: '>=1.0.1' } },
     }
     const ds: DirectDep[] = [
-      { name: 'p', section: 'dependencies', constraint: '1.0.0', current: '1.0.0' },
-      { name: 'q', section: 'dev_dependencies', constraint: '1.0.0', current: '1.0.0' },
-      { name: 'r', section: 'dependencies', constraint: '^1.0.0', current: '1.0.0' },
+      dep('p', 'dependencies', '1.0.0', '1.0.0'),
+      dep('q', 'dev_dependencies', '1.0.0', '1.0.0'),
+      dep('r', 'dependencies', '^1.0.0', '1.0.0'),
     ]
     const result = await plan({
       deps: ds,
-      basePubspec: 'name: app\ndependencies:\n  p: 1.0.0\n  r: ^1.0.0\ndev_dependencies:\n  q: 1.0.0\n',
+      basePubspecs: { 'pubspec.yaml': 'name: app\ndependencies:\n  p: 1.0.0\n  r: ^1.0.0\ndev_dependencies:\n  q: 1.0.0\n' },
       resolve: fakeResolve(u, new Map(ds.map((d) => [d.name, d.current]))),
       visibleVersions: async (name) => Object.keys(u[name]!),
       fixes,
@@ -171,18 +173,45 @@ describe('plan', () => {
 
   test('a minor unit without members when only a fixed transitive dependency changes', async () => {
     // t is a transitive dependency of d: 1.0.0 is affected, 1.0.1 fixes it. pub upgrade moves t only.
-    const ds: DirectDep[] = [{ name: 'd', section: 'dependencies', constraint: '^1.0.0', current: '1.0.0' }]
-    const pubspec = 'name: app\ndependencies:\n  d: ^1.0.0\n'
+    const ds: DirectDep[] = [dep('d', 'dependencies', '^1.0.0', '1.0.0')]
+    const pubspecs = { 'pubspec.yaml': 'name: app\ndependencies:\n  d: ^1.0.0\n' }
     const resolve = async () => new Map([['d', '1.0.0'], ['t', '1.0.1']])
     const fix = (affected: string[]) =>
       new Map([['t', { name: 't', locked: '1.0.0', advisories: [], affected: new Set(affected), fix: { version: '1.0.1' } }]])
     const run = (fixes: Map<string, any>) =>
-      plan({ deps: ds, basePubspec: pubspec, resolve, visibleVersions: async () => ['1.0.0'], fixes })
+      plan({ deps: ds, basePubspecs: pubspecs, resolve, visibleVersions: async () => ['1.0.0'], fixes })
     expect((await run(fix(['1.0.0']))).units).toEqual([{ kind: 'minor', members: [], targets: {} }])
     // Not when U still has an affected version.
     expect((await run(fix(['1.0.0', '1.0.1']))).units).toEqual([])
     // Nor for transitive dependencies that need no fix.
     expect((await run(new Map())).units).toEqual([])
+  })
+
+  test('workspace: the constraints of every member count', async () => {
+    // m2 needs nothing from n, but m1 holds n at ^1.0.0: n joins the group of m.
+    const u: Universe = {
+      m: { '1.0.0': {}, '2.0.0': { n: '>=2.0.0' } },
+      n: { '1.0.0': {}, '2.0.0': {} },
+    }
+    const pubspecs = {
+      'pubspec.yaml': 'name: root\nworkspace: [m1, m2]\n',
+      'm1/pubspec.yaml': 'name: m1\ndependencies:\n  m: ^1.0.0\n  n: ^1.0.0\n',
+      'm2/pubspec.yaml': 'name: m2\ndependencies:\n  m: ^1.0.0\n  n: any\n',
+    }
+    const decl = (path: string, constraint: string) => ({ path, section: 'dependencies' as const, constraint })
+    const ds: DirectDep[] = [
+      { name: 'm', section: 'dependencies', current: '1.0.0', declarations: [decl('m1/pubspec.yaml', '^1.0.0'), decl('m2/pubspec.yaml', '^1.0.0')] },
+      // The declaration that holds n back is not the first.
+      { name: 'n', section: 'dependencies', current: '1.0.0', declarations: [decl('m2/pubspec.yaml', 'any'), decl('m1/pubspec.yaml', '^1.0.0')] },
+    ]
+    const result = await plan({
+      deps: ds,
+      basePubspecs: pubspecs,
+      resolve: fakeResolve(u, new Map([['m', '1.0.0'], ['n', '1.0.0']])),
+      visibleVersions: async (name) => Object.keys(u[name]!),
+      fixes,
+    })
+    expect(result.units).toEqual([{ kind: 'group', members: ['m', 'n'], targets: { m: '2.0.0', n: '2.0.0' } }])
   })
 })
 

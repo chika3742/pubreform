@@ -55,6 +55,8 @@ describe('treeEntries', () => {
   fs.mkdirSync(path.join(dir, 'nested'))
   fs.writeFileSync(path.join(dir, 'pubspec.yaml'), 'changed')
   fs.writeFileSync(path.join(dir, 'pubspec.lock'), 'changed')
+  fs.mkdirSync(path.join(dir, 'pkgs/a'), { recursive: true })
+  fs.writeFileSync(path.join(dir, 'pkgs/a/pubspec.yaml'), 'changed')
 
   test('reads each kind of change', () => {
     const changes = [
@@ -69,10 +71,11 @@ describe('treeEntries', () => {
       '../secret',
       'pubspec.yaml',
       'pubspec.lock',
+      'pkgs/a/pubspec.yaml',
       'vanished.txt',
     ].map((p) => ({ path: p, deleted: false }))
     changes.push({ path: 'old.g.dart', deleted: true }, { path: '../x', deleted: true })
-    expect(treeEntries(dir, changes)).toEqual([
+    expect(treeEntries(dir, changes, new Set(['pubspec.yaml', 'pubspec.lock', 'pkgs/a/pubspec.yaml']))).toEqual([
       // The BOM and CRLF are kept.
       { path: 'lib/a.g.dart', mode: '100644', content: '﻿part of a;\r\n' },
       { path: 'tool.sh', mode: '100755', content: '#!/bin/sh\n' },

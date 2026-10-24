@@ -96,7 +96,10 @@ export class GitHub {
     return data.filter((p) => p.merged_at === null && this.isOurs(p)).map((p) => this.toState(p))
   }
 
-  /** Creates a commit with the two files, and the files changed by the post_update commands, on top of the base commit. */
+  /**
+   * Creates a commit with the pubspec.yaml files, pubspec.lock, and the files changed by the post_update commands,
+   * on top of the base commit.
+   */
   async createCommit(opts: {
     baseSha: string
     baseTree: string
@@ -105,7 +108,7 @@ export class GitHub {
     message: string
   }): Promise<string> {
     const tree: TreeItem[] = [
-      { path: 'pubspec.yaml', mode: '100644', type: 'blob', content: opts.files.pubspec },
+      ...Object.entries(opts.files.pubspecs).map(([path, content]): TreeItem => ({ path, mode: '100644', type: 'blob', content })),
       { path: 'pubspec.lock', mode: '100644', type: 'blob', content: opts.files.lock },
     ]
     for (const entry of opts.generated ?? []) {
