@@ -45,6 +45,8 @@ interface Waiting {
 
 const typeOf = (section: Section) => (section === 'dev_dependencies' ? 'dev' : 'direct')
 
+const escapeHtml = (text: string) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+
 function formatTime(date: Date, timeZone: string): string {
   return `${date.toLocaleString('sv-SE', { timeZone })} (${timeZone})`
 }
@@ -114,6 +116,7 @@ async function writeSummary(opts: {
       ['Package', 'Type', 'Current', 'Resolvable', 'Latest'].map((data) => ({ data, header: true })),
       ...opts.plan.unresolvable.map((u) => [u.name, typeOf(u.section), u.current, u.resolvable, u.latest]),
     ])
+    for (const u of opts.plan.unresolvable) s.addDetails(u.name, `<pre>${escapeHtml(u.reason)}</pre>`)
   }
   if (opts.fixes.size > 0) {
     s.addHeading('Security advisories', 3)

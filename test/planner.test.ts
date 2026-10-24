@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { plan } from '../src/planner.ts'
+import { plan, solveFailure } from '../src/planner.ts'
 import type { DirectDep } from '../src/pubspec.ts'
 import { type Universe, fakeResolve } from './fake-pub.ts'
 
@@ -50,7 +50,7 @@ describe('plan', () => {
     ])
     expect(result.uncertain).toEqual(new Set())
     expect(result.unresolvable).toEqual([
-      { name: 'c', section: 'dependencies', current: deps.find((d) => d.name === 'c')!.current, resolvable: '2.0.0', latest: '3.0.0' },
+      { name: 'c', section: 'dependencies', current: deps.find((d) => d.name === 'c')!.current, resolvable: '2.0.0', latest: '3.0.0', reason: 'version solving failed.' },
     ])
   })
 
@@ -155,5 +155,24 @@ describe('plan', () => {
     expect((await run(fix(['1.0.0', '1.0.1']))).units).toEqual([])
     // Nor for transitive dependencies that need no fix.
     expect((await run(new Map())).units).toEqual([])
+  })
+})
+
+describe('solveFailure', () => {
+  test("keeps pub's explanation and drops the command and the suggestion", () => {
+    // From dart pub get (Dart 3.13.5).
+    const message = `dart pub get --no-example failed with exit code 1
+Because app depends on old from path which depends on http ^0.13.0, http ^0.13.0 is required.
+So, because app depends on http 1.6.0, version solving failed.
+
+
+You can try the following suggestion to make the pubspec resolve:
+* Consider downgrading your constraint on http: dart pub add http:^0.13.6`
+    expect(solveFailure(message)).toBe(`Because app depends on old from path which depends on http ^0.13.0, http ^0.13.0 is required.
+So, because app depends on http 1.6.0, version solving failed.`)
+  })
+
+  test('keeps everything after the command for other errors', () => {
+    expect(solveFailure('dart pub get failed with exit code 69\nGot socket error.\n')).toBe('Got socket error.')
   })
 })
