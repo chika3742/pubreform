@@ -7,14 +7,14 @@ import { errorComment, errorHashOf, parseMeta, renderMeta } from '../src/render.
 
 const http: UnitResult = {
   unit: { kind: 'single', members: ['http'], targets: { http: '2.0.0' } },
-  files: { pubspec: 'p', lock: 'l' },
+  files: { pubspecs: { 'pubspec.yaml': 'p' }, lock: 'l' },
   changes: { http: { from: '1.5.0', to: '2.0.0', section: 'dependencies' } },
   transitiveFixes: {},
   advisories: [],
 }
 const group: UnitResult = {
   unit: { kind: 'group', members: ['a', 'b'], targets: {} },
-  files: { pubspec: 'p', lock: 'l' },
+  files: { pubspecs: { 'pubspec.yaml': 'p' }, lock: 'l' },
   changes: {
     a: { from: '1.0.0', to: '2.0.0', section: 'dependencies' },
     b: { from: '1.0.0', to: '2.0.0', section: 'dependencies' },

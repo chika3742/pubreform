@@ -10,7 +10,7 @@ const ctx = { baseHash: 'base', configHash: 'config' }
 function result(kind: Unit['kind'], changes: Record<string, [string, string]>, members = Object.keys(changes)): UnitResult {
   return {
     unit: { kind, members, targets: {} },
-    files: { pubspec: '', lock: '' },
+    files: { pubspecs: { 'pubspec.yaml': '' }, lock: '' },
     changes: Object.fromEntries(
       Object.entries(changes).map(([name, [from, to]]) => [name, { from, to, section: 'dependencies' as const }]),
     ),

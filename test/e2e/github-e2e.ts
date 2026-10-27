@@ -10,7 +10,7 @@ import path from 'node:path'
 import { parseConfig } from '../../src/config.ts'
 import { BRANCH_PREFIX, isRebaseChecked, markClosed, parseMeta } from '../../src/render.ts'
 import { startFixtureServer } from './fixtures.ts'
-import { POST_UPDATE_CONFIG, PROBE_RESULT, PROBE_SECRET, makeProject, writeProject } from './make-project.ts'
+import { MEMBER_PUBSPEC, POST_UPDATE_CONFIG, PROBE_RESULT, PROBE_SECRET, makeProject, writeProject } from './make-project.ts'
 
 const API = process.env.GITHUB_API_URL || 'https://api.github.com'
 const TOKEN = process.env.GH_TOKEN
@@ -112,6 +112,9 @@ async function checkFirst() {
     check(!!state && state !== 'unknown', `#${pr.number}: mergeable_state is "${state}"`)
     await checkGenerated(pr)
   }
+  // The root is a pub workspace: the member that declares fx_major gets the new constraint in the same commit.
+  const member = await readFile((await single()).head.sha, MEMBER_PUBSPEC)
+  check(member?.includes('  fx_major: ^2.0.0\n') === true, `${SINGLE}: ${MEMBER_PUBSPEC} has fx_major ^2.0.0`)
 }
 
 async function readFile(sha: string, file: string): Promise<string | undefined> {
@@ -182,7 +185,7 @@ function git(...args: string[]): number {
 
 /** Writes the test project, and pushes it to main when it changed. */
 async function updateProject() {
-  const project = await makeProject({ postUpdate: true })
+  const project = await makeProject({ postUpdate: true, workspace: true })
   writeProject('.', project)
   if (git('add', ...Object.keys(project)) !== 0) throw new Error('git add failed')
   if (git('diff', '--cached', '--quiet') === 0) {

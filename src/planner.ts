@@ -1,10 +1,10 @@
 // Planning update units.
 import type { Fix } from './advisories.ts'
-import { type DirectDep, type Section, withConstraints } from './pubspec.ts'
+import { type DirectDep, type Pubspecs, type Section, withConstraints } from './pubspec.ts'
 import { allows, compareVersions, isPinned, isStable, maxVersion } from './version.ts'
 
 /** Resolves with pub and returns name -> version from the resulting lockfile. */
-export type Resolve = (args: string[], pubspec: string) => Promise<Map<string, string>>
+export type Resolve = (args: string[], pubspecs: Pubspecs) => Promise<Map<string, string>>
 
 export type UnitKind = 'single' | 'minor' | 'group'
 
@@ -35,7 +35,7 @@ export interface Plan {
 
 export interface PlanInput {
   deps: DirectDep[]
-  basePubspec: string
+  basePubspecs: Pubspecs
   resolve: Resolve
   /** Versions shown by the registry proxy. */
   visibleVersions: (name: string) => Promise<string[]>
@@ -46,7 +46,7 @@ export interface PlanInput {
 
 /** Errors in U or R are global errors and are thrown. */
 export async function plan(input: PlanInput): Promise<Plan> {
-  const { deps, basePubspec, resolve } = input
+  const { deps, basePubspecs, resolve } = input
   const log = input.log ?? (() => {})
   const get = (versions: Map<string, string>, name: string, label: string) => {
     const v = versions.get(name)
@@ -55,10 +55,16 @@ export async function plan(input: PlanInput): Promise<Plan> {
   }
 
   // Classification reads a pinned version as ^c(d), so that its minor and patch updates go into the minor unit.
-  const pins = new Map(deps.filter((d) => isPinned(d.constraint)).map((d) => [d.name, `^${d.current}`]))
-  const range = (d: DirectDep) => pins.get(d.name) ?? d.constraint
-  const U = await resolve(['upgrade'], pins.size > 0 ? withConstraints(basePubspec, pins) : basePubspec)
-  const R = await resolve(['upgrade'], withConstraints(basePubspec, new Map(deps.map((d) => [d.name, `>=${d.current}`]))))
+  const range = (d: DirectDep, constraint: string) => (isPinned(constraint) ? `^${d.current}` : constraint)
+  const pinnedDeps = deps.filter((d) => d.declarations.some((x) => isPinned(x.constraint)))
+  const pins = new Set(pinnedDeps.map((d) => d.name))
+  const U = await resolve(
+    ['upgrade'],
+    pins.size > 0
+      ? withConstraints(basePubspecs, new Map(pinnedDeps.map((d) => [d.name, (old: string) => range(d, old)])))
+      : basePubspecs,
+  )
+  const R = await resolve(['upgrade'], withConstraints(basePubspecs, new Map(deps.map((d) => [d.name, () => `>=${d.current}`]))))
 
   const minor = deps.filter((d) => get(U, d.name, 'U') !== d.current).map((d) => d.name)
   // Transitive dependencies that U moves off the versions that the advisories affect.
@@ -74,10 +80,14 @@ export async function plan(input: PlanInput): Promise<Plan> {
   async function closure(start: Set<string>): Promise<Set<string>> {
     const S = new Set(start)
     for (;;) {
-      const constraints = new Map<string, string>()
-      for (const d of deps) constraints.set(d.name, S.has(d.name) ? R.get(d.name)! : `>=${d.current}`)
-      const L = await resolve(['get'], withConstraints(basePubspec, constraints))
-      const K = deps.filter((e) => !S.has(e.name) && !allows(range(e), get(L, e.name, 'S')))
+      const constraints = new Map<string, () => string>()
+      for (const d of deps) constraints.set(d.name, () => (S.has(d.name) ? R.get(d.name)! : `>=${d.current}`))
+      const L = await resolve(['get'], withConstraints(basePubspecs, constraints))
+      const K = deps.filter((e) => {
+        if (S.has(e.name)) return false
+        const v = get(L, e.name, 'S')
+        return e.declarations.some((x) => !allows(range(e, x.constraint), v))
+      })
       if (K.length === 0) {
         lockOf.set(S, L)
         return S
@@ -167,9 +177,9 @@ export async function plan(input: PlanInput): Promise<Plan> {
 
 /** Resolves with `name` at `latest` and the other direct dependencies loosened, and returns pub's explanation. */
 async function whyUnresolvable(input: PlanInput, name: string, latest: string): Promise<string> {
-  const constraints = new Map(input.deps.map((d) => [d.name, d.name === name ? latest : `>=${d.current}`]))
+  const constraints = new Map(input.deps.map((d) => [d.name, () => (d.name === name ? latest : `>=${d.current}`)]))
   try {
-    await input.resolve(['get'], withConstraints(input.basePubspec, constraints))
+    await input.resolve(['get'], withConstraints(input.basePubspecs, constraints))
     return 'Resolves with other versions of the other dependencies, but pub upgrade chooses a combination without the latest version.'
   } catch (e) {
     return solveFailure((e as Error).message)

@@ -9,7 +9,7 @@ import path from 'node:path'
 import { parseMeta } from '../../src/render.ts'
 import { FakeGitHub } from './fake-github.ts'
 import { type FixtureServer, startFixtureServer } from './fixtures.ts'
-import { CONFIG, PROBE_RESULT, PROBE_SECRET, makeProject } from './make-project.ts'
+import { CONFIG, MEMBER_PUBSPEC, PROBE_RESULT, PROBE_SECRET, makeProject } from './make-project.ts'
 
 const E2E = process.env.PUBREFORM_E2E === '1'
 const DOCKER = E2E && spawnSync('docker', ['version']).status === 0
@@ -30,7 +30,8 @@ describe.skipIf(!DOCKER)('local E2E: post_update', () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pubreform-e2e-post-update-'))
     fs.mkdirSync(path.join(tmp, 'home'))
     fs.writeFileSync(path.join(tmp, 'home', PROBE_SECRET), 'secret\n')
-    const project = await makeProject({ postUpdate: true })
+    // The same project as the GitHub E2E: a pub workspace.
+    const project = await makeProject({ postUpdate: true, workspace: true })
     registry = await startFixtureServer()
 
     const bare = path.join(tmp, 'origin', 'owner', 'repo.git')
@@ -120,6 +121,7 @@ describe.skipIf(!DOCKER)('local E2E: post_update', () => {
       // pubspec.yaml and pubspec.lock are the result of the update, not what the commands wrote.
       expect(github.readFile(head, 'pubspec.yaml')).not.toContain('changed by post_update')
       expect(github.readFile(head, 'pubspec.lock')).not.toContain('127.0.0.1')
+      if (pr.branch === 'pubreform/single/fx_major') expect(github.readFile(head, MEMBER_PUBSPEC)).toContain('  fx_major: ^2.0.0')
 
       expect(pr.body).toContain('Files changed by the `post_update` commands: 7')
       // One commit on top of the base, with the message of the update.

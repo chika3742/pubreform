@@ -53,7 +53,7 @@ on:
       timezone: Asia/Tokyo
   push:
     branches: [main]
-    paths: [pubspec.yaml, pubspec.lock, .fvmrc, .github/pubreform.yaml]
+    paths: ["**/pubspec.yaml", pubspec.lock, .fvmrc, .github/pubreform.yaml]
   pull_request:
     types: [edited]
   workflow_dispatch:
@@ -167,7 +167,7 @@ post_update:
 
 ## Limitations
 
-- Only the repository root. Pub workspaces are not supported yet
+- Only the repository root. If the root is a pub workspace, its members are updated together: one set of pull requests for the workspace, and every member that declares a package gets the new constraint
 - Only packages hosted on pub.dev
 - No pre-release versions
 - `dependency_overrides` and the SDK constraints are not changed

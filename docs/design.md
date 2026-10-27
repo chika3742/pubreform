@@ -16,7 +16,7 @@ pubreform は、Dart / Flutter プロジェクトの pub 依存を更新する P
 
 対象:
 
-- リポジトリのルートにある `pubspec.yaml` / `pubspec.lock`（`pubspec.lock` がコミットされていること）
+- リポジトリのルートにある `pubspec.yaml` / `pubspec.lock`（`pubspec.lock` がコミットされていること）。ルートが pub workspace なら、メンバーの `pubspec.yaml` も含む（§14.1）
 - pub.dev から取得する `dependencies` / `dev_dependencies`。推移的依存は単独では更新せず、直接依存の PR の中で一緒に上がる分だけを扱う（PR には載せない）。例外は、セキュリティアドバイザリを直す推移的依存（§14.2）
 - Dart と Flutter の両方。依存に `sdk: flutter` があれば `flutter pub`、なければ `dart pub` を使う
 
@@ -25,7 +25,7 @@ pubreform は、Dart / Flutter プロジェクトの pub 依存を更新する P
 - path / git / sdk 依存、pub.dev 以外のホストの依存
 - `dependency_overrides` に書かれたパッケージ
 - Dart / Flutter SDK 自体と `environment` の更新
-- pub workspace、ルート以外のディレクトリ。ルートの pubspec に `workspace:` があれば、未対応として何も変更せずに失敗終了する（将来の対応は §14.1）
+- ルート以外のディレクトリ（ルートの workspace のメンバーを除く）
 - `pubspec.lock` をコミットしないプロジェクト（ライブラリなど）
 - プレリリース版（更新先は安定版のみ）
 
@@ -164,7 +164,7 @@ S = {d}
 
 R 自体がこの条件を満たす解なので、この解決は失敗しない。
 
-固定した直接依存 e は、分類用の制約の範囲で動いても K に入らない（caret 制約の依存と同じ扱い）。ただし、caret 制約なら適用（§5.5）の `pub add` が範囲の中で e を動かせるが、固定した e は pubspec の上で動かせない。そのため、最後の反復の解決で e が `c(e)` から動いたなら、そのバージョン `L(e)` も適用で `pub add` に渡す。e は S の要素ではないので、PR のタイトルには出さず、本文の表にだけ載る。
+固定した直接依存 e は、分類用の制約の範囲で動いても K に入らない（caret 制約の依存と同じ扱い）。ただし、caret 制約なら適用（§5.5）の `pub get` が範囲の中で e を動かせるが、固定した e は pubspec の上で動かせない。そのため、最後の反復の解決で e が `c(e)` から動いたなら、適用で e の固定した宣言も `L(e)` に書き換える。e は S の要素ではないので、PR のタイトルには出さず、本文の表にだけ載る。
 
 - 要素が重なる `S` 同士を 1 つにまとめ、まとめた集合で同じ反復をもう一度行って確定させる
 - 要素が 1 つ: **単独 PR**
@@ -179,12 +179,12 @@ R 自体がこの条件を満たす解なので、この解決は失敗しない
 
 | 更新単位 | 操作 |
 |---|---|
-| マイナー・パッチグループ | `pub upgrade`。`versioning: increase` なら `--tighten` を付けて下限も上げる。固定した直接依存が U で変わるなら、その前に `pub add a:U(a) dev:b:U(b) …` で固定のまま上げる（`pub upgrade` は固定した依存を動かさないため）。固定した依存の `pubspec.yaml` は、`versioning: lockfile-only` でも書き換わる |
-| 単独 / 同時更新グループ | `pub add a:^R(a) dev:b:^R(b) …`。既存の依存の制約を書き換える。`pubspec.yaml` の書式は pub が維持する。バージョンを 1 つに固定した制約（`a: 1.2.3`）は、固定のまま `a:R(a)` で上げる。S の外で動く固定した依存 e も、固定のまま `e:L(e)` で渡す（§5.4） |
+| マイナー・パッチグループ | `pub upgrade`。`versioning: increase` なら `--tighten` を付けて下限も上げる。固定した直接依存が U で変わるなら、その前に、固定した宣言の制約を `U(a)` に書き換える（`pub upgrade` は固定した依存を動かさないため）。固定した依存の `pubspec.yaml` は、`versioning: lockfile-only` でも書き換わる |
+| 単独 / 同時更新グループ | 対象の依存を宣言しているすべての `pubspec.yaml` で、制約を `^R(a)` に書き換えてから `pub get`。値だけを書き換え、ほかの書式とコメントは残す。バージョンを 1 つに固定した制約（`a: 1.2.3`）は、固定のまま `R(a)` にする。S の外で動く固定した依存 e も、固定した宣言を `L(e)` に書き換える（§5.4） |
 
 例: `a: 1.0.0` と固定していて、1.1.0 と 2.0.0 が公開されている場合、マイナー・パッチグループで `a: 1.1.0` に、単独 PR で `a: 2.0.0` に上げる。
 
-変更されるのは `pubspec.yaml` と `pubspec.lock` だけ。PR の内容（どの直接依存を何から何へ）は、計画値ではなく適用後の lockfile の差分から求める。推移的依存の変化は、どの更新単位でも lockfile にそのまま入れ、PR の内容（本文、表、コメント）では触れない。
+変更されるのは `pubspec.yaml`（workspace ならメンバーの分も）と `pubspec.lock` だけ。PR の内容（どの直接依存を何から何へ）は、計画値ではなく適用後の lockfile の差分から求める。推移的依存の変化は、どの更新単位でも lockfile にそのまま入れ、PR の内容（本文、表、コメント）では触れない。
 
 ## 6. PR の種類と識別
 
@@ -219,7 +219,7 @@ Update minor and patch (2 packages)
 | キー | 用途 |
 |---|---|
 | `kind`, `packages` | 計画との突き合わせ、内容の変更の検出、クローズ済み PR の再作成の抑止 |
-| `baseHash` | 生成時のベースの `pubspec.yaml`、`pubspec.lock`、`.fvmrc` のハッシュ。ベースの更新と Flutter のバージョン変更を検出する |
+| `baseHash` | 生成時のベースの `pubspec.yaml`（workspace ならメンバーの分も）、`pubspec.lock`、`.fvmrc` のハッシュ。ベースの更新と Flutter のバージョン変更を検出する |
 | `configHash` | 設定の変更を検出する |
 | `advisories` | 直すセキュリティアドバイザリの ID。直すアドバイザリだけが変わったことを検出する（§14.2） |
 | `commit` | 生成したコミットの SHA。PR の head がこれとも、再生成の直前の head（`previous`）とも違えば、人手のコミットがある（詳細 §14.3） |
@@ -248,10 +248,10 @@ PR の識別にはブランチ名の接頭辞、作成者、メタデータを�
 | 本文のチェックボックスがチェックされた | 本文中のマーカー付きチェックボックスが `[x]` |
 | ベースとコンフリクトしている | PR の `mergeable_state` が `dirty`。`mergeable` が未計算なら今回は判定しない |
 | 更新内容が変わった | 適用結果の `packages` がメタデータと違う |
-| ベースの `pubspec.yaml` / `pubspec.lock`（と `.fvmrc`）が更新された | ベースのハッシュがメタデータの `baseHash` と違う |
+| ベースの `pubspec.yaml`（workspace ならメンバーの分も） / `pubspec.lock`（と `.fvmrc`）が更新された | ベースのハッシュがメタデータの `baseHash` と違う |
 | 設定が変わった | 設定のハッシュがメタデータの `configHash` と違う |
 
-PR が変更するのは pubspec の 2 ファイルだけなので、コンフリクトはほぼ `baseHash` の比較で検出できる。`mergeable_state` は念のために見る。
+PR が変更するのは `pubspec.yaml`（workspace ならメンバーの分も）と `pubspec.lock`、更新後のコマンドが変えたファイルだけなので、コンフリクトはほぼ `baseHash` の比較で検出できる。`mergeable_state` は念のために見る。
 
 再生成の手順:
 
@@ -359,7 +359,7 @@ on:
       timezone: Asia/Tokyo
   push:
     branches: [main]
-    paths: [pubspec.yaml, pubspec.lock, .fvmrc, .github/pubreform.yaml]
+    paths: ["**/pubspec.yaml", pubspec.lock, .fvmrc, .github/pubreform.yaml]
   pull_request:
     types: [edited]          # チェックボックスへの即時対応
   workflow_dispatch:
@@ -392,7 +392,7 @@ jobs:
 
 - PR の作成、コミット、コメント、ラベル付けは、`token` に渡した GitHub App のインストールトークンで行う。`GITHUB_TOKEN` は使わない（`GITHUB_TOKEN` で作った PR では、`pull_request` で起動する CI が承認待ちになるため）
 - App に必要な権限（Repository permissions）: Contents（Read and write）、Pull requests（Read and write）。コメントとラベルの API は Pull requests の権限で使える
-- コミットは git の push ではなく、GitHub API（blob → tree → commit → ref の更新）で作る。App として認証し author / committer を指定しなければ、コミットは App の bot ユーザーの名義になり、GitHub の署名で Verified と表示される。変更するのは 2 ファイルだけなので、API の呼び出しは数回で済む
+- コミットは git の push ではなく、GitHub API（blob → tree → commit → ref の更新）で作る。App として認証し author / committer を指定しなければ、コミットは App の bot ユーザーの名義になり、GitHub の署名で Verified と表示される。変更するファイルは少ないので、API の呼び出しは数回で済む
 - ref を更新する REST API には「head が想定どおりなら更新する」という条件を付けられないため、§7.3 のとおり直前に確認する
 - App による push や PR の作成では、通常どおり CI などの他のワークフローが起動する。App 自身が本文を更新したときも `pull_request: edited` で起動するので、ワークフロー側で除外する（§10.3）
 
@@ -429,13 +429,21 @@ jobs:
 
 ### 14.1 pub workspace
 
-v1 はルートの 1 パッケージだけを扱う。pub workspace では、lockfile はルートに 1 つで、制約は各メンバーの `pubspec.yaml` にある。同じパッケージを複数のメンバーが別々の制約で宣言することもある。後から対応しやすいように、v1 から次の形で実装しておく。
+> 実装済み（2026-10-24）。Dart 3.13.5 で、単体テスト、ローカル E2E（詳細 §17.1 の workspace の場面）、本物の `dart pub` での確認（詳細 §23）、Dart の workspace での GitHub E2E（詳細 §17.2、[run #11](https://github.com/chika3742/pubreform-e2e/actions/runs/40079510586)）を行った。Flutter の workspace は確かめていない。
 
-- 「`pubspec.yaml` の一覧」と「lockfile」を分けて扱う。v1 では一覧はルートの 1 つだけ
-- 直接依存は「パッケージ名 → それを宣言している `pubspec.yaml` の一覧」で持つ。制約の書き換え（R の計算、`pub add`）は、宣言しているすべての `pubspec.yaml` に対して行う
-- `baseHash` は、一覧のすべての `pubspec.yaml`、lockfile、`.fvmrc` から計算する
+pub workspace では、lockfile はルートに 1 つで、制約は各メンバーの `pubspec.yaml` にある。解決は workspace 全体で 1 回で、1 つのパッケージは workspace 全体で 1 つのバージョンになる（メンバーの制約が重ならなければ解決に失敗する）。そのため、ロックしているバージョン、計画、PR の単位とブランチ名は単体のパッケージと同じでよく、workspace 全体で 1 組の PR になる。メンバーが複数になって増えるのは、制約を書き換える場所だけである。
 
-PR の単位とブランチ名は lockfile ごとに決まるので、workspace に対応しても変えなくてよい（workspace 全体で 1 組の PR になる）。lockfile が複数ある構成（独立したプロジェクトが並ぶリポジトリ）に広げる場合は、ブランチ名にディレクトリを入れる（例: `pubreform/<dir>/minor-and-patch`）。
+- ルートの `pubspec.yaml` に `workspace:` があれば、`dart pub workspace list --json` でメンバーを列挙し、すべてのメンバーの `pubspec.yaml` を読む。グロブ（`pkgs/*`）と入れ子の workspace は pub が展開する
+- 直接依存は「パッケージ名 → それを宣言している `pubspec.yaml`、セクション、制約の一覧」で持つ。制約の書き換え（R の計算、単独 PR と同時更新グループの適用）は、宣言しているすべての `pubspec.yaml` に対して行う
+  - `pub add` は使わない。ルートで実行するとルートに依存が足され、メンバーで実行するとそのメンバーだけが書き換わるので、ほかのメンバーの制約とぶつかって解決に失敗する
+- `dependency_overrides` は、どのメンバーのものでも対象から外す（pub もすべてのメンバーの overrides を使う）
+- `ignored_advisories` はルートの `pubspec.yaml` だけを読む（pub もルートだけを見る）
+- PR の表の種類は、どれかのメンバーが `dependencies` に書いていれば direct、すべて `dev_dependencies` なら dev
+- Flutter かどうかは、どれかのメンバーが `sdk: flutter` を使っているかで決める
+- `baseHash` は、すべての `pubspec.yaml`、lockfile、`.fvmrc` から計算する
+- `pub upgrade --tighten` は、メンバー同士の依存（`a: any`）を `a: ^0.0.0` のように書き換える（`a` に `version` がないため）。この制約は、後で `a` にバージョンを付けると解決に失敗する原因になり、更新とも関係がないので、メンバーへの依存の制約は元に戻してからコミットする
+
+lockfile が複数ある構成（独立したプロジェクトが並ぶリポジトリ）に広げる場合は、ブランチ名にディレクトリを入れる（例: `pubreform/<dir>/minor-and-patch`）。
 
 ### 14.2 セキュリティアドバイザリ
 
@@ -545,7 +553,7 @@ Status は次のどれか。
 #### 範囲外
 
 - 修正版の依存が待機期間の中にあるときに、その依存まで見せること。修正版だけを見せ、解決できなければジョブサマリーに出す
-- 要修正の推移的依存を、依存元の直接依存のメジャー更新で直すこと。単独 PR や同時更新グループの `pub add` はロックを保つので、推移的依存は必要がなければ動かない
+- 要修正の推移的依存を、依存元の直接依存のメジャー更新で直すこと。単独 PR や同時更新グループの `pub get` はロックを保つので、推移的依存は必要がなければ動かない
 - 深刻度による絞り込み（`severity` が low のアドバイザリを無視する、など）
 - PR に専用のラベルを付けること
 - 要修正でないパッケージで、影響を受けるバージョンへの更新を避けること

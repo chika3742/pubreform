@@ -1,6 +1,16 @@
 import { describe, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { parse } from 'yaml'
-import { baseHash, directDeps, hasWorkspace, ignoredAdvisories, isFlutter, lockVersions, withConstraints } from '../src/pubspec.ts'
+import {
+  baseHash,
+  directDeps,
+  hasWorkspace,
+  ignoredAdvisories,
+  isFlutter,
+  lockVersions,
+  restoreValues,
+  withConstraints,
+} from '../src/pubspec.ts'
 
 const pubspec = `name: app
 environment:
@@ -55,12 +65,37 @@ ${lockEntry('overridden', '1.2.0')}${lockEntry('lints', '6.0.0')}${lockEntry('as
 
 describe('directDeps', () => {
   test('selects pub.dev dependencies locked from pub.dev', () => {
-    expect(directDeps(pubspec, lock)).toEqual([
-      { name: 'http', section: 'dependencies', constraint: '^1.5.0', current: '1.5.0' },
-      { name: 'anything', section: 'dependencies', constraint: 'any', current: '0.1.0' },
-      { name: 'mapped', section: 'dependencies', constraint: '>=2.0.0 <3.0.0', current: '2.1.0' },
-      { name: 'hosted_map', section: 'dependencies', constraint: '^1.0.0', current: '1.0.1' },
-      { name: 'lints', section: 'dev_dependencies', constraint: '^6.0.0', current: '6.0.0' },
+    const dep = (name: string, section: 'dependencies' | 'dev_dependencies', constraint: string, current: string) => ({
+      name,
+      section,
+      declarations: [{ path: 'pubspec.yaml', section, constraint }],
+      current,
+    })
+    expect(directDeps({ 'pubspec.yaml': pubspec }, lock)).toEqual([
+      dep('http', 'dependencies', '^1.5.0', '1.5.0'),
+      dep('anything', 'dependencies', 'any', '0.1.0'),
+      dep('mapped', 'dependencies', '>=2.0.0 <3.0.0', '2.1.0'),
+      dep('hosted_map', 'dependencies', '^1.0.0', '1.0.1'),
+      dep('lints', 'dev_dependencies', '^6.0.0', '6.0.0'),
+    ])
+  })
+  test('workspace: declarations of every member, and overrides of any member', () => {
+    const pubspecs = {
+      'pubspec.yaml': 'name: root\nworkspace: [pkgs/a, pkgs/b]\ndev_dependencies:\n  lints: ^6.0.0\n',
+      'pkgs/a/pubspec.yaml': 'name: a\ndependencies:\n  http: ^1.5.0\n  b: any\n  mapped: ^2.0.0\n',
+      'pkgs/b/pubspec.yaml':
+        'name: b\ndev_dependencies:\n  http:\n    version: 1.5.0\n  mapped:\n    git: https://github.com/a/b\ndependency_overrides:\n  lints: 6.0.0\n',
+    }
+    expect(directDeps(pubspecs, lock)).toEqual([
+      {
+        name: 'http',
+        section: 'dependencies',
+        declarations: [
+          { path: 'pkgs/a/pubspec.yaml', section: 'dependencies', constraint: '^1.5.0' },
+          { path: 'pkgs/b/pubspec.yaml', section: 'dev_dependencies', constraint: '1.5.0' },
+        ],
+        current: '1.5.0',
+      },
     ])
   })
   test('lockVersions includes transitive packages', () => {
@@ -71,9 +106,10 @@ describe('directDeps', () => {
 
 describe('project kind', () => {
   test('isFlutter', () => {
-    expect(isFlutter(pubspec)).toBe(true)
-    expect(isFlutter('name: a\ndependencies:\n  http: ^1.0.0\n')).toBe(false)
-    expect(isFlutter('name: a\ndev_dependencies:\n  flutter_test:\n    sdk: flutter\n')).toBe(true)
+    expect(isFlutter({ 'pubspec.yaml': pubspec })).toBe(true)
+    expect(isFlutter({ 'pubspec.yaml': 'name: a\ndependencies:\n  http: ^1.0.0\n' })).toBe(false)
+    expect(isFlutter({ 'pubspec.yaml': 'name: a\ndev_dependencies:\n  flutter_test:\n    sdk: flutter\n' })).toBe(true)
+    expect(isFlutter({ 'pubspec.yaml': 'name: r\n', 'a/pubspec.yaml': 'name: a\ndependencies:\n  flutter:\n    sdk: flutter\n' })).toBe(true)
   })
   test('hasWorkspace', () => {
     expect(hasWorkspace(pubspec)).toBe(false)
@@ -82,16 +118,17 @@ describe('project kind', () => {
 })
 
 describe('withConstraints', () => {
+  const constant = (entries: [string, string][]) => new Map(entries.map(([name, c]) => [name, () => c]))
   test('replaces string, null and map values', () => {
     const out = withConstraints(
-      pubspec,
-      new Map([
+      { 'pubspec.yaml': pubspec },
+      constant([
         ['http', '>=1.5.0'],
         ['anything', '>=0.1.0'],
         ['mapped', '2.3.0'],
         ['lints', '>=6.0.0'],
       ]),
-    )
+    )['pubspec.yaml']!
     const doc = parse(out)
     expect(doc.dependencies.http).toBe('>=1.5.0')
     expect(doc.dependencies.anything).toBe('>=0.1.0')
@@ -101,18 +138,72 @@ describe('withConstraints', () => {
     expect(doc.dependencies.flutter).toEqual({ sdk: 'flutter' })
     expect(doc.dependency_overrides).toEqual({ overridden: '1.2.0' })
   })
+  test('keeps comments and formatting', () => {
+    const text = 'name: app\ndependencies:\n  # http\n  http: "^1.5.0" # comment\n  anything:\n  mapped: {version: ^2.0.0}\n  block:\n    version: \'^1.0.0\' # pinned\n'
+    const out = withConstraints(
+      { 'pubspec.yaml': text },
+      constant([
+        ['http', '^2.0.0'],
+        ['anything', '^0.2.0'],
+        ['mapped', '>=3.0.0'],
+        ['block', '1.1.0'],
+      ]),
+    )['pubspec.yaml']
+    expect(out).toBe(
+      'name: app\ndependencies:\n  # http\n  http: ^2.0.0 # comment\n  anything: ^0.2.0\n  mapped: {version: ">=3.0.0"}\n  block:\n    version: 1.1.0 # pinned\n',
+    )
+  })
+  test('gives the original constraint of each declaration', () => {
+    const out = withConstraints(
+      { 'pubspec.yaml': 'name: a\ndependencies:\n  http: 1.5.0\n', 'b/pubspec.yaml': 'name: b\ndependencies:\n  http: ^1.5.0\n' },
+      new Map([['http', (old: string) => `${old}!`]]),
+    )
+    expect(out).toEqual({
+      'pubspec.yaml': 'name: a\ndependencies:\n  http: 1.5.0!\n',
+      'b/pubspec.yaml': 'name: b\ndependencies:\n  http: ^1.5.0!\n',
+    })
+  })
+  test('adds version to a map without it', () => {
+    const out = withConstraints({ 'pubspec.yaml': pubspec }, constant([['hosted_map', '^2.0.0']]))['pubspec.yaml']!
+    expect(parse(out).dependencies.hosted_map).toEqual({ hosted: 'https://pub.dev', version: '^2.0.0' })
+    const noVersion = 'name: a\ndependencies:\n  h:\n    hosted: https://pub.dev\n'
+    expect(parse(withConstraints({ 'pubspec.yaml': noVersion }, constant([['h', '^2.0.0']]))['pubspec.yaml']!).dependencies.h).toEqual({
+      hosted: 'https://pub.dev',
+      version: '^2.0.0',
+    })
+  })
   test('throws for an unknown dependency', () => {
-    expect(() => withConstraints(pubspec, new Map([['nope', '1.0.0']]))).toThrow('nope')
+    expect(() => withConstraints({ 'pubspec.yaml': pubspec }, constant([['nope', '1.0.0']]))).toThrow('nope')
+  })
+})
+
+describe('restoreValues', () => {
+  test('puts back the original source of the given names only', () => {
+    const original = { 'b/pubspec.yaml': 'name: b\ndependencies:\n  a: any\n  c:\n  http: ^1.0.0\n' }
+    const tightened = { 'b/pubspec.yaml': 'name: b\ndependencies:\n  a: ^0.0.0\n  c: ^0.0.0 # c\n  http: ^1.2.0\n' }
+    expect(restoreValues(tightened, original, new Set(['a', 'c']))).toEqual({
+      'b/pubspec.yaml': 'name: b\ndependencies:\n  a: any\n  c: # c\n  http: ^1.2.0\n',
+    })
   })
 })
 
 describe('baseHash', () => {
   test('changes with each file and treats a missing .fvmrc as empty', () => {
-    const h = baseHash({ pubspec: 'a', lock: 'b' })
+    const h = baseHash({ pubspecs: { 'pubspec.yaml': 'a' }, lock: 'b' })
     expect(h).toMatch(/^[0-9a-f]{64}$/)
-    expect(baseHash({ pubspec: 'a', lock: 'b', fvmrc: '' })).toBe(h)
-    expect(baseHash({ pubspec: 'a', lock: 'b', fvmrc: '{}' })).not.toBe(h)
-    expect(baseHash({ pubspec: 'ab', lock: '' })).not.toBe(baseHash({ pubspec: 'a', lock: 'b' }))
+    expect(baseHash({ pubspecs: { 'pubspec.yaml': 'a' }, lock: 'b', fvmrc: '' })).toBe(h)
+    expect(baseHash({ pubspecs: { 'pubspec.yaml': 'a' }, lock: 'b', fvmrc: '{}' })).not.toBe(h)
+    expect(baseHash({ pubspecs: { 'pubspec.yaml': 'ab' }, lock: '' })).not.toBe(h)
+    expect(baseHash({ pubspecs: { 'pubspec.yaml': 'a', 'b/pubspec.yaml': '' }, lock: 'b' })).not.toBe(h)
+  })
+  test('is the same as before workspaces for a single package', () => {
+    const before = createHash('sha256').update(['pubspec.yaml', 'a', 'pubspec.lock', 'b', '.fvmrc', ''].join('\0')).digest('hex')
+    expect(baseHash({ pubspecs: { 'pubspec.yaml': 'a' }, lock: 'b' })).toBe(before)
+  })
+  test('does not depend on the order of the files', () => {
+    expect(baseHash({ pubspecs: { 'pubspec.yaml': 'a', 'b/pubspec.yaml': 'c' }, lock: '' })).toBe(
+      baseHash({ pubspecs: { 'b/pubspec.yaml': 'c', 'pubspec.yaml': 'a' }, lock: '' }),
+    )
   })
 })
 

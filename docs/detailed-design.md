@@ -76,8 +76,7 @@ branding:
 2. GET /repos/{owner}/{repo} でデフォルトブランチ（= ベース）を得る
 3. ベースを $RUNNER_TEMP/pubreform/base に浅く clone する（§8.1）。baseSha を得る
 4. 設定を clone から読み、検証する（§4）。configHash を計算する
-5. pubspec.yaml / pubspec.lock / .fvmrc を読む（§7）。baseHash を計算する
-   ルートの pubspec に workspace: があれば全体エラー
+5. pubspec.yaml / pubspec.lock / .fvmrc を読む（§7）。ルートの pubspec に workspace: があれば、メンバーの pubspec.yaml も読む（§23）。baseHash を計算する
    post_update があれば、実行できる環境か（Linux で docker が使えるか）を確かめる（§19.1）
 6. slot と cutoff を求める（§5）
 7. 中継サーバーを起動する（§9）
@@ -101,7 +100,7 @@ branding:
 
 | 種類 | 例 | 扱い |
 |---|---|---|
-| 全体エラー | 設定の誤り、clone の失敗、セキュリティアドバイザリの取得の失敗（§20）、U / R の解決の失敗、workspace、post_update を実行できない環境、post_update のイメージの作成や SDK の特定の失敗 | PR を一切変更せずに失敗終了する。手順 5 までの失敗なら手順 6 以降に、post_update のイメージと SDK の失敗なら手順 12 に進まない |
+| 全体エラー | 設定の誤り、clone の失敗、セキュリティアドバイザリの取得の失敗（§20）、U / R の解決の失敗、workspace のメンバーの列挙の失敗、post_update を実行できない環境、post_update のイメージの作成や SDK の特定の失敗 | PR を一切変更せずに失敗終了する。手順 5 までの失敗なら手順 6 以降に、post_update のイメージと SDK の失敗なら手順 12 に進まない |
 | 単位のエラー | 1 つの更新単位の S の計算・適用・post_update のコマンド・コミット・PR 操作の失敗 | その単位だけを止め、他は続ける（§15） |
 
 ## 4. 設定（config.ts）
@@ -177,40 +176,58 @@ pub の書式のうち、必要な分だけを扱う。
 
 ## 7. pubspec と lockfile（pubspec.ts）
 
+`pubspec.yaml` は「ルートからのパス → 内容」で持つ（`Pubspecs`）。単体のパッケージでは `pubspec.yaml` の 1 つだけ、workspace ではメンバーの分も入る（§23）。
+
+```ts
+type Pubspecs = Record<string, string>  // 'pubspec.yaml'、'pkgs/a/pubspec.yaml' など
+```
+
 ### 7.1 直接依存の判定
 
-`pubspec.yaml` の `dependencies` / `dev_dependencies` のうち、次をすべて満たすもの。
+すべての `pubspec.yaml` の `dependencies` / `dev_dependencies` に書かれた名前のうち、次をすべて満たすもの。
 
-- 値が文字列、`null`、または `version` と pub.dev を指す `hosted` だけを持つ map
-- `dependency_overrides` に名前がない
-- lockfile のエントリが `source: hosted` で、`url` が `https://pub.dev`
+- 宣言しているすべての値が、文字列、`null`、または `version` と pub.dev を指す `hosted` だけを持つ map
+- どの `pubspec.yaml` の `dependency_overrides` にも名前がない
+- lockfile のエントリが `source: hosted` で、`url` が `https://pub.dev`（workspace のメンバーは lockfile に `hosted` として載らないので、ここで外れる）
 
 ```ts
 type Section = 'dependencies' | 'dev_dependencies'
-interface DirectDep {
-  name: string
+interface Declaration {
+  path: string         // 宣言している pubspec.yaml
   section: Section
   constraint: string   // 元の制約。null は 'any'
+}
+interface DirectDep {
+  name: string
+  section: Section     // どれかの宣言が dependencies なら dependencies
+  declarations: Declaration[]
   current: string      // c(d): ベースの lockfile のバージョン
 }
 ```
 
-Flutter のプロジェクトかどうかは、`dependencies` または `dev_dependencies` に `sdk: flutter` の依存があるかで決める。
+Flutter のプロジェクトかどうかは、どれかの `pubspec.yaml` の `dependencies` または `dev_dependencies` に `sdk: flutter` の依存があるかで決める。
 
-### 7.2 作業用の書き換え
-
-`yaml` の Document API で、該当する値だけを書き換える。値が文字列か `null` ならその値を、map なら `version` を置き換える。作業用の内容はコミットしないので、書式は気にしない。
+### 7.2 制約の書き換え
 
 ```ts
-withConstraints(pubspecText, Map<name, constraint>): string
+withConstraints(pubspecs, Map<name, (old: string) => string>): Pubspecs
 ```
+
+名前ごとの関数に元の制約を渡し、返った制約で、その名前のすべての宣言を書き換える。どの `pubspec.yaml` にも宣言がない名前は例外にする。作業用の書き換え（§10）にも、コミットする書き換え（§11）にも使う。
+
+- `yaml` の Document API で値のノードの位置を求め、元の文字列のその範囲だけを置き換える。値が文字列か `null` ならその値を、map なら `version` の値を置き換える。コメント、引用符以外の書式、ほかの依存は元のまま残る
+- 制約は `yaml` の `stringify` で書く。`>=1.0.0` のように引用符が要るものは引用符で囲まれ、`^1.0.0` は囲まれない（元の引用符は残さない。`pub add` も外す）
+- 値のない宣言（`a:`）は、`:` の後ろに ` <制約>` を足す
+- `version` のない map（`hosted` だけ）は、Document API で `version` を足して、そのファイル全体を書き出す（そのファイルの書式は変わる）
+
+`pub add` との違いは、`a:` の下に `version:` を書いた map の形を残すこと（`pub add` は `a: ^1.0.0` の 1 行に直す）。lockfile は同じになる（§23）。
 
 ### 7.3 ハッシュ
 
-`baseHash` = SHA-256（16 進）。次を順に連結した入力から計算する。`.fvmrc` がなければ内容は空とする。
+`baseHash` = SHA-256（16 進）。次を順に連結した入力から計算する。`pubspec.yaml` はパスの順に並べる。`.fvmrc` がなければ内容は空とする。単体のパッケージでは、workspace に対応する前と同じ値になる。
 
 ```
-"pubspec.yaml" NUL <内容> NUL "pubspec.lock" NUL <内容> NUL ".fvmrc" NUL <内容>
+<パス> NUL <内容> NUL …（pubspec.yaml ごと） "pubspec.lock" NUL <内容> NUL ".fvmrc" NUL <内容>
 ```
 
 ## 8. pub の実行（pub.ts）
@@ -219,7 +236,7 @@ withConstraints(pubspecText, Map<name, constraint>): string
 
 - ベースは `git clone --depth 1 --single-branch --branch <base>` で `$RUNNER_TEMP/pubreform/base` に取得する。認証は `-c http.extraheader=AUTHORIZATION: basic <base64(x-access-token:<token>)>` で渡し、URL にトークンを入れない。`@actions/exec` はコマンド行をログに出すので、base64 の値も `core.setSecret` でマスクする
 - actions/checkout の状態（どの ref を checkout したか、認証情報を残したか）には依存しない
-- すべての解決を、この 1 つのディレクトリで順に行う。各 pub コマンドの前に、`pubspec.yaml` と `pubspec.lock` をメモリ上のベースの内容（または作業用の書き換え）で上書きする。`.dart_tool/` などの残りものは結果に影響しないので消さない
+- すべての解決を、この 1 つのディレクトリで順に行う。各 pub コマンドの前に、すべての `pubspec.yaml` と `pubspec.lock` をメモリ上のベースの内容（または作業用の書き換え）で上書きする。`.dart_tool/` などの残りものは結果に影響しないので消さない
 
 ### 8.2 コマンド
 
@@ -230,15 +247,15 @@ withConstraints(pubspecText, Map<name, constraint>): string
 | `.fvmrc` なし | `flutter pub …` / `dart pub …` |
 
 ```ts
-pub(args: string[], opts: { pubspec: string; lock: string }): Promise<{ pubspec: string; lock: string }>
+pub(args: string[], opts: { pubspecs: Pubspecs; lock: string }): Promise<{ pubspecs: Pubspecs; lock: string }>
 ```
 
-1. `pubspec.yaml` を書き込む。`lock` の `url: "https://pub.dev"` を `url: "http://127.0.0.1:8471"` に置き換えて `pubspec.lock` に書き込む
-2. 環境変数 `PUB_HOSTED_URL=http://127.0.0.1:8471` を付けて、`@actions/exec` の `getExecOutput` で実行する（出力はログにも出る）。`get` / `upgrade` / `add` には `--no-example` を付ける
+1. すべての `pubspec.yaml` を書き込む。`lock` の `url: "https://pub.dev"` を `url: "http://127.0.0.1:8471"` に置き換えて `pubspec.lock` に書き込む
+2. 環境変数 `PUB_HOSTED_URL=http://127.0.0.1:8471` を付けて、`@actions/exec` の `getExecOutput` で実行する（出力はログにも出る）。`get` / `upgrade` には `--no-example` を付ける
 3. 終了コードが 0 でなければ、標準エラー出力を含めて例外にする
-4. 結果の lockfile の URL を元に戻し、両ファイルの内容を返す
+4. 結果の lockfile の URL を元に戻し、すべてのファイルの内容を返す
 
-`flutter pub upgrade --tighten` は `--no-example` を無視して `example/` も解決する（Flutter 3.47.7 で確認。`dart pub` では無視されない）。コミットするのはルートの 2 ファイルだけなので、結果には影響しない。
+`flutter pub upgrade --tighten` は `--no-example` を無視して `example/` も解決する（Flutter 3.47.7 で確認。`dart pub` では無視されない）。コミットするのは `pubspec.yaml` と `pubspec.lock` だけなので、結果には影響しない。
 
 ## 9. 中継サーバー（proxy.ts）
 
@@ -275,7 +292,7 @@ pub(args: string[], opts: { pubspec: string; lock: string }): Promise<{ pubspec:
 pub の解決は、引数で受け取る関数 `resolve` を通して行う。テストでは偽の `resolve` を渡す（§17）。
 
 ```ts
-type Resolve = (args: string[], pubspec: string) => Promise<Map<string, string>> // name -> version（lockfile）
+type Resolve = (args: string[], pubspecs: Pubspecs) => Promise<Map<string, string>> // name -> version（lockfile）
 ```
 
 ### 10.1 手順
@@ -302,7 +319,7 @@ closure(S):
   loop:
     pubspec = withConstraints(ベース, { m: R(m) for m in S } ∪ { e: '>=' + c(e) for e in deps − S })
     L = resolve(['get'], pubspec)       // ベースの lockfile を残すので、必要なものだけが動く
-    K = { e in deps − S : !allows(範囲(e), L(e)) }
+    K = { e in deps − S : e のどれかの宣言について !allows(範囲(宣言), L(e)) }
     if K が空: return (S, L)
     S = S ∪ K
 ```
@@ -341,16 +358,18 @@ fixedTransitive = { t in fixes : t は直接依存でない, U(t) != c(t), U(t) 
 
 | 単位 | 実行するコマンド |
 |---|---|
-| minor | `pub upgrade`（`versioning: increase` なら `--tighten` も付ける）。`targets` が空でなければ、その前に `pub add <spec>…` を実行する。spec は `name:U(name)`（固定のまま。dev_dependencies なら `dev:` を前に付ける） |
-| single / group | `pub add <spec>…`。`targets` のすべてについて、spec は `name:^targets(name)`。元の制約がバージョンそのもの（`1.2.3` のように 1 つに固定したもの）なら、固定のまま `name:targets(name)` にする（`dart pub add path:1.9.0` で `path: 1.9.0` と書かれ、コメントも残ることを Dart 3.13.5 で確認済み）。dev_dependencies なら `dev:` を前に付ける。複数の spec を 1 回で渡す（Flutter 3.47.7 で、dev_dependencies のままで制約が書き換わり、pubspec のコメントも残ることを確認済み） |
+| minor | `targets` が空でなければ、`withConstraints`（§7.2）で、その依存の固定した宣言を `U(name)` に書き換える（固定のまま。固定していない宣言はそのまま）。その上で `pub upgrade`（`versioning: increase` なら `--tighten` も付ける） |
+| single / group | `withConstraints`（§7.2）で、単位のメンバーのすべての宣言を `^targets(name)` に書き換えてから `pub get`。元の制約がバージョンそのもの（`1.2.3` のように 1 つに固定したもの）なら、固定のまま `targets(name)` にする。宣言ごとに決めるので、workspace で固定した宣言とそうでない宣言が混ざっていてもよい。メンバーでない `targets`（S の外で動く固定した依存）は、固定した宣言だけを書き換える |
 
-minor の 2 つのコマンドは、前のコマンドの結果の 2 ファイルの上で次のコマンドを実行する。`pub add` で固定した依存を U のバージョンにしてから、`pub upgrade` で残りを上げる。逆の順にすると、`pub upgrade` が古い固定を前提に選んだバージョンを、`pub add` が動かし直すことになる。Dart 3.13.7 で、固定した `path: 1.9.0` と `dev_dependencies` の `args: 2.6.0` に対し、`^` に緩めた `pub upgrade`（U）と、`pub add path:1.9.1 dev:args:2.7.0` → `pub upgrade --tighten` の結果の lockfile が同じになり、固定の形とコメントが残ることを確認済み。build メタデータ付きの `^1.9.0+1` も制約として受け付け、1.9.1 に解決することを確認済み（`flutter_hooks: 0.21.3+1` のような固定があるため）。
+minor では、固定した依存を U のバージョンに書き換えてから、`pub upgrade` で残りを上げる。Dart 3.13.7 で、固定した `path: 1.9.0` と `dev_dependencies` の `args: 2.6.0` に対し、`^` に緩めた `pub upgrade`（U）と、`pub add path:1.9.1 dev:args:2.7.0` → `pub upgrade --tighten` の結果の lockfile が同じになり、固定の形とコメントが残ることを確認済み。Dart 3.13.5 で、`pub add` の代わりに制約を書き換えてから `pub upgrade --tighten` を実行しても、lockfile と `pubspec.yaml` が同じになることを確認済み。build メタデータ付きの `^1.9.0+1` も制約として受け付け、1.9.1 に解決することを確認済み（`flutter_hooks: 0.21.3+1` のような固定があるため）。
+
+minor では、pub の結果の `pubspec.yaml` で、workspace のメンバーへの依存の制約を元に戻す（§23）。
 
 ```ts
 interface Change { from: string; to: string; section: Section }
 interface UnitResult {
   unit: Unit
-  files: { pubspec: string; lock: string }
+  files: { pubspecs: Pubspecs; lock: string }
   changes: Record<string, Change>   // バージョンが変わった直接依存だけ
   transitiveFixes: Record<string, { from: string; to: string }>  // 直した推移的依存
   advisories: FixedAdvisory[]       // この結果で直るアドバイザリ
@@ -370,7 +389,7 @@ interface FixedAdvisory {
   - 直接依存なら `changes` に入っている。推移的依存なら `transitiveFixes` に入れる
   - 直したパッケージの `fixes[p].advisories` をすべて `advisories` に入れる（パッケージ名、`id` の順）
   - `early`: `to` が `fixes[p].fix.version` と同じで、その `published` が cutoff より後なら、`published`
-- 要修正の推移的依存が、単独 PR や同時更新グループの適用でも直ることがある（`pub add` が必要に応じて動かした場合）。そのときも同じように数える。同じパッケージを複数の PR が直すことがある
+- 要修正の推移的依存が、単独 PR や同時更新グループの適用でも直ることがある（`pub get` が必要に応じて動かした場合）。そのときも同じように数える。同じパッケージを複数の PR が直すことがある
 - `changes` と `transitiveFixes` がどちらも空なら、その単位は捨てる（例: 他の単位とまったく同じ変化になった）
 - `--tighten` は、バージョンが変わっていない直接依存の下限も上げることがある。`pubspec.yaml` の差分には出るが、`changes` には含めない
 
@@ -543,7 +562,7 @@ pubreform failed to update this PR.
 | mergeable | `GET /repos/{owner}/{repo}/pulls/{n}`（`mergeable`、`mergeable_state`）。対象の PR ごとに 1 回 |
 | PR の head | `GET /git/ref/heads/<branch>`。対象の PR ごとに 1 回。PR の `head.sha` は使わない。ref を更新した直後は、ref はすでに新しいコミットを返すが、PR の `head.sha` は数秒のあいだ前のコミットを返すため（§17.2 で確認済み）。前の実行が PR を作り直した直後に次の実行が読むと、前の head を見て、作り直しが途中で止まったと誤って判断する |
 | closed の PR | `GET /repos/{owner}/{repo}/pulls?state=closed&base=<base>&sort=updated&direction=desc&per_page=100`（1 ページだけ）。`merged_at` が null のもの |
-| コミットの作成 | `POST /git/trees`（`base_tree` = ベースの tree、`pubspec.yaml` と `pubspec.lock` を `content` で直接渡す。post_update のコマンドで変わったファイルも同じ tree に入れる。§19.6）→ `POST /git/commits`（`parents` = [baseSha]。author / committer は指定しない）。UTF-8 でないファイルは、その前に `POST /git/blobs` で blob を作る |
+| コミットの作成 | `POST /git/trees`（`base_tree` = ベースの tree、すべての `pubspec.yaml` と `pubspec.lock` を `content` で直接渡す。post_update のコマンドで変わったファイルも同じ tree に入れる。§19.6）→ `POST /git/commits`（`parents` = [baseSha]。author / committer は指定しない）。UTF-8 でないファイルは、その前に `POST /git/blobs` で blob を作る |
 | ブランチの作成 | `POST /git/refs`。既にあれば（422）、そのブランチを使う open の PR がないことを確かめてから強制更新する |
 | ブランチの更新 | `GET /git/ref/heads/<branch>` で head が想定どおりかを確かめ、`PATCH /git/refs/heads/<branch>`（`force: true`） |
 | ラベルの用意 | `GET /repos/{owner}/{repo}/labels`（全ページ）で既存のラベルを調べ、ないものを `POST /repos/{owner}/{repo}/labels`（`name`、`color: ededed`）で作る。実行ごとに 1 回、ラベルを付ける操作がある場合だけ行う。存在しないラベルは自動では作られないため |
@@ -761,7 +780,7 @@ pubreform 自身の CI では、main への push と pull request のたびに�
 
 GitHub E2E（§17.2）はセキュリティアドバイザリのために変えていない。本物の GitHub でしか分からない新しい挙動はないため（テスト用プロジェクトには、場面 12、13 のパッケージが 1.0.0 のまま入る）。
 
-更新後のコマンド（§19）は、別のテスト（`test/e2e/post-update.test.ts`）で、同じ構成の別のリポジトリに対して動かす。`docker version` が通る環境だけで動かす（GitHub Actions の CI では動く見込み）。テスト用プロジェクトは `makeProject({ postUpdate: true })` で作り、設定に次のコマンドを入れる（`make-project.ts` の `POST_UPDATE_CONFIG` と `POST_UPDATE_FILES`）。
+更新後のコマンド（§19）は、別のテスト（`test/e2e/post-update.test.ts`）で、同じ構成の別のリポジトリに対して動かす。`docker version` が通る環境だけで動かす（GitHub Actions の CI では動く見込み）。テスト用プロジェクトは `makeProject({ postUpdate: true, workspace: true })` で作り（GitHub E2E と同じ。ルートを workspace にし、`fx_major` を宣言するメンバー `pkgs/member` を足す）、設定に次のコマンドを入れる（`make-project.ts` の `POST_UPDATE_CONFIG` と `POST_UPDATE_FILES`）。
 
 | コマンド | 内容 |
 |---|---|
@@ -777,6 +796,18 @@ GitHub E2E（§17.2）はセキュリティアドバイザリのために変え�
 2. 何も変わらない: もう一度実行すると、コマンドは実行されず、どの PR の head も変わらない
 3. 失敗: ベースの設定を、終了コード 3 で失敗し、実行のたびに違う出力を出すコマンドに変えて実行すると、ジョブは失敗し、どの PR の head も変わらず、各 PR に失敗したコマンドと出力を含むエラーコメントが出る。もう一度実行しても、コメントは増えない（§19.7）
 
+workspace（§23）は、別のテスト（`test/e2e/workspace.test.ts`）で、同じ構成の別のリポジトリに対して動かす。テスト用プロジェクトは `makeWorkspace()` で作る。ルートと、`workspace: [pkgs/*]` のメンバー `pkgs/a`、`pkgs/b` を持ち、次のように宣言する。
+
+| メンバー | 宣言 |
+|---|---|
+| `pkgs/a` | `fx_patch: ^1.0.0`、`fx_major: ^1.0.0`（コメント付き） |
+| `pkgs/b` | `a: any`、`fx_major` を `dev_dependencies` に `version: ^1.0.0` の map で、`fx_minor: ^1.0.0` と、その `dependency_overrides` |
+
+場面:
+
+1. 作成: マイナー・パッチグループ（`fx_patch` だけ）と、`fx_major` の単独 PR が作られる。`fx_minor` の PR はない。単独 PR では、両方のメンバーの `fx_major` が `^2.0.0` になり、`pkgs/b` の map の形と `pkgs/a` のコメントが残る。表の種類は direct。マイナー・パッチグループでは、`pkgs/a` の `fx_patch` が `^1.0.1` になり、`pkgs/b` の `a: any` は残る
+2. 何も変わらない: もう一度実行し、どの PR の head も変わらない
+
 ### 17.2 GitHub E2E
 
 本物の GitHub でしか分からない次の 4 点を、テスト用リポジトリ [`chika3742/pubreform-e2e`](https://github.com/chika3742/pubreform-e2e)（非公開）で確かめる。pub.dev の代わりに、17.1 と同じフィクスチャー用サーバーを使う。
@@ -791,6 +822,8 @@ GitHub E2E（§17.2）はセキュリティアドバイザリのために変え�
 - `probe.txt` がローカル E2E と同じ内容になる（`docker` が使え、§19.1 のイメージを作れ、トークンと `actions/checkout` の認証情報を読めず、ネットワークに接続できず、SDK・pub のキャッシュに書き込めず、ベースの `.git` が見えない）。`network-on.txt` は `ok`
 - 本物の API で、`mode: 100755` と `120000`、`POST /git/blobs` の blob、`sha: null` の削除が tree に入る
 - 本文の行と `lib/versions.g.dart` の内容
+
+テスト用プロジェクトは pub workspace にする（§23）。ルートに今までの依存を置き、`fx_major` だけを宣言するメンバー `pkgs/member` を足す。本物のランナーの `dart` で `pub workspace list` が動くことと、単独 PR のコミットに、ディレクトリの下の `pkgs/member/pubspec.yaml`（`fx_major: ^2.0.0`）が入ることを確かめる。2026-10-24 に実行し、確認済み（[run #11](https://github.com/chika3742/pubreform-e2e/actions/runs/40079510586)。ランナーの Dart は 3.13.7）。
 
 ワークフローの `run:` のステップに `ACTIONS_RUNTIME_TOKEN` がなければ、`probe.txt` のその確認は意味を持たない。スクリプトは、自分の環境にあるかをログに出す。
 
@@ -813,7 +846,7 @@ GitHub E2E（§17.2）はセキュリティアドバイザリのために変え�
 `github-e2e.ts` の手順:
 
 1. フィクスチャー用サーバーを同じプロセスで起動する
-2. テスト用プロジェクト（`pubspec.yaml`、`pubspec.lock`、`.github/pubreform.yaml` と、更新後のコマンドが使うファイル）を `make-project.ts` の `makeProject({ postUpdate: true })` で生成し、内容が変わっていれば main に push する（コミットの作成者は `pubreform-e2e`）。main のこれらのファイルはこのワークフローが管理する（`.github/workflows/` には触れない）。main にブランチ保護を設定すると、この push が失敗する
+2. テスト用プロジェクト（`pubspec.yaml`、`pkgs/member/pubspec.yaml`、`pubspec.lock`、`.github/pubreform.yaml` と、更新後のコマンドが使うファイル）を `make-project.ts` の `makeProject({ postUpdate: true, workspace: true })` で生成し、内容が変わっていれば main に push する（コミットの作成者は `pubreform-e2e`）。main のこれらのファイルはこのワークフローが管理する（`.github/workflows/` には触れない）。main にブランチ保護を設定すると、この push が失敗する
 3. 前回の実行の後片付け: `pubreform/` で始まるブランチの open の PR を閉じ、`pubreform/` で始まる ref をすべて（open の PR がないものも）消し、設定のラベルを消す。PR は、pubreform が閉じるときと同じく、本文のメタデータに `closed: true` を入れて閉じる（入れないと利用者が閉じた PR として扱われ、フィクスチャーが毎回同じなので、次の実行で同じ内容の PR が作られなくなる）。`closed: true` を入れる処理には、本体と同じ `markClosed`（src/render.ts）を使う
 4. 1 回目: ビルドした `dist/main.js` を `node` で実行し、上の 4 点のうち、Verified、`mergeable_state`、ラベルと、更新後のコマンドの結果を確かめる。入力はローカル E2E と同じく環境変数（`INPUT_TOKEN`、`INPUT_CONFIG`）で渡し、`PUBREFORM_UPSTREAM` を付ける。ランナーの環境変数（`GITHUB_REPOSITORY`、`RUNNER_TEMP` など）はそのまま渡す
 5. 2 回目: 単独 PR のチェックボックスにチェックを入れてから実行し、その PR が作り直されたこと（`/` を含むブランチ名での ref の取得と更新）を確かめる。実行の直後に待たずに ref を読み、PR のメタデータの `commit` と一致することを確かめる（ref が更新の直後から新しいコミットを返すかを見るため）。PR の `head.sha` は、変わるまで数回取り直す
@@ -887,7 +920,7 @@ execute
 
 1. `/tmp` の下に生成用ディレクトリを作る（`mkdtemp`）
 2. ベースの clone の `.git`（信頼できる）から、追跡しているファイルを生成用ディレクトリに書き出す（`git --git-dir=<base>/.git --work-tree=<base> checkout-index --all --prefix=<dir>/`）。`.git` は渡さない。生成のコードが `.git/config`（`core.fsmonitor` など）やフックを書き換えると、あとで pubreform が実行する `git` がそのコマンドを実行してしまうため。作業ツリーをコピーしないのは、解決で残ったもの（`.dart_tool/` など）を持ち込まないため
-3. ランナーのユーザーのまま、`Pub.run`（§8.2）で、その更新単位の `pubspec.yaml` と、URL を中継サーバーのものにした `pubspec.lock` を書き、`pub get --offline --no-example` を実行する（Flutter なら `flutter pub get`、fvm なら `fvm flutter pub get`）。`.dart_tool/package_config.json` ができる。パッケージは適用のときにキャッシュに入っているので、中継サーバーもネットワークも要らない。これはコンテナの外で、SDK に書き込めるランナーのユーザーが行うので、Flutter のプロジェクトでも動く
+3. ランナーのユーザーのまま、`Pub.run`（§8.2）で、その更新単位のすべての `pubspec.yaml` と、URL を中継サーバーのものにした `pubspec.lock` を書き、`pub get --offline --no-example` を実行する（Flutter なら `flutter pub get`、fvm なら `fvm flutter pub get`）。`.dart_tool/package_config.json` ができる。パッケージは適用のときにキャッシュに入っているので、中継サーバーもネットワークも要らない。これはコンテナの外で、SDK に書き込めるランナーのユーザーが行うので、Flutter のプロジェクトでも動く
 4. コマンドを順に、コンテナの中で実行する（§19.5）
 5. 変わったファイルを取り出す（§19.6）
 6. 生成用ディレクトリを消す
@@ -933,7 +966,7 @@ docker run --rm --name pubreform-<ランダム> \
    ```
 
    インデックスは書き換えないよう、ベースのインデックスをコピーしたものを `GIT_INDEX_FILE` で使う。設定は信頼できる `.git` のものなので、作業ツリーの `.gitattributes` があっても、ベースで設定していない外部のフィルターは動かない
-2. `pubspec.yaml` と `pubspec.lock` は除く。この 2 つは適用の結果（`result.files`、pub.dev の URL）を使う
+2. `pubspec.yaml`（workspace ならメンバーの分も）と `pubspec.lock` は除く。これらは適用の結果（`result.files`、pub.dev の URL）を使う
 3. パスは作業ツリーの中に限る（空の要素、`.`、`..`、絶対パスを含むものは捨てる）。途中のディレクトリがシンボリックリンクなら捨てる。ファイルは `lstat` で調べ、シンボリックリンクはたどらない。リンクはリンクとして（`mode: 120000`、内容はリンク先の文字列）コミットする。生成のコードが、ランナーのファイルを指すリンクを置いて、その内容をコミットさせることを防ぐため。通常のファイルでもリンクでもないもの（git がまとめて表示した入れ子のリポジトリなど）は捨てる
 4. tree の項目にする
 
@@ -943,8 +976,8 @@ docker run --rm --name pubreform-<ランダム> \
 | 変更・追加（それ以外） | `POST /git/blobs`（`encoding: base64`）で blob を作り、その `sha` を入れる |
 | 削除 | `sha: null` |
 
-- 項目は `createCommit` に渡し、2 ファイルと一緒に 1 つの tree にする（`base_tree` はベースの tree。§13）
-- 変わったファイルがなければ、今と同じ 2 ファイルだけのコミットになる
+- 項目は `createCommit` に渡し、`pubspec.yaml` と `pubspec.lock` と一緒に 1 つの tree にする（`base_tree` はベースの tree。§13）
+- 変わったファイルがなければ、`pubspec.yaml` と `pubspec.lock` だけのコミットになる
 
 ### 19.7 失敗
 
@@ -1074,6 +1107,7 @@ function findFix(name: string, locked: string, listing: Listing, advisories: Adv
 | 更新後のコマンドと `ACTIONS_RUNTIME_TOKEN` | GitHub E2E は pubreform を `run:` のステップから起動するので、そのプロセスに `ACTIONS_RUNTIME_TOKEN` がない。`uses:` で起動したときにコンテナから読めないことは、直接は確かめていない（コンテナからは pubreform のプロセスが見えないことは確かめた） |
 | 更新後のコマンドと Flutter | Pigeon が動くか。GitHub のランナーで setup-fvm と組み合わせて動くか（build_runner はローカルのコンテナで確認済み。§19.9） |
 | 更新後のコマンドの実行時間 | PR ごとに生成が走るので、コマンドと PR が多く、作り直しが重なると長くなる。測っていない |
+| workspace と Flutter | Flutter の workspace をルートの `flutter pub` で解決すること、setup-fvm と組み合わせること（§23） |
 | セキュリティアドバイザリの表示 | 本文のアドバイザリの表とジョブサマリーの表を、本物の GitHub で表示していない。ローカル E2E で文字列だけを確かめた（§20.5） |
 
 ## 22. 基本設計からの変更点
@@ -1083,10 +1117,39 @@ function findFix(name: string, locked: string, listing: Listing, advisories: Adv
 | 項目 | 基本設計 | 詳細設計 |
 |---|---|---|
 | ベースの取得 | fetch して worktree を作る | トークンで浅く clone する（§8.1）。checkout の状態に依存しない |
-| 解決の作業場所 | worktree の複製 | 1 つのディレクトリで、pub を実行する前に 2 ファイルを書き戻す（§8.1） |
+| 解決の作業場所 | worktree の複製 | 1 つのディレクトリで、pub を実行する前に `pubspec.yaml` と `pubspec.lock` を書き戻す（§8.1） |
 | `ignore` | すべての解決で除外する | 中継サーバーで該当バージョンを隠す（§9） |
 | 更新履歴とソースリンク | アーカイブから抜き出す | pub がキャッシュに展開したパッケージから読む（§12.3） |
 | 計画に失敗したパッケージ | 記述なし | そのパッケージを含む PR は閉じない（§14.3） |
 | 更新後のコマンドの作業場所 | 作業ディレクトリで実行し、次の更新単位の前にベースの状態に戻す | 更新単位ごとに、`.git` のない生成用ディレクトリを `/tmp` に作り、使い終わったら消す（§19.4） |
 | 更新後のコマンドの実行場所 | 別のユーザーで、ネットワークのない名前空間で実行する | Docker のコンテナで実行する（§19.5）。イメージはランナーのファイルから作る（§19.1）。別のユーザー、`sudo`、ACL は使わない |
+| 単独 PR と同時更新グループの適用 | `pub add` | 制約を書き換えてから `pub get`（§11）。workspace で、宣言しているすべての `pubspec.yaml` を書き換えるため |
 | 更新後のコマンドと Flutter | 記述なし | 使えるが、SDK に同梱の Dart だけで、`flutter` コマンドは使えない（§19.9） |
+
+## 23. pub workspace
+
+基本設計 §14.1 の実装。
+
+### 23.1 メンバーの列挙
+
+ルートの `pubspec.yaml` に `workspace:` があれば、ベースの clone で `dart pub workspace list --json`（`.fvmrc` があれば `fvm dart pub workspace list --json`）を実行する。Flutter の workspace でも `dart` を使う。ルートの `pubspec.yaml` だけでは Flutter かどうかが分からないため。
+
+- 出力の最初の `{` から後ろを JSON として読む（fvm が前に何かを出すことがあるため）
+- 出力の `packages[].path`（絶対パス）を clone からの相対パスにし、`<path>/pubspec.yaml` を読む。ルートは `pubspec.yaml`
+- clone の外を指すパスは全体エラーにする
+- 失敗したら全体エラー（PR はまだ変更していない）
+
+### 23.2 メンバーへの依存
+
+`pub upgrade --tighten` は、メンバー同士の依存も書き換える（`a: any` が `a: ^0.0.0` になる）。minor の結果では、メンバーの名前の宣言の値を、ベースの `pubspec.yaml` の元の文字列に戻す。
+
+### 23.3 確認済みのこと
+
+Dart 3.13.5 で、ルートとメンバー 2 つ（`pkgs/*`）の workspace を作って確かめた。
+
+- `dart pub workspace list --json` は、lockfile がなく、pub.dev に接続できない状態でも動き、グロブを展開したメンバーの名前と絶対パスを返す。メンバーのディレクトリで実行しても同じ結果になる
+- 解決は workspace 全体で 1 回で、lockfile はルートに 1 つ。メンバーの制約が重ならなければ解決に失敗する
+- `pub add` はルートで実行するとルートに、メンバーで実行するとそのメンバーだけに書き、もう一方のメンバーの制約とぶつかって失敗する。宣言しているすべての `pubspec.yaml` を書き換えて `pub get` すると成功する
+- 単体のパッケージで、`pub add http:^1.6.0 dev:lints:^6.0.0` と、制約を書き換えてからの `pub get` は、同じ lockfile になる。`pubspec.yaml` は、`pub add` が `lints:` の下の `version:` を 1 行に直すことだけが違う
+- `pub upgrade --tighten` は、すべてのメンバーの制約を上げ、メンバー同士の依存 `a: any` を `a: ^0.0.0` にする
+- pub は `ignored_advisories` をルートの `pubspec.yaml` からだけ読み（`lib/src/solver/report.dart`、`lib/src/command/outdated.dart`）、`dependency_overrides` はすべてのメンバーから集める（`allOverridesInWorkspace`）

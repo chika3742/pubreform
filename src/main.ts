@@ -12,8 +12,8 @@ import { Generator, buildImage, checkEnvironment, findSdk, removeImage } from '.
 import { GitHub } from './github.ts'
 import { type Plan, plan } from './planner.ts'
 import { RegistryProxy } from './proxy.ts'
-import { Pub, cachedPackageDir, cloneBase, pubCacheDir } from './pub.ts'
-import { type Section, baseHash, directDeps, hasWorkspace, isFlutter, lockVersions } from './pubspec.ts'
+import { Pub, cachedPackageDir, cloneBase, pubCacheDir, workspacePubspecs } from './pub.ts'
+import { ROOT_PUBSPEC, type Pubspecs, type Section, baseHash, directDeps, hasWorkspace, isFlutter, lockVersions } from './pubspec.ts'
 import { type Outcome, type PlanFailures, type UnitError, advisoryStatus, decide, execute } from './reconciler.ts'
 import { formatLog, readPackageInfo } from './render.ts'
 
@@ -169,12 +169,15 @@ export async function run(): Promise<void> {
   ).stdout.trim()
 
   const config = parseConfig(await readRequired(path.join(dir, configPath), configPath))
-  const files = {
-    pubspec: await readRequired(path.join(dir, 'pubspec.yaml'), 'pubspec.yaml'),
-    lock: await readRequired(path.join(dir, 'pubspec.lock'), 'pubspec.lock'),
-  }
+  const root = await readRequired(path.join(dir, ROOT_PUBSPEC), ROOT_PUBSPEC)
   const fvmrc = await readOptional(path.join(dir, '.fvmrc'))
-  if (hasWorkspace(files.pubspec)) throw new Error('pub workspaces are not supported')
+  const pubspecs: Pubspecs = { [ROOT_PUBSPEC]: root }
+  if (hasWorkspace(root)) {
+    for (const p of await core.group('Workspace members', () => workspacePubspecs(dir, fvmrc !== undefined))) {
+      pubspecs[p] = await readRequired(path.join(dir, p), p)
+    }
+  }
+  const files = { pubspecs, lock: await readRequired(path.join(dir, 'pubspec.lock'), 'pubspec.lock') }
   const postUpdate = config.post_update.length > 0
   if (postUpdate) await checkEnvironment()
   const hashes = { baseHash: baseHash({ ...files, fvmrc }), configHash: configHash(config) }
@@ -182,7 +185,7 @@ export async function run(): Promise<void> {
   const window = computeWindow(config.schedule, config.min_release_age_days, new Date())
   core.info(`slot: ${window.slot.toISOString()}, cutoff: ${window.cutoff.toISOString()}`)
 
-  const deps = directDeps(files.pubspec, files.lock)
+  const deps = directDeps(files.pubspecs, files.lock)
   const proxy = new RegistryProxy({
     cutoff: window.cutoff,
     locked: lockVersions(files.lock),
@@ -200,7 +203,7 @@ export async function run(): Promise<void> {
     // Every resolution sees the same versions, so the fixes are known before planning.
     fixes = await core.group('Security advisories', async () => {
       const found = await collectFixes({
-        pubspec: files.pubspec,
+        pubspec: root,
         lock: files.lock,
         listing: (name) => proxy.upstreamListing(name),
         advisories: (name) => fetchAdvisories(proxy.upstreamUrl, name),
@@ -212,12 +215,12 @@ export async function run(): Promise<void> {
       return found
     })
     proxy.setFixes(fixes)
-    const pub = new Pub({ dir, flutter: isFlutter(files.pubspec), fvm: fvmrc !== undefined, hostedUrl: proxy.url })
+    const pub = new Pub({ dir, flutter: isFlutter(files.pubspecs), fvm: fvmrc !== undefined, hostedUrl: proxy.url })
     thePlan = await core.group('Plan', () =>
       plan({
         deps,
-        basePubspec: files.pubspec,
-        resolve: async (args, pubspec) => lockVersions((await pub.run(args, { pubspec, lock: files.lock })).lock),
+        basePubspecs: files.pubspecs,
+        resolve: async (args, pubspecs) => lockVersions((await pub.run(args, { pubspecs, lock: files.lock })).lock),
         visibleVersions: (name) => proxy.visibleVersions(name),
         fixes,
         log: (m) => core.warning(m),
@@ -254,7 +257,7 @@ export async function run(): Promise<void> {
   const openPrs = await github.openPrs(base)
   const closedPrs = await github.closedPrs(base)
   const ops = decide(results, unitErrors, thePlan, openPrs, closedPrs, hashes)
-  const flutter = isFlutter(files.pubspec)
+  const flutter = isFlutter(files.pubspecs)
   const fvm = fvmrc !== undefined
   // Failing to prepare post_update is a global error: nothing is changed.
   const image = postUpdate ? await core.group('Build the image for post_update', buildImage) : undefined
