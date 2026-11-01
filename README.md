@@ -1,22 +1,23 @@
 # pubreform
 
-A GitHub Action that opens pull requests to update the pub dependencies of a Dart or Flutter project.
+A Dependency bot made for Dart and Flutter projects.
 
-## What it does
+<img src="img.png" height="500">
 
-Each run compares the dependencies in `pubspec.yaml` with pub.dev and keeps these pull requests open:
+## Why pubreform
 
-| Pull request | Title | Contents |
-|---|---|---|
-| Minor and patch updates | `Update minor and patch (N packages)` | All updates that fit the current version constraints, in one pull request. A version pinned in `pubspec.yaml` (`foo: 1.2.3`) counts as `^1.2.3` here, and stays pinned |
-| Major update | `Update <package> from <old> to <new>` | One package that needs a new constraint |
-| Packages updated together | `Update <a> to <new>, <b> to <new>` | Major updates that only resolve when made together |
+Dependabot and Renovate can update pub dependencies too. pubreform is made only for pub, and adds the following:
 
-- A pull request that updates only one package is titled like a major update
-- The description links each package to pub.dev, its source, and its changelog
-- When an update changes, for example because a newer version is released, the pull request is updated and a comment describes the change. When it is no longer needed, it is closed
-- Locked versions with a security advisory are updated without waiting. See [Security advisories](#security-advisories)
-- The job summary lists the newer versions that are still in the waiting period, with the time they will be used, and the dependencies that cannot be updated to the latest version because it does not resolve with the other dependencies
+- **The Flutter version you already use.** Dependencies are resolved with the Flutter SDK in `.fvmrc`, or the SDK your workflow sets up. There is no separate setting to keep in sync.
+- **Major updates that need each other, in one pull request.** When a major update only resolves together with major updates of other packages, pubreform proposes them together right away, instead of one at a time across several merges.
+- **Changes are reported on the pull request.** When a newer version changes what a pull request updates, the pull request is updated in place, and a comment lists what was changed.
+
+## Limitations
+
+- Minor and patch updates are grouped in one pull request. This cannot be configured.
+- Only the repository root. Pub workspaces are not supported yet
+- Only packages hosted on pub.dev
+- No pre-release versions
 
 ## Setup
 
@@ -39,6 +40,15 @@ schedule:
 min_release_age_days: 3
 labels: [dependencies]
 ```
+
+> [!NOTE]
+> **What is the difference between the cron in `pubreform.yaml` and the one in the workflow?**
+>
+> The cron in the workflow decides when pubreform runs. The cron in `pubreform.yaml` decides which releases it can use: only versions published at least `min_release_age_days` before the last time this cron fired. Until it fires again, every run gives the same result, whether it was started by the schedule, a push or a checkbox.
+>
+> This lets you run the workflow more often than you take in new releases. For example, you can run the workflow daily to get security fixes quickly, and still receive new releases once a week.
+>
+> The cron in `pubreform.yaml` is not a time window. Runs at other times still rebase pull requests, close outdated ones and open security fixes.
 
 To regenerate code such as build_runner outputs in the pull requests, add [post-update commands](#post-update-commands).
 
@@ -81,13 +91,17 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
 ```
 
-The workflow decides when the action runs. This one runs it every Monday, after the dependency files or the config change, and when a pubreform pull request is edited (to pick up the checkbox below). The action does the same thing whichever event starts it.
+The workflow decides when the action runs. This one runs it every Monday, after the dependency files or the config change, and when a pubreform pull request is edited (to pick up the [Rebase this PR](#updating-a-pull-request) checkbox). The action does the same thing whichever event starts it.
+
+> [!WARNING]
+>
+> As with any other workflow, the runner minutes it uses count toward your GitHub Actions usage.
 
 ## Configuration
 
 | Key | Default | Description |
 |---|---|---|
-| `schedule.cron` | (required) | Cron expression with 5 fields. See [Waiting period](#waiting-period) |
+| `schedule.cron` | (required) | Cron expression with 5 fields for waiting period. See the Note above for more information. |
 | `schedule.timezone` | `UTC` | IANA time zone name for `schedule.cron` |
 | `min_release_age_days` | `0` | Days a version must have been out before it is used |
 | `labels` | `[]` | Labels added to the pull requests. Missing labels are created |
@@ -101,10 +115,6 @@ The workflow decides when the action runs. This one runs it every Monday, after 
 The action has two inputs: `token` (required), and `config`, the path to the config file on the default branch (default `.github/pubreform.yaml`).
 
 ## Things to know
-
-### Waiting period
-
-`schedule.cron` is not when the action runs. It sets the time from which the waiting period is counted: a run uses only versions published at least `min_release_age_days` days before the latest time the cron fired. Running the action more often does not change the result until the cron fires again.
 
 ### Updating a pull request
 
@@ -164,13 +174,6 @@ post_update:
 - Bring the generated code on the default branch up to date first. Otherwise, the changes that are already due on the default branch show up in every pull request
 - The commands run only when a pull request is created or rebuilt, once per pull request. Changing `post_update` rebuilds every pull request
 - If a command fails, the pull request is not created, or is left as it is with the error posted to it, and the job fails
-
-## Limitations
-
-- Only the repository root. Pub workspaces are not supported yet
-- Only packages hosted on pub.dev
-- No pre-release versions
-- `dependency_overrides` and the SDK constraints are not changed
 
 ## License
 
