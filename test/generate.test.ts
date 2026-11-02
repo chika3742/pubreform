@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { commandEnv, dockerArgs, isInside, parseStatus, treeEntries } from '../src/generate.ts'
+import { commandEnv, countChanged, dockerArgs, isInside, parseStatus, treeEntries } from '../src/generate.ts'
 
 describe('parseStatus', () => {
   test('modified, deleted, type changed and untracked', () => {
@@ -188,4 +188,14 @@ describe('dockerArgs', () => {
   test('with the network', () => {
     expect(dockerArgs({ run: './gen.sh', network: true, env: [] }, opts)).toEqual([...common([]), './gen.sh'])
   })
+})
+
+test('countChanged: entries that the commands changed, added or removed', () => {
+  const a = { path: 'a', mode: '100644' as const, content: 'a' }
+  const b = { path: 'b', mode: '100644' as const, content: 'b' }
+  expect(countChanged([a, b], [a, b])).toBe(0)
+  expect(countChanged([a, b], [a, { ...b, content: 'B' }])).toBe(1)
+  expect(countChanged([a, b], [a, { ...b, mode: '100755' as const }])).toBe(1)
+  expect(countChanged([a], [a, b, { path: 'c', deleted: true as const }])).toBe(2)
+  expect(countChanged([a, b], [a])).toBe(1)
 })

@@ -1,14 +1,16 @@
 // Integration test of the registry proxy with real pub.
 // Needs network access to pub.dev, so it runs only with PUBREFORM_IT=1:
 //   PUBREFORM_IT=1 bun test test/integration.test.ts
-// `dart` (Dart 3 stable) and `fvm` (with Flutter 3.47.7 installable) must be on PATH.
+// `dart` (Dart 3 stable) and `fvm` (with Flutter 3.47.7 and 3.47.8 installable) must be on PATH.
 import { afterAll, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { Pub, cachedPackageDir, pubCommand } from '../src/pub.ts'
+import { applyFlutter } from '../src/flutter.ts'
+import { Generator, findSdk } from '../src/generate.ts'
+import { Pub, cachedPackageDir, pubCacheDir, pubCommand } from '../src/pub.ts'
 import { lockVersions } from '../src/pubspec.ts'
 import { PROXY_PORT, RegistryProxy } from '../src/proxy.ts'
 import { compareVersions } from '../src/version.ts'
@@ -187,3 +189,61 @@ for (const fx of FIXTURES) {
     })
   })
 }
+
+/** The version that the Flutter update goes to, from FLUTTER_VERSION. */
+const FLUTTER_UPDATE = '3.47.8'
+
+describe.skipIf(!IT)('Flutter update with fvm', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pubreform-it-flutter-'))
+  afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }))
+  const git = (cwd: string, ...args: string[]) =>
+    run('git', ['-c', 'user.name=it', '-c', 'user.email=it@example.com', ...args], { cwd })
+
+  test('updateFlutter installs the new version and resolves with it, from pub.dev, keeping the edited files', async () => {
+    const repo = path.join(tmp, 'repo')
+    fs.mkdirSync(path.join(repo, '.vscode'), { recursive: true })
+    // Language version 3.9: pub also reads the upper bound of environment.flutter.
+    const pubspec = `name: app\nenvironment:\n  sdk: ^3.9.0\n  flutter: ^${FLUTTER_VERSION}\ndependencies:\n  flutter:\n    sdk: flutter\n`
+    const fvmrc = `{\n  "flutter": "${FLUTTER_VERSION}"\n}\n`
+    const settings = `{\n  // keep this comment\n  "dart.flutterSdkPath": ".fvm/versions/${FLUTTER_VERSION}"\n}\n`
+    fs.writeFileSync(path.join(repo, 'pubspec.yaml'), pubspec)
+    fs.writeFileSync(path.join(repo, '.fvmrc'), fvmrc)
+    fs.writeFileSync(path.join(repo, '.vscode', 'settings.json'), settings)
+    // Not .fvm/: the update must not make it.
+    fs.writeFileSync(path.join(repo, '.gitignore'), '.dart_tool/\n.flutter-plugins-dependencies\n')
+    await run('fvm', ['flutter', 'pub', 'get', '--no-example'], { cwd: repo })
+    const lock = fs.readFileSync(path.join(repo, 'pubspec.lock'), 'utf8')
+    await git(repo, 'init', '--quiet')
+    await git(repo, 'add', '-A')
+    await git(repo, 'commit', '--quiet', '-m', 'base')
+
+    const result = applyFlutter({ from: FLUTTER_VERSION, to: FLUTTER_UPDATE, releases: [], pubspec, lock, fvmrc, vscodeSettings: settings })
+    const generator = new Generator({
+      baseDir: repo,
+      commands: [],
+      flutter: true,
+      fvm: true,
+      hostedUrl: 'http://127.0.0.1:1',
+      upstreamUrl: 'https://pub.dev',
+      pubCache: pubCacheDir(),
+    })
+    const g = await generator.updateFlutter(result)
+    expect(g.failure).toBeUndefined()
+    // The lower bound: the upper bound of the merged constraint is not checked.
+    expect(g.lock).toMatch(new RegExp(`^  flutter: ">=${FLUTTER_UPDATE.replaceAll('.', '\\.')}[ "]`, 'm'))
+    expect(g.lock).toContain('url: "https://pub.dev"')
+    const entry = (file: string) => g.entries.find((e) => e.path === file)
+    expect(entry('.fvmrc')).toMatchObject({ content: `{\n  "flutter": "${FLUTTER_UPDATE}"\n}\n` })
+    // fvm install did not rewrite the project's files.
+    expect(entry('.vscode/settings.json')).toMatchObject({
+      content: `{\n  // keep this comment\n  "dart.flutterSdkPath": ".fvm/versions/${FLUTTER_UPDATE}"\n}\n`,
+    })
+    expect(g.entries.some((e) => e.path.startsWith('.fvm/'))).toBe(false)
+
+    const dir = fs.mkdtempSync(path.join(tmp, 'sdk-'))
+    fs.writeFileSync(path.join(dir, '.fvmrc'), result.flutter!.files['.fvmrc']!)
+    const sdk = await findSdk({ flutter: true, fvm: true, cwd: dir })
+    expect(sdk.flutter).toBe(true)
+    expect(path.basename(sdk.root)).toBe(FLUTTER_UPDATE)
+  })
+})

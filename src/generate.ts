@@ -10,7 +10,8 @@ import * as core from '@actions/core'
 import * as exec from '@actions/exec'
 import type { UnitResult } from './applier.ts'
 import type { PostUpdate } from './config.ts'
-import { Pub } from './pub.ts'
+import { Pub, PubError } from './pub.ts'
+import type { FlutterFailure } from './render.ts'
 
 /** Where the generation directories are made. */
 const TMP = '/tmp'
@@ -332,35 +333,130 @@ export interface GeneratorOptions {
   fvm: boolean
   /** URL of the registry proxy, written to the lockfile so that `pub get --offline` uses the cached packages. */
   hostedUrl: string
-  /** From buildImage. */
-  image: string
-  sdk: Sdk
+  /** Where the proxy fetches from (pub.dev): pub get of a Flutter update goes there directly. */
+  upstreamUrl: string
+  /** From buildImage, when there are commands. */
+  image?: string
+  /** The SDK of the base, when there are commands. */
+  sdk?: Sdk
   pubCache: string
+}
+
+/** The Flutter update of a pull request, ready to commit. */
+export interface FlutterGenerated {
+  /** The lockfile from pub get, or the base lockfile when it failed. */
+  lock: string
+  /** The changed files besides pubspec.yaml and pubspec.lock, .fvmrc included. */
+  entries: TreeEntry[]
+  /** The number of files that the post_update commands changed. */
+  generated: number
+  /** What failed: the update is committed anyway, with the files from before that step. */
+  failure?: { stage: FlutterFailure; log: string; key: string }
+}
+
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+/** The entries of `after` that differ from `before`, and those of `before` that are gone. */
+export function countChanged(before: TreeEntry[], after: TreeEntry[]): number {
+  const map = (entries: TreeEntry[]) => new Map(entries.map((e) => [e.path, JSON.stringify(e)]))
+  const b = map(before)
+  const a = map(after)
+  return [...a].filter(([p, e]) => b.get(p) !== e).length + [...b.keys()].filter((p) => !a.has(p)).length
 }
 
 export class Generator {
   constructor(private readonly options: GeneratorOptions) {}
 
+  /** The tracked files of the base, without .git: git would run the hooks and the config that the commands wrote. */
+  private async checkout(dir: string) {
+    const { baseDir } = this.options
+    await run('git', ['--git-dir', path.join(baseDir, '.git'), '--work-tree', baseDir, 'checkout-index', '--all', `--prefix=${dir}/`])
+  }
+
+  private async changes(dir: string): Promise<TreeEntry[]> {
+    return treeEntries(dir, await changedFiles(this.options.baseDir, dir))
+  }
+
   /** Runs the commands on the result of the update, and returns the files that they changed. */
   async generate(result: UnitResult): Promise<TreeEntry[]> {
-    const { baseDir } = this.options
+    const { sdk } = this.options
+    if (!sdk) throw new Error('post_update is not set up')
     const dir = await fsp.mkdtemp(path.join(TMP, 'pubreform-gen-'))
     try {
-      // The tracked files of the base, without .git: git would run the hooks and the config that the commands wrote.
-      const gitDir = path.join(baseDir, '.git')
-      await run('git', ['--git-dir', gitDir, '--work-tree', baseDir, 'checkout-index', '--all', `--prefix=${dir}/`])
+      await this.checkout(dir)
       // As the runner's user, outside the container, through the stopped proxy's URL: every package is in the cache.
       const pub = new Pub({ dir, flutter: this.options.flutter, fvm: this.options.fvm, hostedUrl: this.options.hostedUrl })
       await pub.run(['get', '--offline'], result.files)
-      for (const command of this.options.commands) await this.runCommand(command, dir)
-      return treeEntries(dir, await changedFiles(baseDir, dir))
+      for (const command of this.options.commands) await this.runCommand(command, dir, sdk)
+      return await this.changes(dir)
     } finally {
       await fsp.rm(dir, { recursive: true, force: true })
     }
   }
 
-  private async runCommand(command: PostUpdate, dir: string) {
-    const { image, sdk, pubCache } = this.options
+  /**
+   * Installs the new Flutter version, runs pub get with it (from pub.dev directly, not through the proxy), and then
+   * the commands with its SDK. A failure of pub get or the commands is returned, with the files from before that step.
+   */
+  async updateFlutter(result: UnitResult): Promise<FlutterGenerated> {
+    const update = result.flutter
+    if (!update) throw new Error('not a Flutter update')
+    const { commands } = this.options
+    const dir = await fsp.mkdtemp(path.join(TMP, 'pubreform-gen-'))
+    // fvm install runs outside the project: it is not known to leave the project's files alone.
+    const outside = await fsp.mkdtemp(path.join(os.tmpdir(), 'pubreform-fvm-'))
+    try {
+      await this.checkout(dir)
+      for (const [file, content] of Object.entries(update.files)) {
+        await fsp.mkdir(path.dirname(path.join(dir, file)), { recursive: true })
+        await fsp.writeFile(path.join(dir, file), content)
+      }
+      await fsp.writeFile(path.join(dir, 'pubspec.yaml'), result.files.pubspec)
+      const rewritten = await this.changes(dir)
+
+      // With commands, which have their own groups, the job log groups this too; otherwise it is in "Pull requests".
+      const inGroup = <T>(f: () => Promise<T>) => (commands.length > 0 ? core.group(`Flutter ${update.to}`, f) : f())
+      const resolved = await inGroup(async (): Promise<{ lock: string } | { failure: NonNullable<FlutterGenerated['failure']> }> => {
+        const args = ['install', update.to, '--skip-pub-get']
+        const install = await exec.getExecOutput('fvm', args, { cwd: outside, ignoreReturnCode: true })
+        if (install.exitCode !== 0) {
+          const output = `${install.stdout}${install.stderr}`.trimEnd().split('\n').slice(-OUTPUT_TAIL_LINES).join('\n')
+          // The output has timings, which change on every run.
+          const log = `fvm ${args.join(' ')} failed with exit code ${install.exitCode}\n${output}`
+          return { failure: { stage: 'pub get', log, key: `fvm install\0${update.to}` } }
+        }
+        const pub = new Pub({ dir, flutter: update.tool === 'flutter', fvm: true, hostedUrl: this.options.upstreamUrl })
+        try {
+          return { lock: (await pub.run(['get'], result.files)).lock }
+        } catch (e) {
+          if (!(e instanceof PubError)) throw e
+          return { failure: { stage: 'pub get', log: e.message, key: e.message } }
+        }
+      })
+      if ('failure' in resolved) return { lock: result.files.lock, entries: rewritten, generated: 0, failure: resolved.failure }
+      const { lock } = resolved
+      const resolvedEntries = await this.changes(dir)
+      if (commands.length === 0) return { lock, entries: resolvedEntries, generated: 0 }
+
+      try {
+        // The SDK of the new version: .fvmrc in the directory names it.
+        const sdk = await findSdk({ flutter: true, fvm: true, cwd: dir })
+        for (const command of commands) await this.runCommand(command, dir, sdk)
+      } catch (e) {
+        const key = e instanceof PostUpdateError ? e.key : errorText(e)
+        return { lock, entries: resolvedEntries, generated: 0, failure: { stage: 'post_update', log: errorText(e), key } }
+      }
+      const generated = await this.changes(dir)
+      return { lock, entries: generated, generated: countChanged(resolvedEntries, generated) }
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true })
+      await fsp.rm(outside, { recursive: true, force: true })
+    }
+  }
+
+  private async runCommand(command: PostUpdate, dir: string, sdk: Sdk) {
+    const { image, pubCache } = this.options
+    if (!image) throw new Error('post_update is not set up')
     const env = commandEnv(process.env, { sdk, pubCache, extra: command.env })
     const name = `pubreform-${random()}`
     const args = dockerArgs(command, {

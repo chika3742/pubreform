@@ -14,6 +14,7 @@ import {
   errorHash,
   errorHashOf,
   extractChangelog,
+  flutterFailureHeading,
   formatLog,
   isRebaseChecked,
   manualComment,
@@ -25,6 +26,7 @@ import {
   renderBody,
   renderMeta,
   title,
+  updatedPackages,
   withoutBacklinks,
 } from '../src/render.ts'
 
@@ -458,5 +460,89 @@ describe('withoutBacklinks', () => {
   test('keeps headings and HTML entities', () => {
     const text = '## 1.2.0\n\n&#123; ##4'
     expect(withoutBacklinks(text, 'https://github.com/o/r')).toBe(text)
+  })
+})
+
+describe('Flutter', () => {
+  const update = (extra: Partial<NonNullable<UnitResult['flutter']>> = {}): UnitResult => ({
+    unit: { kind: 'flutter', members: ['flutter'], targets: { flutter: '3.47.9' } },
+    files: { pubspec: '', lock: '' },
+    changes: {},
+    transitiveFixes: {},
+    advisories: [],
+    flutter: { from: '3.47.8', to: '3.47.9', fromDart: '3.13.7', toDart: '3.13.7', tool: 'flutter', files: {}, ...extra },
+  })
+  const hashes = { baseHash: 'b', configHash: 'c' }
+
+  test('names and metadata', () => {
+    const result = update()
+    expect(branchName(result.unit)).toBe('pubreform/flutter')
+    expect(title(result)).toBe('Update Flutter from 3.47.8 to 3.47.9')
+    expect(commitMessage(result)).toBe('Update Flutter from 3.47.8 to 3.47.9')
+    expect(metaOf(result, hashes, 'abc')).toEqual({
+      v: 1,
+      kind: 'flutter',
+      packages: { flutter: ['3.47.8', '3.47.9'] },
+      baseHash: 'b',
+      configHash: 'c',
+      commit: 'abc',
+    })
+  })
+
+  test('body', () => {
+    const result = update()
+    const meta = metaOf(result, hashes, 'abc')
+    const body = renderBody(result, meta, new Map(), { timeZone: 'UTC', generated: 2 })
+    expect(body).toBe(`Updates Flutter.
+
+| SDK | From | To |
+|---|---|---|
+| Flutter | 3.47.8 | 3.47.9 |
+| Dart | 3.13.7 | 3.13.7 |
+
+Files changed by the \`post_update\` commands: 2
+
+[Release notes](https://docs.flutter.dev/release/release-notes) · [Changelog](https://github.com/flutter/flutter/blob/flutter-3.47-candidate.0/CHANGELOG.md)
+
+---
+
+- [ ] Rebase this PR <!-- pubreform:rebase -->
+
+${renderMeta(meta)}
+`)
+    expect(parseMeta(body)).toEqual(meta)
+    expect(isRebaseChecked(body)).toBe(false)
+  })
+
+  test('body: unknown Dart versions and failures', () => {
+    const result = update({ fromDart: undefined, toDart: undefined, tool: 'dart' })
+    const meta = metaOf(result, hashes, 'abc')
+    const body = (opts: Partial<Parameters<typeof renderBody>[3]>) => renderBody(result, meta, new Map(), { timeZone: 'UTC', ...opts })
+    expect(body({})).toContain('| Dart |  |  |\n\n[Release notes]')
+    expect(body({ flutterFailure: 'pub get', generated: 3 })).toContain(
+      '|\n\n`dart pub get` failed with Flutter 3.47.9, so `pubspec.lock` is not updated. The log is in a comment.\n\n[Release notes]',
+    )
+    expect(body({ flutterFailure: 'pub get', postUpdate: true })).toContain(
+      '`dart pub get` failed with Flutter 3.47.9, so `pubspec.lock` is not updated and the `post_update` commands did not run. The log is in a comment.',
+    )
+    expect(body({ flutterFailure: 'post_update', postUpdate: true })).toContain(
+      'A `post_update` command failed with Flutter 3.47.9, so the files that the commands change are not included. The log is in a comment.',
+    )
+    expect(body({ flutterFailure: 'post_update' })).not.toContain('Files changed by')
+  })
+
+  test('the heading of the failure comment', () => {
+    const f = update().flutter!
+    expect(flutterFailureHeading(f, 'pub get')).toBe('pubreform updated this PR to Flutter 3.47.9, but `flutter pub get` failed.')
+    expect(flutterFailureHeading(f, 'post_update')).toBe('pubreform updated this PR to Flutter 3.47.9, but a `post_update` command failed.')
+    const comment = errorComment('log', 'abc', flutterFailureHeading(f, 'pub get'))
+    expect(comment).toStartWith('pubreform updated this PR to Flutter 3.47.9')
+    expect(errorHashOf(comment)).toBe('abc')
+    expect(errorComment('log')).toStartWith('pubreform failed to update this PR.')
+  })
+
+  test('updatedPackages', () => {
+    expect(updatedPackages(update())).toEqual({ flutter: { from: '3.47.8', to: '3.47.9' } })
+    expect(updatedPackages(single)).toEqual({ async: { from: '2.13.0', to: '2.13.1' }, http: { from: '1.5.0', to: '2.0.0' } })
   })
 })

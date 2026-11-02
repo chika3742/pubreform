@@ -361,4 +361,122 @@ describe('execute', () => {
       expect(errorHashOf(other.comments.get(3)![0]!.body)).not.toBe(errorHashOf(posted[0]!.body))
     })
   })
+
+  describe('Flutter', () => {
+    const flutter = (to: string): UnitResult => ({
+      unit: { kind: 'flutter', members: ['flutter'], targets: { flutter: to } },
+      files: { pubspec: 'pubspec', lock: 'base lock' },
+      changes: {},
+      transitiveFixes: {},
+      advisories: [],
+      flutter: { from: '3.47.8', to, tool: 'flutter', files: { '.fvmrc': '{"flutter": "x"}' } },
+    })
+    const entries: TreeEntry[] = [{ path: '.fvmrc', mode: '100644', content: '{"flutter": "3.47.9"}' }]
+
+    test('the commit has the lockfile and files of updateFlutter; generate is not called', async () => {
+      const { github, calls } = fakeGitHub()
+      let files: unknown
+      github.createCommit = async (o) => {
+        calls.push(`createCommit ${o.message}`)
+        files = { ...o.files, generated: o.generated }
+        return 'newsha'
+      }
+      let body = ''
+      github.createPr = async (o) => {
+        body = o.body
+        return 100
+      }
+      const updateFlutter = async (result: UnitResult) => {
+        calls.push(`updateFlutter ${result.flutter!.to}`)
+        return { lock: 'new lock', entries, generated: 0 }
+      }
+      const generate = async () => {
+        calls.push('generate')
+        return []
+      }
+      const outcomes = await execute([{ op: 'create', result: flutter('3.47.9'), branch: 'pubreform/flutter' }], {
+        ...context(github),
+        generate,
+        updateFlutter,
+      })
+      expect(calls.slice(0, 2)).toEqual(['updateFlutter 3.47.9', 'createCommit Update Flutter from 3.47.8 to 3.47.9'])
+      expect(files).toEqual({ pubspec: 'pubspec', lock: 'new lock', generated: entries })
+      expect(body).toStartWith('Updates Flutter.')
+      expect(outcomes).toEqual([{ kind: 'flutter', packages: ['flutter'], action: 'created', pr: 100 }])
+    })
+
+    test('a failed pub get still creates the pull request, with the log in a comment, once', async () => {
+      const failure = { stage: 'pub get' as const, log: 'flutter pub get failed\nsecret', key: 'k' }
+      const updateFlutter = async () => ({ lock: 'base lock', entries, generated: 0, failure })
+      const { github, calls, comments } = fakeGitHub()
+      let body = ''
+      github.createPr = async (o) => {
+        calls.push('createPr')
+        body = o.body
+        return 100
+      }
+      const outcomes = await execute([{ op: 'create', result: flutter('3.47.9'), branch: 'pubreform/flutter' }], {
+        ...context(github),
+        updateFlutter,
+      })
+      expect(calls).toEqual([
+        'createCommit Update Flutter from 3.47.8 to 3.47.9 ' + JSON.stringify(entries),
+        'createBranch pubreform/flutter newsha',
+        'createPr',
+        'ensureLabels ["dependencies"]',
+        'addLabels 100 ["dependencies"]',
+        'comments 100',
+        'comment 100 pubreform updated this PR to Flutter 3.47.9, but `flutter pub get` failed.',
+      ])
+      expect(body).toContain('`flutter pub get` failed with Flutter 3.47.9, so `pubspec.lock` is not updated. The log is in a comment.')
+      expect(comments.get(100)![0]!.body).toContain('flutter pub get failed\n***')
+      // Not an error: the job does not fail.
+      expect(outcomes).toEqual([{ kind: 'flutter', packages: ['flutter'], action: 'created', pr: 100, note: 'pub get failed' }])
+
+      // The same failure on a regeneration is not commented again.
+      const posted = comments.get(100)!
+      const again = fakeGitHub({ comments: posted, heads: { 'pubreform/flutter': 'head' } })
+      const pr = prOf(100, 'pubreform/flutter')
+      await execute([{ op: 'regenerate', pr, result: flutter('3.47.9'), contentChanged: false }], {
+        ...context(again.github),
+        updateFlutter,
+      })
+      expect(again.calls.filter((c) => c.startsWith('comment'))).toEqual(['comments 100'])
+    })
+
+    test('a content change is commented with the Flutter versions', async () => {
+      const { github, calls } = fakeGitHub({ heads: { 'pubreform/flutter': 'head' } })
+      const pr = prOf(5, 'pubreform/flutter', {
+        meta: { v: 1, kind: 'flutter', packages: { flutter: ['3.47.8', '3.47.9'] }, baseHash: 'x', configHash: 'y', commit: 'head' },
+      })
+      let comment = ''
+      github.comment = async (_n, body) => {
+        calls.push('comment')
+        comment = body
+      }
+      const updateFlutter = async () => ({ lock: 'l', entries, generated: 0 })
+      const outcomes = await execute([{ op: 'regenerate', pr, result: flutter('3.47.10'), contentChanged: true }], {
+        ...context(github),
+        updateFlutter,
+      })
+      expect(comment).toBe(
+        'The update in this PR has changed.\n\n| Package | Before | After |\n|---|---|---|\n| flutter | 3.47.8 → 3.47.9 | 3.47.8 → 3.47.10 |',
+      )
+      expect(outcomes).toEqual([{ kind: 'flutter', packages: ['flutter'], action: 'regenerated', pr: 5 }])
+    })
+
+    test('a failed updateFlutter (not pub get or the commands) is an error of the unit', async () => {
+      const { github } = fakeGitHub()
+      const updateFlutter = async () => {
+        throw new Error('git checkout-index failed')
+      }
+      const outcomes = await execute([{ op: 'create', result: flutter('3.47.9'), branch: 'pubreform/flutter' }], {
+        ...context(github),
+        updateFlutter,
+      })
+      expect(outcomes).toEqual([
+        { kind: 'flutter', packages: ['flutter'], pr: undefined, action: 'error', error: 'git checkout-index failed' },
+      ])
+    })
+  })
 })

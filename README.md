@@ -9,6 +9,7 @@ A Dependency bot made for Dart and Flutter projects.
 Dependabot and Renovate can update pub dependencies too. pubreform is made only for pub, and adds the following:
 
 - **The Flutter version you already use.** Dependencies are resolved with the Flutter SDK in `.fvmrc`, or the SDK your workflow sets up. There is no separate setting to keep in sync.
+- **Flutter updates, too.** With `.fvmrc`, a separate pull request moves Flutter to the latest stable release, together with `.vscode/settings.json`, `environment.flutter` and `pubspec.lock`. See [Flutter updates](#flutter-updates).
 - **Major updates that need each other, in one pull request.** When a major update only resolves together with major updates of other packages, pubreform proposes them together right away, instead of one at a time across several merges.
 - **Changes are reported on the pull request.** When a newer version changes what a pull request updates, the pull request is updated in place, and a comment lists what was changed.
 
@@ -103,10 +104,10 @@ The workflow decides when the action runs. This one runs it every Monday, after 
 |---|---|---|
 | `schedule.cron` | (required) | Cron expression with 5 fields for waiting period. See the Note above for more information. |
 | `schedule.timezone` | `UTC` | IANA time zone name for `schedule.cron` |
-| `min_release_age_days` | `0` | Days a version must have been out before it is used |
+| `min_release_age_days` | `0` | Days a version must have been out before it is used. Not applied to [Flutter updates](#flutter-updates) |
 | `labels` | `[]` | Labels added to the pull requests. Missing labels are created |
 | `versioning` | `increase` | `increase` also raises the lower bounds in `pubspec.yaml` for minor and patch updates. `lockfile-only` changes only `pubspec.lock` for them, except for pinned versions, which are always rewritten |
-| `ignore` | `[]` | Updates to skip. `{ name }` skips the package, `{ name, versions }` skips the versions in a constraint such as `">=3.0.0"` |
+| `ignore` | `[]` | Updates to skip. `{ name }` skips the package, `{ name, versions }` skips the versions in a constraint such as `">=3.0.0"`. The name `flutter` is for [Flutter updates](#flutter-updates) |
 | `post_update` | `[]` | Commands to run before each pull request is committed, such as code generation. See [Post-update commands](#post-update-commands) |
 | `post_update[].run` | (required) | The command, run with `sh -c` at the repository root |
 | `post_update[].network` | `false` | Whether the command can use the network |
@@ -155,6 +156,25 @@ on:
 schedule:
   cron: "0 9 * * 1"       # new releases: once a week
 ```
+
+### Flutter updates
+
+When `.fvmrc` at the repository root names a stable Flutter version (such as `"flutter": "3.47.8"`, not a channel), pubreform opens a pull request titled `Update Flutter from 3.47.8 to 3.47.9` on `pubreform/flutter`, apart from the package pull requests:
+
+- `.fvmrc`: the `flutter` version
+- `.vscode/settings.json`: the version in `dart.flutterSdkPath`, when the path has it (such as `.fvm/versions/3.47.8`)
+- `pubspec.yaml`: the lower bound of `environment.flutter`. An upper bound you wrote is kept; if it excludes the new version, the constraint is left as it is
+- `pubspec.lock`, and the files that `pub get` changes (such as the plugin registrants of macOS, Linux and Windows), from `pub get` with the new version
+- The files that the [post-update commands](#post-update-commands) change, run with the new Flutter SDK
+
+Only the values change: the formatting and the comments of these files are kept. Files that do not exist are not created.
+
+- The new version is the latest stable release. `min_release_age_days` does not apply to it, and `pub get` fetches from pub.dev directly, so the waiting period does not apply to the packages that it moves either
+- The Flutter SDK is installed with fvm, and `pub get` and the post-update commands run, only when the pull request is created or rebuilt. This downloads the SDK each time
+- If `pub get` or a post-update command fails, the pull request is still created or updated, without what that step would change, and the log is posted to it. Fix it on the branch, or check "Rebase this PR" to try again. The job does not fail for this
+- If the release list cannot be read, the Flutter pull request is left as it is, and the job fails
+- To skip Flutter updates, add `- name: flutter` to `ignore`. `versions` skips a range, such as `">=4.0.0"`
+- When the Flutter pull request is merged, the package pull requests are rebuilt with the new Flutter
 
 ### Post-update commands
 

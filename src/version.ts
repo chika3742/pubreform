@@ -73,7 +73,8 @@ interface Comparison {
 /** Intersection of comparisons. Empty means `any`. */
 export type Constraint = Comparison[]
 
-const COMPARISON = /^(\^|>=|>|<=|<)?\s*(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/
+/** One comparison at the start of a constraint: the operator (none for an exact version) and the version. */
+export const COMPARISON = /^(\^|>=|>|<=|<)?\s*(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/
 
 /**
  * Parses `any`, `^v`, `>=v`, `>v`, `<=v`, `<v`, `v`, and intersections of them.

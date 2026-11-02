@@ -8,6 +8,16 @@ import { type Fix, collectFixes, fetchAdvisories } from './advisories.ts'
 import { type UnitResult, applyUnit } from './applier.ts'
 import { type Window, computeWindow, firstSlotShowing } from './clock.ts'
 import { type Config, configHash, parseConfig } from './config.ts'
+import {
+  type FlutterRelease,
+  VSCODE_SETTINGS,
+  applyFlutter,
+  currentFlutter,
+  fetchReleases,
+  flutterTarget,
+  ignoresFlutter,
+  releasesUrl,
+} from './flutter.ts'
 import { Generator, buildImage, checkEnvironment, findSdk, removeImage } from './generate.ts'
 import { GitHub } from './github.ts'
 import { type Plan, plan } from './planner.ts'
@@ -89,8 +99,8 @@ async function writeSummary(opts: {
       ],
       ...outcomes.map((o) => [
         o.kind ?? '',
-        o.packages.map(pkgLink).join(', '),
-        actions[o.action],
+        o.kind === 'flutter' ? 'Flutter' : o.packages.map(pkgLink).join(', '),
+        o.note === undefined ? actions[o.action] : `${actions[o.action]} (${o.note})`,
         o.pr === undefined ? '' : `<a href="${opts.prUrl(o.pr)}">#${o.pr}</a>`,
       ]),
     ])
@@ -174,6 +184,9 @@ export async function run(): Promise<void> {
     lock: await readRequired(path.join(dir, 'pubspec.lock'), 'pubspec.lock'),
   }
   const fvmrc = await readOptional(path.join(dir, '.fvmrc'))
+  const vscodeSettings = await readOptional(path.join(dir, VSCODE_SETTINGS))
+  const flutterFrom = fvmrc === undefined ? undefined : currentFlutter(fvmrc)
+  if (fvmrc !== undefined && flutterFrom === undefined) core.info('.fvmrc does not name a Flutter version (x.y.z), so Flutter is not updated')
   if (hasWorkspace(files.pubspec)) throw new Error('pub workspaces are not supported')
   const postUpdate = config.post_update.length > 0
   if (postUpdate) await checkEnvironment()
@@ -181,6 +194,18 @@ export async function run(): Promise<void> {
 
   const window = computeWindow(config.schedule, config.min_release_age_days, new Date())
   core.info(`slot: ${window.slot.toISOString()}, cutoff: ${window.cutoff.toISOString()}`)
+
+  // Not a global error: the release list is not on pub.dev, and its pull request is kept as it is.
+  let releases: FlutterRelease[] | undefined
+  let flutterError: string | undefined
+  if (flutterFrom !== undefined && !ignoresFlutter(config.ignore)) {
+    try {
+      releases = await fetchReleases(releasesUrl())
+    } catch (e) {
+      flutterError = e instanceof Error ? e.message : String(e)
+      core.error(`Flutter: ${flutterError}`)
+    }
+  }
 
   const deps = directDeps(files.pubspec, files.lock)
   const proxy = new RegistryProxy({
@@ -251,29 +276,49 @@ export async function run(): Promise<void> {
     await proxy.stop()
   }
 
+  // The Flutter unit: only the files are rewritten here; pub runs when its pull request is committed.
+  if (flutterFrom !== undefined && fvmrc !== undefined && releases !== undefined) {
+    const to = flutterTarget(flutterFrom, releases, config.ignore)
+    core.info(to === undefined ? `Flutter ${flutterFrom} is up to date` : `Flutter: ${flutterFrom} → ${to}`)
+    if (to !== undefined) {
+      try {
+        results.push(
+          applyFlutter({ from: flutterFrom, to, releases, ...files, fvmrc, vscodeSettings, log: (m) => core.warning(m) }),
+        )
+      } catch (e) {
+        const unit = { kind: 'flutter' as const, members: ['flutter'], targets: { flutter: to } }
+        unitErrors.push({ unit, log: e instanceof Error ? e.message : String(e) })
+      }
+    }
+  }
+
   const openPrs = await github.openPrs(base)
   const closedPrs = await github.closedPrs(base)
-  const ops = decide(results, unitErrors, thePlan, openPrs, closedPrs, hashes)
+  // Without the release list, the Flutter pull request is kept, as for packages whose planning failed.
+  const uncertain = flutterError === undefined ? thePlan.uncertain : new Set([...thePlan.uncertain, 'flutter'])
+  const ops = decide(results, unitErrors, { uncertain }, openPrs, closedPrs, hashes)
   const flutter = isFlutter(files.pubspec)
   const fvm = fvmrc !== undefined
+  const flutterUnit = results.some((r) => r.flutter !== undefined)
   // Failing to prepare post_update is a global error: nothing is changed.
   const image = postUpdate ? await core.group('Build the image for post_update', buildImage) : undefined
   let outcomes: Outcome[]
   try {
-    const generator = image
-      ? new Generator({
-          baseDir: dir,
-          commands: config.post_update,
-          flutter,
-          fvm,
-          hostedUrl: proxy.url,
-          image,
-          sdk: await findSdk({ flutter, fvm, cwd: dir }),
-          pubCache: pubCacheDir(),
-        })
-      : undefined
+    const generator =
+      image || flutterUnit
+        ? new Generator({
+            baseDir: dir,
+            commands: config.post_update,
+            flutter,
+            fvm,
+            hostedUrl: proxy.url,
+            upstreamUrl: proxy.upstreamUrl,
+            ...(image ? { image, sdk: await findSdk({ flutter, fvm, cwd: dir }) } : {}),
+            pubCache: pubCacheDir(),
+          })
+        : undefined
     // The post_update commands have their own groups, and groups are not nested.
-    const inGroup = <T>(f: () => Promise<T>) => (generator ? f() : core.group('Pull requests', f))
+    const inGroup = <T>(f: () => Promise<T>) => (image ? f() : core.group('Pull requests', f))
     outcomes = await inGroup(() =>
       execute(ops, {
         github,
@@ -287,12 +332,14 @@ export async function run(): Promise<void> {
         log: (m) => core.error(m),
         info: (m) => core.info(m),
         timeZone: config.schedule.timezone,
-        generate: generator && ((result) => generator.generate(result)),
+        generate: image === undefined ? undefined : generator && ((result) => generator.generate(result)),
+        updateFlutter: generator && ((result) => generator.updateFlutter(result)),
       }),
     )
   } finally {
     if (image) await removeImage(image)
   }
+  if (flutterError !== undefined) outcomes.push({ kind: 'flutter', packages: ['flutter'], action: 'error', error: flutterError })
 
   await writeSummary({
     window,

@@ -1,6 +1,6 @@
 # pubreform 基本設計
 
-> ステータス: 実装済み（2026-10-18。v1 は未リリース）。セキュリティアドバイザリによる更新（§14.2）は 2026-10-20 に実装した。固定したバージョンの分類（§5.1）は 2026-10-23 に変更した。挙動を変えるときは、先にこの設計書を直す。「13. 仮決めした点」は必要に応じて更新する。実装に必要な決定は[詳細設計](detailed-design.md)に書く。
+> ステータス: 実装済み（2026-10-18。同日に v1.0.0 をリリースした）。セキュリティアドバイザリによる更新（§14.2）は 2026-10-20 に実装した。固定したバージョンの分類（§5.1）は 2026-10-23 に変更した。Flutter の更新（§14.4）は 2026-11-02 に実装した（[別の設計書](flutter-update.md)）。挙動を変えるときは、先にこの設計書を直す。「13. 仮決めした点」は必要に応じて更新する。実装に必要な決定は[詳細設計](detailed-design.md)に書く。
 
 ## 1. 概要
 
@@ -24,7 +24,7 @@ pubreform は、Dart / Flutter プロジェクトの pub 依存を更新する P
 
 - path / git / sdk 依存、pub.dev 以外のホストの依存
 - `dependency_overrides` に書かれたパッケージ
-- Dart / Flutter SDK 自体と `environment` の更新
+- Dart SDK 自体と `environment.sdk` の更新。Flutter SDK と `environment.flutter` の更新は §14.4
 - pub workspace、ルート以外のディレクトリ。ルートの pubspec に `workspace:` があれば、未対応として何も変更せずに失敗終了する（将来の対応は §14.1）
 - `pubspec.lock` をコミットしないプロジェクト（ライブラリなど）
 - プレリリース版（更新先は安定版のみ）
@@ -92,6 +92,7 @@ TypeScript の JavaScript Action（`runs.using: node24`）として実装する�
   - bot の PR をマージしただけでは、新しい PR はほぼ作られない（他の PR の再生成になる）
 - PR に入るバージョンは、PR 作成時点で必ず `min_release_age_days` 日以上経過している
 - 例外はセキュリティアドバイザリ（§14.2）。アドバイザリが公開されると、slot の間でも PR が作られたり変わったりし、アドバイザリを直す修正版は待機期間の中でも PR に入る
+- Flutter の更新（§14.4）にも待機期間は当てはめない。新しい安定版が出ると、slot の間でも Flutter の PR が作られたり変わったりする
 
 ワークフローの起動頻度は自由に決めてよい。slot の直後に PR が欲しい場合は、ワークフローの `schedule` を同じ cron とタイムゾーンにする（GitHub Actions の `schedule` は `timezone` を指定できる）。
 
@@ -184,7 +185,7 @@ R 自体がこの条件を満たす解なので、この解決は失敗しない
 
 例: `a: 1.0.0` と固定していて、1.1.0 と 2.0.0 が公開されている場合、マイナー・パッチグループで `a: 1.1.0` に、単独 PR で `a: 2.0.0` に上げる。
 
-変更されるのは `pubspec.yaml` と `pubspec.lock` だけ。PR の内容（どの直接依存を何から何へ）は、計画値ではなく適用後の lockfile の差分から求める。推移的依存の変化は、どの更新単位でも lockfile にそのまま入れ、PR の内容（本文、表、コメント）では触れない。
+適用で変わるのは `pubspec.yaml` と `pubspec.lock` だけ（PR では、更新後のコマンドで変わったファイルも加わる。§14.3）。PR の内容（どの直接依存を何から何へ）は、計画値ではなく適用後の lockfile の差分から求める。推移的依存の変化は、どの更新単位でも lockfile にそのまま入れ、PR の内容（本文、表、コメント）では触れない。
 
 ## 6. PR の種類と識別
 
@@ -223,6 +224,8 @@ Update minor and patch (2 packages)
 | `configHash` | 設定の変更を検出する |
 | `advisories` | 直すセキュリティアドバイザリの ID。直すアドバイザリだけが変わったことを検出する（§14.2） |
 | `commit` | 生成したコミットの SHA。PR の head がこれとも、再生成の直前の head（`previous`）とも違えば、人手のコミットがある（詳細 §14.3） |
+| `previous` | 再生成の直前のブランチの head。再生成がブランチの更新の前で止まったことを検出する（詳細 §14.4） |
+| `closed` | pubreform が閉じた PR に付ける。利用者が閉じた PR と区別する（§7.2） |
 
 PR の識別にはブランチ名の接頭辞、作成者、メタデータを使い、ラベルは使わない（ラベルは利用者が付け外しするため）。作成者が bot の PR だけを pubreform の PR とみなす。人が `pubreform/` で始まるブランチから作った PR を、再生成で上書きしたり、不要として閉じてブランチを消したりしないため。
 
@@ -251,7 +254,7 @@ PR の識別にはブランチ名の接頭辞、作成者、メタデータを�
 | ベースの `pubspec.yaml` / `pubspec.lock`（と `.fvmrc`）が更新された | ベースのハッシュがメタデータの `baseHash` と違う |
 | 設定が変わった | 設定のハッシュがメタデータの `configHash` と違う |
 
-PR が変更するのは pubspec の 2 ファイルだけなので、コンフリクトはほぼ `baseHash` の比較で検出できる。`mergeable_state` は念のために見る。
+更新後のコマンド（§14.3）がなければ、PR が変更するのは pubspec の 2 ファイルだけなので、コンフリクトはほぼ `baseHash` の比較で検出できる。コマンドで変わったファイル（生成コードなど）のコンフリクトは、`mergeable_state` で検出する。
 
 再生成の手順:
 
@@ -312,7 +315,7 @@ Updates the following packages.
 |---|---|
 | 既存 PR がある更新単位の処理中（適用、ブランチの更新、PR 操作） | その PR にエラーログをコメントする。ブランチは変更しない。他の更新単位の処理は続ける |
 | まだ PR がない更新単位の処理中 | ジョブのログに出す |
-| 全体（設定の誤り、pub.dev に到達できない、セキュリティアドバイザリを取得できない（§14.2）、SDK がない） | 何も変更せずに失敗終了する |
+| 全体（設定の誤り、pub.dev に到達できない、セキュリティアドバイザリを取得できない（§14.2）、SDK がない、更新後のコマンドを実行できない環境（§14.3）） | 何も変更せずに失敗終了する |
 | 更新履歴やソースリンクの取得 | エラーにしない。本文に取得できなかった旨と pub.dev へのリンクを載せる |
 
 - 同じエラーを毎回コメントしないように、エラーログのハッシュをコメント内のマーカーに入れ、その PR の直近のエラーコメントと同じハッシュなら投稿しない
@@ -346,7 +349,7 @@ ignore:
 
 設定ファイルの置き場所は `.github/pubreform.yaml`（入力 `config` で変えられる）。先頭の行で JSON スキーマ（[`pubreform.schema.json`](../pubreform.schema.json)）を指定すると、エディタで補完と検証が効く（詳細 §4.2）。
 
-`versioning` と `ignore` は要件にはない追加項目。不要なら削除する。更新後のコマンド（`post_update`）の設定は §14.3。
+`versioning` と `ignore` は要件にはない追加項目。更新後のコマンド（`post_update`）の設定は §14.3。
 
 ### 10.3 ワークフロー例
 
@@ -364,10 +367,6 @@ on:
     types: [edited]          # チェックボックスへの即時対応
   workflow_dispatch:
 
-concurrency:
-  group: pubreform
-  cancel-in-progress: false
-
 jobs:
   pubreform:
     # pull_request は bot の PR だけ。App 自身による本文の更新では起動しない
@@ -375,6 +374,10 @@ jobs:
       github.event_name != 'pull_request' ||
       (startsWith(github.head_ref, 'pubreform/') && github.event.sender.type != 'Bot')
     runs-on: ubuntu-latest
+    # ジョブに付ける。ワークフローに付けると、if でスキップされる実行も同じグループに入り、待っている実行を取り消してしまう
+    concurrency:
+      group: pubreform
+      cancel-in-progress: false
     steps:
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -392,7 +395,7 @@ jobs:
 
 - PR の作成、コミット、コメント、ラベル付けは、`token` に渡した GitHub App のインストールトークンで行う。`GITHUB_TOKEN` は使わない（`GITHUB_TOKEN` で作った PR では、`pull_request` で起動する CI が承認待ちになるため）
 - App に必要な権限（Repository permissions）: Contents（Read and write）、Pull requests（Read and write）。コメントとラベルの API は Pull requests の権限で使える
-- コミットは git の push ではなく、GitHub API（blob → tree → commit → ref の更新）で作る。App として認証し author / committer を指定しなければ、コミットは App の bot ユーザーの名義になり、GitHub の署名で Verified と表示される。変更するのは 2 ファイルだけなので、API の呼び出しは数回で済む
+- コミットは git の push ではなく、GitHub API（blob → tree → commit → ref の更新）で作る。App として認証し author / committer を指定しなければ、コミットは App の bot ユーザーの名義になり、GitHub の署名で Verified と表示される。変更するのは pubspec の 2 ファイルと、更新後のコマンドで変わったファイル（§14.3）だけなので、API の呼び出しは少なく済む
 - ref を更新する REST API には「head が想定どおりなら更新する」という条件を付けられないため、§7.3 のとおり直前に確認する
 - App による push や PR の作成では、通常どおり CI などの他のワークフローが起動する。App 自身が本文を更新したときも `pull_request: edited` で起動するので、ワークフロー側で除外する（§10.3）
 
@@ -411,6 +414,7 @@ jobs:
 | トリガーはワークフロー側で制御し、いつ起動されても同じように動作 | §1、§4.1 |
 | 定期チェックの時刻を cron とタイムゾーンで設定 | §4.1、§10.2 |
 | エラーが発生したら関連する PR にエラーログをコメント | §9 |
+| Flutter のバージョンを更新（追加の要件） | §14.4（[Flutter の更新](flutter-update.md) §12） |
 
 ## 13. 仮決めした点
 
@@ -425,9 +429,13 @@ jobs:
 - 本文とコメントは英語
 - コミットは API で作る（Verified になり、git の認証設定も要らない。代わりに、head の確認から ref の更新までの間に入った push は検出できない）（§11）
 
-## 14. 将来の拡張
+## 14. 追加の機能
+
+最初の設計（§1〜§13）の後に加えた機能と、将来の対応。
 
 ### 14.1 pub workspace
+
+> 未実装（将来の対応）。
 
 v1 はルートの 1 パッケージだけを扱う。pub workspace では、lockfile はルートに 1 つで、制約は各メンバーの `pubspec.yaml` にある。同じパッケージを複数のメンバーが別々の制約で宣言することもある。後から対応しやすいように、v1 から次の形で実装しておく。
 
@@ -634,6 +642,12 @@ Flutter のプロジェクトでも使えるが、コンテナの中で使える
 - コンテナの中で、読み取り専用の Dart SDK と pub のキャッシュで `dart run` が動き、ランナーのプロセスと環境変数が見えず、ネットワークに接続できない（詳細 §19.8）。Flutter SDK では `flutter` が動かない（上記）
 - GitHub のランナーで、`docker` が使え、ランナーのファイルから作ったイメージで動き、コンテナから認証情報とトークンが読めないことを、pubreform-e2e（詳細 §17.2、[run #6](https://github.com/chika3742/pubreform-e2e/actions/runs/39206665275)）で確かめた
 - main の生成コードがすでに古いと、作り直した差分がすべての PR に混ざる。README に、先に main で生成コードを最新にしておくよう書く
+
+### 14.4 Flutter の更新
+
+> 実装済み（2026-11-02。結合テストと GitHub E2E は未実行）。基本設計は[Flutter の更新](flutter-update.md)に、詳細設計は[Flutter の更新の詳細設計](flutter-update-detailed.md)に書く。
+
+`.fvmrc` で固定した Flutter SDK のバージョンを新しい安定版に上げる PR を、パッケージの PR とは別に作る。あわせて `.vscode/settings.json` の `dart.flutterSdkPath` と `pubspec.yaml` の `environment.flutter` を書き換え、新しい SDK で `pub get` と更新後のコマンド（§14.3）を実行して、結果を同じコミットに入れる。待機期間（§4）は当てはめず、`pub get` は中継サーバー（§4.2）を経由しない。
 
 ## 参考
 

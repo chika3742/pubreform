@@ -250,3 +250,48 @@ describe('decide: pull requests without units', () => {
     expect(decide([], [], { uncertain: new Set(['http']) }, [noMeta], [], ctx)).toEqual([{ op: 'none', pr: noMeta }])
   })
 })
+
+describe('decide: Flutter', () => {
+  const flutter = (to: string): UnitResult => ({
+    unit: { kind: 'flutter', members: ['flutter'], targets: { flutter: to } },
+    files: { pubspec: '', lock: '' },
+    changes: {},
+    transitiveFixes: {},
+    advisories: [],
+    flutter: { from: '3.47.8', to, tool: 'flutter', files: {} },
+  })
+  const flutterPr = (to: string, overrides: Parameters<typeof pr>[1] = {}) =>
+    pr(flutter(to), { meta: { packages: { flutter: ['3.47.8', to] }, ...overrides.meta }, ...overrides })
+
+  test('create on pubreform/flutter', () => {
+    expect(decide([flutter('3.47.9')], [], noUncertain, [], [], ctx)).toEqual([
+      { op: 'create', result: flutter('3.47.9'), branch: 'pubreform/flutter' },
+    ])
+  })
+  test('none when the version is the same, regenerate with a content change when it is not', () => {
+    const p = flutterPr('3.47.9')
+    expect(decide([flutter('3.47.9')], [], noUncertain, [p], [], ctx)).toEqual([{ op: 'none', pr: p, result: flutter('3.47.9') }])
+    expect(decide([flutter('3.47.10')], [], noUncertain, [p], [], ctx)).toEqual([
+      { op: 'regenerate', pr: p, result: flutter('3.47.10'), contentChanged: true },
+    ])
+  })
+  test('a person closed the same version: skip; another version: create', () => {
+    const closed = flutterPr('3.47.9')
+    expect(decide([flutter('3.47.9')], [], noUncertain, [], [closed], ctx)[0]).toMatchObject({ op: 'skip', closedPr: closed })
+    expect(decide([flutter('3.47.10')], [], noUncertain, [], [closed], ctx)[0]).toMatchObject({ op: 'create' })
+  })
+  test('closed when no longer needed, kept when the release list could not be read', () => {
+    const p = flutterPr('3.47.9')
+    expect(decide([], [], noUncertain, [p], [], ctx)).toEqual([{ op: 'close', pr: p, supersededBy: undefined }])
+    expect(decide([], [], { uncertain: new Set(['flutter']) }, [p], [], ctx)).toEqual([{ op: 'none', pr: p }])
+    // Without metadata, the branch name tells it is the Flutter pull request.
+    const noMeta = pr(flutter('3.47.9'), { meta: null })
+    expect(decide([], [], { uncertain: new Set(['flutter']) }, [noMeta], [], ctx)).toEqual([{ op: 'none', pr: noMeta }])
+  })
+  test('a failed rewrite is an error commented on the pull request', () => {
+    const p = flutterPr('3.47.9')
+    expect(decide([], [{ unit: flutter('3.47.9').unit, log: 'boom' }], noUncertain, [p], [], ctx)).toEqual([
+      { op: 'commentError', pr: p, log: 'boom' },
+    ])
+  })
+})

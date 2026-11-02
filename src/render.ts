@@ -3,11 +3,12 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parse } from 'yaml'
-import type { UnitResult } from './applier.ts'
+import type { FlutterUpdate, UnitResult } from './applier.ts'
 import type { Unit, UnitKind } from './planner.ts'
 import { compareVersions, parseVersion } from './version.ts'
 
 export const BRANCH_PREFIX = 'pubreform/'
+export const FLUTTER_BRANCH = `${BRANCH_PREFIX}flutter`
 
 export interface Meta {
   v: 1
@@ -34,6 +35,8 @@ export function branchName(unit: Unit): string {
       return `${BRANCH_PREFIX}minor-and-patch`
     case 'group':
       return `${BRANCH_PREFIX}group/${[...unit.members].sort()[0]}`
+    case 'flutter':
+      return FLUTTER_BRANCH
   }
 }
 
@@ -57,7 +60,16 @@ function rows(result: UnitResult): [string, Row][] {
   return all.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
 }
 
+/** Every package that the result updates, Flutter included: name -> from / to. */
+export function updatedPackages(result: UnitResult): Record<string, { from: string; to: string }> {
+  const all: Record<string, { from: string; to: string }> = {}
+  for (const [name, row] of rows(result)) all[name] = { from: row.from, to: row.to }
+  if (result.flutter) all.flutter = { from: result.flutter.from, to: result.flutter.to }
+  return all
+}
+
 export function title(result: UnitResult): string {
+  if (result.flutter) return `Update Flutter from ${result.flutter.from} to ${result.flutter.to}`
   const { kind, members, targets } = result.unit
   const changed = new Map(rows(result))
   const to = (name: string) => changed.get(name)?.to ?? targets[name]
@@ -78,7 +90,7 @@ function changeTable(result: UnitResult, link: boolean): string {
 }
 
 export function commitMessage(result: UnitResult): string {
-  if (result.unit.kind === 'single' || rows(result).length === 1) return title(result)
+  if (result.unit.kind === 'single' || result.flutter || rows(result).length === 1) return title(result)
   return `${title(result)}\n\n${changeTable(result, false)}\n`
 }
 
@@ -274,7 +286,7 @@ export function metaOf(
   const meta: Meta = {
     v: 1,
     kind: result.unit.kind,
-    packages: Object.fromEntries(rows(result).map(([name, c]) => [name, [c.from, c.to]])),
+    packages: Object.fromEntries(Object.entries(updatedPackages(result)).map(([name, c]) => [name, [c.from, c.to]])),
     baseHash: hashes.baseHash,
     configHash: hashes.configHash,
     commit,
@@ -320,16 +332,57 @@ function advisoryTable(result: UnitResult, timeZone: string): string {
   return parts.join('\n\n')
 }
 
-/**
- * `generated` is the number of files that the post_update commands changed.
- * `timeZone` is for the release dates of the versions that fix advisories.
- */
-export function renderBody(
-  result: UnitResult,
-  meta: Meta,
-  infos: Map<string, PackageInfo>,
-  opts: { generated?: number; timeZone: string },
-): string {
+export type FlutterFailure = 'pub get' | 'post_update'
+
+export interface BodyOptions {
+  /** The number of files that the post_update commands changed. */
+  generated?: number
+  /** For the release dates of the versions that fix advisories. */
+  timeZone: string
+  /** What failed in the Flutter update, which is committed anyway. */
+  flutterFailure?: FlutterFailure
+  /** Whether there are post_update commands. */
+  postUpdate?: boolean
+}
+
+function flutterBody(update: FlutterUpdate, meta: Meta, opts: BodyOptions): string {
+  const [major, minor] = update.to.split('.')
+  const failure =
+    opts.flutterFailure === 'pub get'
+      ? `\`${update.tool} pub get\` failed with Flutter ${update.to}, so \`pubspec.lock\` is not updated` +
+        `${opts.postUpdate ? ' and the `post_update` commands did not run' : ''}. The log is in a comment.`
+      : opts.flutterFailure === 'post_update'
+        ? `A \`post_update\` command failed with Flutter ${update.to}, so the files that the commands change are not included. The log is in a comment.`
+        : undefined
+  const generated = opts.generated ?? 0
+  return (
+    [
+      'Updates Flutter.',
+      [
+        '| SDK | From | To |',
+        '|---|---|---|',
+        `| Flutter | ${update.from} | ${update.to} |`,
+        `| Dart | ${update.fromDart ?? ''} | ${update.toDart ?? ''} |`,
+      ].join('\n'),
+      ...(failure ? [failure] : generated > 0 ? [`Files changed by the \`post_update\` commands: ${generated}`] : []),
+      // The release line's branch: the section of a version can be added there after the tag.
+      `[Release notes](https://docs.flutter.dev/release/release-notes) · [Changelog](https://github.com/flutter/flutter/blob/flutter-${major}.${minor}-candidate.0/CHANGELOG.md)`,
+      '---',
+      REBASE_LINE,
+      renderMeta(meta),
+    ].join('\n\n') + '\n'
+  )
+}
+
+/** The heading of the comment with the log of a Flutter update failure: the pull request is updated anyway. */
+export function flutterFailureHeading(update: FlutterUpdate, failure: FlutterFailure): string {
+  return failure === 'pub get'
+    ? `pubreform updated this PR to Flutter ${update.to}, but \`${update.tool} pub get\` failed.`
+    : `pubreform updated this PR to Flutter ${update.to}, but a \`post_update\` command failed.`
+}
+
+export function renderBody(result: UnitResult, meta: Meta, infos: Map<string, PackageInfo>, opts: BodyOptions): string {
+  if (result.flutter) return flutterBody(result.flutter, meta, opts)
   const changes = rows(result)
   const generated = opts.generated ?? 0
   const build = (withChangelog: boolean) => {
@@ -401,12 +454,12 @@ export function errorHashOf(comment: string): string | undefined {
 }
 
 /** `hash` defaults to the hash of the log. */
-export function errorComment(log: string, hash = errorHash(log)): string {
+export function errorComment(log: string, hash = errorHash(log), heading = 'pubreform failed to update this PR.'): string {
   // A fence longer than any backtick run in the log.
   const longest = Math.max(0, ...[...log.matchAll(/`+/g)].map((m) => m[0].length))
   const fence = '`'.repeat(Math.max(3, longest + 1))
   return [
-    'pubreform failed to update this PR.',
+    heading,
     '',
     '<details>',
     '<summary>Log</summary>',
