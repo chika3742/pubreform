@@ -25,7 +25,9 @@ ignore:
   - name: _private2
     versions: "^1.2.3-dev.1+4 <2.0.0"
   - name: any_pkg
-    versions: any`,
+    versions: any
+  - name: flutter
+    versions: ">=4.0.0"`,
     true,
   ],
   ['empty file', '', false],

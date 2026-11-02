@@ -4,7 +4,7 @@ pub の依存を更新する PR を作成・保守する GitHub Action。TypeScr
 
 ## 仕様
 
-- `docs/design.md`（基本設計）と `docs/detailed-design.md`（詳細設計）が仕様。挙動を変えるときは、先に設計書を直す
+- `docs/design.md`（基本設計）と `docs/detailed-design.md`（詳細設計）が仕様。Flutter の更新は `docs/flutter-update.md`（基本設計）と `docs/flutter-update-detailed.md`（詳細設計）。挙動を変えるときは、先に設計書を直す
 - モジュールの役割は詳細設計 §2。コードのコメントには設計書の節（`§n`）を書かない
 - pub の挙動（解決、lockfile の書き方、コマンドのフラグ）に関わる判断は、推測せずに実際の `dart pub` / `fvm flutter pub` で確かめる。設計書に「確認済み」とある点は、すべて実際に動かして確かめたもの
 - `pubreform.schema.json` と `src/config.ts` の判定は一致させる（`test/config-schema.test.ts` で確かめる）
@@ -14,8 +14,8 @@ pub の依存を更新する PR を作成・保守する GitHub Action。TypeScr
 
 - `bun install --frozen-lockfile`
 - `bun run typecheck`、`bun test`、`bun run build`
-- 結合テスト: `PUBREFORM_IT=1 bun test test/integration.test.ts`。pub.dev への接続と、PATH 上の `dart`（Dart 3 の stable）と `fvm`（Flutter 3.47.7 を入れられること）が必要
-- ローカル E2E: `bun run build && PUBREFORM_E2E=1 bun test test/e2e`。PATH 上の `dart`（Dart 3 の stable）が必要。外部には接続しない（フィクスチャー用サーバー、偽の GitHub API、bare リポジトリを使う。詳細 §17.1）。更新後のコマンドの場面（`test/e2e/post-update.test.ts`）は、`docker version` が通る環境だけで動く
+- 結合テスト: `PUBREFORM_IT=1 bun test test/integration.test.ts`。pub.dev への接続と、PATH 上の `dart`（Dart 3 の stable）と `fvm`（Flutter 3.47.7 と 3.47.8 を入れられること）が必要
+- ローカル E2E: `bun run build && PUBREFORM_E2E=1 bun test test/e2e`。PATH 上の `dart`（Dart 3 の stable）が必要。外部には接続しない（フィクスチャー用サーバー、偽の GitHub API、bare リポジトリを使う。詳細 §17.1）。更新後のコマンドの場面（`test/e2e/post-update.test.ts`）は、`docker version` が通る環境だけで動く。Flutter の更新（`test/e2e/flutter.test.ts`）は、偽の fvm と偽の Flutter SDK を使う（場面 7、8 は docker が要る）
 - GitHub E2E: `chika3742/pubreform-e2e` の E2E ワークフローを `workflow_dispatch` で実行する（入力 `ref` に pubreform のブランチ。詳細 §17.2）
 - `dist/` はコミットしない。`v*` タグを main の先頭のコミットに付けて push すると、`.github/workflows/build.yml` が CI と同じ検査を通してから生成してコミットし、タグとメジャータグを付け直す（詳細 §18）
 
@@ -30,6 +30,7 @@ pub の依存を更新する PR を作成・保守する GitHub Action。TypeScr
 
 ## 未確認のこと
 
-- README のワークフロー例（トリガーと `if` の条件）と、setup-fvm と組み合わせた Flutter プロジェクトでの実行は、実際の GitHub ではまだ確かめていない。GitHub E2E は Dart だけで、ビルドした `dist/main.js` を直接実行している（`action.yml` も確かめていない）
+- README のワークフロー例（トリガーと `if` の条件）と、setup-fvm と組み合わせた Flutter プロジェクトでの実行は、実際の GitHub ではまだ確かめていない。GitHub E2E はビルドした `dist/main.js` を直接実行している（`action.yml` も確かめていない）。setup-fvm と fvm を使う 2 段目（Flutter の更新）は用意したが、まだ実行していない
 - 更新後のコマンド（`post_update`。詳細 §19）は、GitHub E2E で Dart のプロジェクトについて確かめた。`uses:` で起動したときの `ACTIONS_RUNTIME_TOKEN` は直接は確かめていない（詳細 §21）。Pigeon と、setup-fvm を使う Flutter プロジェクトは GitHub では未確認。Flutter SDK を使うプロジェクトでは、コンテナの中で同梱の Dart だけが使え、`flutter` コマンドは使えない（詳細 §19.9）
 - セキュリティアドバイザリによる更新（基本 §14.2、詳細 §20）は、ローカル E2E と、本物の `dart pub` と pub.dev で確かめた。本物の GitHub での本文とジョブサマリーの表示は確かめていない
+- Flutter の更新（`docs/flutter-update.md`）は、単体テストと、ローカル E2E の docker を使わない場面（1〜6）で確かめた。本物の fvm での SDK の取得（`fvm install`）と `pub get`、結合テスト、GitHub E2E の 2 段目、docker を使う場面（7、8）はまだ動かしていない

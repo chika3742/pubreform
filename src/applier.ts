@@ -21,6 +21,20 @@ export interface UnitResult {
   transitiveFixes: Record<string, { from: string; to: string }>
   /** Advisories that this result fixes, by package name, then id. */
   advisories: FixedAdvisory[]
+  /** The Flutter update of a flutter unit. */
+  flutter?: FlutterUpdate
+}
+
+export interface FlutterUpdate {
+  from: string
+  to: string
+  /** The bundled Dart versions, from the release list. */
+  fromDart?: string
+  toDart?: string
+  /** The pub command of the project, for the body. */
+  tool: 'flutter' | 'dart'
+  /** Rewritten files by path: .fvmrc, and .vscode/settings.json when it changed. pubspec.yaml is in `files`. */
+  files: Record<string, string>
 }
 
 export interface FixedAdvisory {

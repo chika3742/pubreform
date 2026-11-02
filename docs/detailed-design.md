@@ -39,7 +39,8 @@ src/
   render.ts      タイトル、本文、コミットメッセージ、コメント、メタデータ（§12）
   github.ts      GitHub API の操作（§13）
   reconciler.ts  計画と既存 PR の突き合わせと操作の決定（§14）
-  generate.ts    更新後のコマンドの実行と、変わったファイルの取り出し（§19）
+  generate.ts    更新後のコマンドの実行と、変わったファイルの取り出し（§19）。Flutter の更新の生成
+  flutter.ts     Flutter の更新: リリース一覧、更新先、ファイルの書き換え（[Flutter の更新の詳細設計](flutter-update-detailed.md)）
 test/            bun test（§17）
 pubreform.schema.json  設定ファイルの JSON スキーマ（§4.2）
 dist/            ビルド結果（リリース時に生成してコミットする。§18）

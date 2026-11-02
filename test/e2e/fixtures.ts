@@ -147,21 +147,38 @@ export function archiveOf(name: string, versions: FixtureVersion[], version: str
 
 // ---- Server ----
 
+/** A Flutter release in the release list (releases_<os>.json). */
+export interface FlutterFixtureRelease {
+  version: string
+  channel?: string
+  dart?: string
+}
+
+const FLUTTER_RELEASES_PATH = '/flutter/releases.json'
+
 export interface FixtureServer {
   url: string
+  /** The Flutter release list, for PUBREFORM_FLUTTER_RELEASES. */
+  flutterReleasesUrl: string
   /** Adds a version while the server runs. */
   addVersion(name: string, version: FixtureVersion): void
   /** Adds a security advisory (OSV) while the server runs. */
   addAdvisory(name: string, advisory: object): void
+  /** Adds a Flutter release while the server runs. */
+  addFlutterRelease(release: FlutterFixtureRelease): void
+  /** Makes the Flutter release list answer with this status (500, ...), or normally again with undefined. */
+  failFlutterReleases(status: number | undefined): void
   close(): Promise<void>
 }
 
 export async function startFixtureServer(
-  options: { port?: number; fixtures?: Fixtures; advisories?: Advisories; now?: Date } = {},
+  options: { port?: number; fixtures?: Fixtures; advisories?: Advisories; now?: Date; flutterReleases?: FlutterFixtureRelease[] } = {},
 ): Promise<FixtureServer> {
   const fixtures = options.fixtures ?? defaultFixtures()
   const advisories: Advisories = { ...options.advisories }
   const now = options.now ?? new Date()
+  const flutterReleases = [...(options.flutterReleases ?? [])]
+  let flutterStatus: number | undefined
   let url = ''
 
   const listing = (name: string) => {
@@ -185,7 +202,22 @@ export async function startFixtureServer(
   const server = http.createServer((req, res) => {
     const path = new URL(req.url ?? '/', 'http://localhost').pathname
     let m: RegExpExecArray | null
-    if ((m = /^\/api\/packages\/([a-z0-9_]+)$/.exec(path)) && fixtures[m[1]!]) {
+    if (path === FLUTTER_RELEASES_PATH) {
+      if (flutterStatus !== undefined) {
+        res.writeHead(flutterStatus).end()
+        return
+      }
+      // Newest first, as in the real list.
+      const releases = [...flutterReleases].reverse().map((r) => ({
+        hash: 'fixture',
+        channel: r.channel ?? 'stable',
+        version: r.version,
+        ...(r.dart ? { dart_sdk_version: r.dart } : {}),
+        release_date: now.toISOString(),
+      }))
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ base_url: `${url}/flutter`, current_release: {}, releases }))
+    } else if ((m = /^\/api\/packages\/([a-z0-9_]+)$/.exec(path)) && fixtures[m[1]!]) {
       res.writeHead(200, { 'content-type': 'application/vnd.pub.v2+json' })
       res.end(JSON.stringify(listing(m[1]!)))
     } else if ((m = /^\/api\/packages\/([a-z0-9_]+)\/advisories$/.exec(path)) && fixtures[m[1]!]) {
@@ -212,6 +244,13 @@ export async function startFixtureServer(
 
   return {
     url,
+    flutterReleasesUrl: `${url}${FLUTTER_RELEASES_PATH}`,
+    addFlutterRelease(release) {
+      flutterReleases.push(release)
+    },
+    failFlutterReleases(status) {
+      flutterStatus = status
+    },
     addVersion(name, version) {
       fixtures[name]!.push(version)
     },

@@ -1,5 +1,7 @@
 // GitHub E2E: runs pubreform twice against the real GitHub API and checks
 // what only the real GitHub and its runners show, including the post_update commands (POST_UPDATE_CONFIG).
+// Then, as a second stage, runs it on a project with .fvmrc, with the real fvm, Flutter SDKs and release list:
+// the Flutter pull request, and the package one resolved through fvm.
 // Run by the workflow of chika3742/pubreform-e2e, in its checkout,
 // after pubreform is built, with GH_TOKEN (the App token) and the environment of the runner:
 //   bun pubreform-src/test/e2e/github-e2e.ts
@@ -8,14 +10,28 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { parseConfig } from '../../src/config.ts'
-import { BRANCH_PREFIX, isRebaseChecked, markClosed, parseMeta } from '../../src/render.ts'
+import { fetchReleases, flutterTarget, releasesUrl } from '../../src/flutter.ts'
+import { BRANCH_PREFIX, FLUTTER_BRANCH, isRebaseChecked, markClosed, parseMeta } from '../../src/render.ts'
 import { startFixtureServer } from './fixtures.ts'
-import { POST_UPDATE_CONFIG, PROBE_RESULT, PROBE_SECRET, makeProject, writeProject } from './make-project.ts'
+import {
+  FLUTTER_BASE,
+  POST_UPDATE_CONFIG,
+  PROBE_RESULT,
+  PROBE_SECRET,
+  type ProjectFiles,
+  fvmrcOf,
+  makeProject,
+  vscodeSettingsOf,
+  writeProject,
+} from './make-project.ts'
 
 const API = process.env.GITHUB_API_URL || 'https://api.github.com'
 const TOKEN = process.env.GH_TOKEN
 const REPO = process.env.GITHUB_REPOSITORY
 const SINGLE = `${BRANCH_PREFIX}single/fx_major`
+const MINOR = `${BRANCH_PREFIX}minor-and-patch`
+/** Files of the Flutter project only, removed when the 1st stage project is pushed again. */
+const FLUTTER_FILES = ['.fvmrc', '.vscode/settings.json']
 const LABELS = parseConfig(POST_UPDATE_CONFIG).labels
 
 const MAIN = path.join(import.meta.dir, '../../dist/main.js')
@@ -91,6 +107,11 @@ async function checkFirst() {
     ['pubreform/group/fx_b', 'pubreform/minor-and-patch', SINGLE].every((b) => pulls.some((p) => p.head.ref === b)),
     `pull requests are created: ${pulls.map((p) => p.head.ref).join(', ')}`,
   )
+  await checkPulls(pulls)
+}
+
+/** What only GitHub shows, and the files of the post_update commands, on each pull request. */
+async function checkPulls(pulls: Pull[]) {
   for (const label of LABELS) {
     check((await api('GET', `/labels/${encodeURIComponent(label)}`, undefined, true)) !== undefined, `label "${label}" exists`)
   }
@@ -128,10 +149,12 @@ async function checkGenerated(pr: Pull) {
   check((await readFile(sha, 'network-on.txt')) === 'ok\n', `#${pr.number}: a command with network: true reaches GitHub`)
   const versions = (await readFile(sha, 'lib/versions.g.dart')) ?? ''
   const meta = parseMeta(pr.body ?? '')!
+  // The versions of the packages; Flutter is not in the lockfile's packages.
   check(
-    Object.entries(meta.packages).every(([name, [, to]]) => versions.includes(`'${name}': '${to}',`)),
+    Object.entries(meta.packages).every(([name, [, to]]) => name === 'flutter' || versions.includes(`'${name}': '${to}',`)),
     `#${pr.number}: lib/versions.g.dart has the versions of the pull request`,
   )
+  check(versions.includes("'fx_patch': "), `#${pr.number}: lib/versions.g.dart has the locked packages`)
   const { tree } = (await api<{ tree: { path: string; mode: string }[] }>('GET', `/git/trees/${sha}?recursive=1`))!
   const mode = (file: string) => tree.find((e) => e.path === file)?.mode
   check(mode('run.sh') === '100755', `#${pr.number}: run.sh is executable`)
@@ -139,6 +162,7 @@ async function checkGenerated(pr: Pull) {
   check(mode('blob.bin') === '100644', `#${pr.number}: blob.bin (binary) is committed`)
   check(mode('obsolete.g.dart') === undefined, `#${pr.number}: obsolete.g.dart is deleted`)
   check(!tree.some((e) => e.path.startsWith('build/')), `#${pr.number}: ignored files are not committed`)
+  check(!tree.some((e) => e.path.startsWith('.fvm/')), `#${pr.number}: nothing of .fvm/ is committed`)
   check((pr.body ?? '').includes('Files changed by the `post_update` commands: 7'), `#${pr.number}: the body counts the files`)
 }
 
@@ -175,15 +199,41 @@ async function checkSecond(previous: string) {
   check(meta!.previous === previous, `#${pr.number}: metadata records the previous head`)
 }
 
+/** The 2nd stage: the Flutter pull request, and the package one resolved through fvm. */
+async function checkFlutter() {
+  const releases = await fetchReleases(releasesUrl())
+  const to = flutterTarget(FLUTTER_BASE, releases, [])
+  if (to === undefined) throw new Error(`no stable release newer than ${FLUTTER_BASE}`)
+  const pulls = await openPulls()
+  check(
+    pulls.map((p) => p.head.ref).sort().join(',') === [FLUTTER_BRANCH, MINOR].sort().join(','),
+    `pull requests are created: ${pulls.map((p) => p.head.ref).join(', ')}`,
+  )
+  const pr = pulls.find((p) => p.head.ref === FLUTTER_BRANCH)!
+  check(pr.title === `Update Flutter from ${FLUTTER_BASE} to ${to}`, `#${pr.number}: the title is "${pr.title}"`)
+  const sha = pr.head.sha
+  check((await readFile(sha, '.fvmrc')) === fvmrcOf(to), `#${pr.number}: .fvmrc has ${to}`)
+  check(
+    (await readFile(sha, '.vscode/settings.json')) === vscodeSettingsOf(to),
+    `#${pr.number}: .vscode/settings.json has ${to}, with its comment`,
+  )
+  check(((await readFile(sha, 'pubspec.yaml')) ?? '').includes(`  flutter: ^${to}\n`), `#${pr.number}: environment.flutter is ^${to}`)
+  const lock = (await readFile(sha, 'pubspec.lock')) ?? ''
+  console.log(`#${pr.number}: pubspec.lock\n${lock}`)
+  check(lock.includes(`flutter: ">=${to}"`), `#${pr.number}: pubspec.lock is resolved with Flutter ${to}`)
+  check(!(pr.body ?? '').includes('failed with Flutter'), `#${pr.number}: pub get and the commands succeeded`)
+  await checkPulls(pulls)
+}
+
 function git(...args: string[]): number {
   const { status } = spawnSync('git', args, { stdio: 'inherit' })
   return status ?? -1
 }
 
-/** Writes the test project, and pushes it to main when it changed. */
-async function updateProject() {
-  const project = await makeProject({ postUpdate: true })
+/** Writes the test project, removes `remove`, and pushes them to main when they changed. */
+async function updateProject(project: ProjectFiles, remove: string[] = []) {
   writeProject('.', project)
+  if (remove.length > 0 && git('rm', '--quiet', '--ignore-unmatch', '--', ...remove) !== 0) throw new Error('git rm failed')
   if (git('add', ...Object.keys(project)) !== 0) throw new Error('git add failed')
   if (git('diff', '--cached', '--quiet') === 0) {
     console.log('The test project is up to date.')
@@ -211,6 +261,14 @@ async function runPubreform(upstream: string) {
   if (status !== 0) throw new Error(`pubreform exited with ${status}`)
 }
 
+/** The 1st stage checks the path without fvm: dart on PATH must be setup-dart's, not one of fvm's SDKs. */
+async function checkEnvironment() {
+  const which = spawnSync('sh', ['-c', 'command -v dart'], { encoding: 'utf8' })
+  const dart = fs.realpathSync(which.stdout.trim())
+  check(!dart.split(path.sep).includes('fvm'), `dart on PATH is not from fvm: ${dart}`)
+  check(spawnSync('fvm', ['--version']).status === 0, 'fvm is on PATH')
+}
+
 if (!TOKEN || !REPO) throw new Error('GH_TOKEN and GITHUB_REPOSITORY are required')
 // The probe looks for ACTIONS_RUNTIME_TOKEN, which a run step may not have at all.
 console.log(`ACTIONS_RUNTIME_TOKEN is ${process.env.ACTIONS_RUNTIME_TOKEN ? 'set' : 'not set'} in this step`)
@@ -221,13 +279,21 @@ const registry = await startFixtureServer()
 try {
   let previous = ''
   const steps: [string, () => Promise<unknown>][] = [
-    ['Update the test project', updateProject],
+    ['Check the environment', checkEnvironment],
+    ['Update the test project', async () => updateProject(await makeProject({ postUpdate: true }), FLUTTER_FILES)],
     ['Clean up the previous run', cleanup],
     ['Run pubreform (1st)', () => runPubreform(registry.url)],
     ['Check the 1st run', checkFirst],
     ['Check the box', async () => (previous = await checkBox())],
     ['Run pubreform (2nd)', () => runPubreform(registry.url)],
     ['Check the 2nd run', () => checkSecond(previous)],
+    [
+      'Update the test project for Flutter',
+      async () => updateProject(await makeProject({ postUpdate: true, flutter: FLUTTER_BASE, dependencies: ['fx_patch'] })),
+    ],
+    ['Clean up the 1st stage', cleanup],
+    ['Run pubreform (3rd)', () => runPubreform(registry.url)],
+    ['Check the 3rd run', checkFlutter],
   ]
   for (const [name, run] of steps) {
     step = name

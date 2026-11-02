@@ -1,11 +1,12 @@
 // Matching planned units with existing pull requests and deciding operations.
 import type { Fix } from './advisories.ts'
 import type { UnitResult } from './applier.ts'
-import { PostUpdateError, type TreeEntry } from './generate.ts'
+import { type FlutterGenerated, PostUpdateError, type TreeEntry } from './generate.ts'
 import type { Plan, Unit } from './planner.ts'
 import type { GitHub } from './github.ts'
 import {
   BRANCH_PREFIX,
+  FLUTTER_BRANCH,
   type Meta,
   type PackageInfo,
   advisoryIds,
@@ -16,6 +17,7 @@ import {
   errorComment,
   errorHash,
   errorHashOf,
+  flutterFailureHeading,
   isRebaseChecked,
   manualComment,
   manualMarker,
@@ -23,6 +25,7 @@ import {
   metaOf,
   renderBody,
   title,
+  updatedPackages,
 } from './render.ts'
 
 export interface PrState {
@@ -69,12 +72,13 @@ const GROUP_PREFIX = `${BRANCH_PREFIX}group/`
 /** Package names in the pull request, from the metadata or the branch name. */
 function prPackages(pr: PrState): string[] {
   if (pr.meta) return Object.keys(pr.meta.packages)
+  if (pr.branch === FLUTTER_BRANCH) return ['flutter']
   const m = /^pubreform\/(?:single|group)\/(.+)$/.exec(pr.branch)
   return m ? [m[1]!] : []
 }
 
 function targets(result: UnitResult): Map<string, string> {
-  return new Map([...Object.entries(result.changes), ...Object.entries(result.transitiveFixes)].map(([name, c]) => [name, c.to]))
+  return new Map(Object.entries(updatedPackages(result)).map(([name, c]) => [name, c.to]))
 }
 
 function sameSet(a: string[], b: string[]): boolean {
@@ -214,6 +218,8 @@ export interface Outcome {
   action: 'created' | 'regenerated' | 'refreshed' | 'unchanged' | 'closed' | 'skipped' | 'notified' | 'error'
   pr?: number
   error?: string
+  /** What failed in a Flutter update that was committed anyway, such as "pub get failed". Not an error. */
+  note?: string
   /** Packages whose security advisories the update of the operation fixes. */
   fixes?: string[]
 }
@@ -247,8 +253,10 @@ export interface ExecuteContext {
   info: (message: string) => void
   /** The time zone of the config, for dates in bodies. */
   timeZone: string
-  /** Runs the post_update commands on a unit to be committed, and returns the files that they changed. */
+  /** Runs the post_update commands on a unit to be committed, and returns the files that they changed. Set when there are commands. */
   generate?: (result: UnitResult) => Promise<TreeEntry[]>
+  /** Runs pub get with the new Flutter version (and the post_update commands) on a flutter unit to be committed. */
+  updateFlutter?: (result: UnitResult) => Promise<FlutterGenerated>
 }
 
 function errorText(e: unknown): string {
@@ -256,7 +264,7 @@ function errorText(e: unknown): string {
 }
 
 function unitPackages(result: UnitResult): string[] {
-  return [...Object.keys(result.changes), ...Object.keys(result.transitiveFixes)].sort()
+  return Object.keys(updatedPackages(result)).sort()
 }
 
 /** `fixes` of an outcome: packages whose advisories the result fixes, when there are any. */
@@ -286,13 +294,13 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
         })
 
   /** `key` identifies the error for the duplicate check instead of the log. */
-  const commentError = async (pr: number, rawLog: string, key?: string) => {
+  const commentError = async (pr: number, rawLog: string, key?: string, heading?: string) => {
     const log = ctx.formatLog(rawLog)
     const hash = errorHash(key ?? log)
     const comments = await github.comments(pr)
     const last = comments.filter((c) => c.isBot && errorHashOf(c.body) !== undefined).pop()
     if (last && errorHashOf(last.body) === hash) return
-    await github.comment(pr, errorComment(log, hash))
+    await github.comment(pr, errorComment(log, hash, heading))
   }
 
   /** Records a failure, and comments it on the pull request if there is one. */
@@ -310,17 +318,29 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
     outcomes.push({ ...outcome, action: 'error', error: error + comment })
   }
 
+  type Committed = { sha: string; generated: number; failure?: FlutterGenerated['failure'] }
+
   /** Commits the unit, with the files that the post_update commands changed. */
-  const commit = async (result: UnitResult) => {
+  const commit = async (result: UnitResult): Promise<Committed> => {
+    const message = commitMessage(result)
+    const commitOf = (files: UnitResult['files'], generated: TreeEntry[]) =>
+      github.createCommit({ baseSha: ctx.baseSha, baseTree: ctx.baseTree, files, generated, message })
+    if (result.flutter) {
+      if (!ctx.updateFlutter) throw new Error('cannot update Flutter: there is no generator')
+      const g = await ctx.updateFlutter(result)
+      const sha = await commitOf({ pubspec: result.files.pubspec, lock: g.lock }, g.entries)
+      return { sha, generated: g.generated, ...(g.failure ? { failure: g.failure } : {}) }
+    }
     const generated = ctx.generate ? await ctx.generate(result) : []
-    const sha = await github.createCommit({
-      baseSha: ctx.baseSha,
-      baseTree: ctx.baseTree,
-      files: result.files,
-      generated,
-      message: commitMessage(result),
-    })
-    return { sha, generated: generated.length }
+    return { sha: await commitOf(result.files, generated), generated: generated.length }
+  }
+
+  /** The failure of a Flutter update, committed anyway: the log goes to a comment, and the outcome gets a note. */
+  const reportFlutter = async (pr: number, result: UnitResult, failure: Committed['failure']) => {
+    if (!failure || !result.flutter) return {}
+    ctx.info(`#${pr}: ${failure.stage} failed with Flutter ${result.flutter.to}; comment the log`)
+    await commentError(pr, failure.log, failure.key, flutterFailureHeading(result.flutter, failure.stage))
+    return { note: `${failure.stage} failed` }
   }
 
   const infos = (result: UnitResult) =>
@@ -330,8 +350,14 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
         ctx.packageInfo(name, c.to),
       ]),
     )
-  const body = (result: UnitResult, sha: string, generated: number, previous?: string) =>
-    renderBody(result, metaOf(result, ctx.hashes, sha, previous), infos(result), { generated, timeZone: ctx.timeZone })
+  const body = (result: UnitResult, c: Committed, previous?: string) =>
+    renderBody(result, metaOf(result, ctx.hashes, c.sha, previous), infos(result), {
+      generated: c.generated,
+      timeZone: ctx.timeZone,
+      // generate is set when there are post_update commands.
+      postUpdate: ctx.generate !== undefined,
+      ...(c.failure ? { flutterFailure: c.failure.stage } : {}),
+    })
 
   // close runs last, so that the pull request that supersedes it has a number.
   const ordered = [...ops.filter((o) => o.op !== 'close'), ...ops.filter((o) => o.op === 'close')]
@@ -342,18 +368,19 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
         let pr: number | undefined
         ctx.info(`Create a pull request (${base.kind}: ${base.packages.join(', ')}) on ${op.branch}`)
         try {
-          const { sha, generated } = await commit(op.result)
-          await github.createBranch(op.branch, sha)
+          const committed = await commit(op.result)
+          await github.createBranch(op.branch, committed.sha)
           pr = await github.createPr({
             base: ctx.base,
             branch: op.branch,
             title: title(op.result),
-            body: body(op.result, sha, generated),
+            body: body(op.result, committed),
           })
           numbers.set(op.branch, pr)
           ctx.info(`Created #${pr}`)
           await github.addLabels(pr, await labels())
-          outcomes.push({ ...base, action: 'created', pr })
+          const note = await reportFlutter(pr, op.result, committed.failure)
+          outcomes.push({ ...base, action: 'created', pr, ...note })
         } catch (e) {
           await fail({ ...base, pr }, e)
         }
@@ -365,19 +392,17 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
         numbers.set(pr.branch, pr.number)
         ctx.info(`Regenerate #${pr.number} (${base.packages.join(', ')})`)
         try {
-          const { sha, generated } = await commit(result)
+          const committed = await commit(result)
           // The body goes first, so that the next run can tell a partial failure from manual commits.
-          await github.updatePr(pr.number, { title: title(result), body: body(result, sha, generated, pr.headSha) })
-          await github.updateBranch(pr.branch, pr.headSha, sha)
+          await github.updatePr(pr.number, { title: title(result), body: body(result, committed, pr.headSha) })
+          await github.updateBranch(pr.branch, pr.headSha, committed.sha)
           await github.addLabels(pr.number, await labels())
           if (op.contentChanged && pr.meta) {
             ctx.info(`Comment the content change on #${pr.number}`)
-            await github.comment(
-              pr.number,
-              contentChangedComment(pr.meta.packages, { ...result.changes, ...result.transitiveFixes }),
-            )
+            await github.comment(pr.number, contentChangedComment(pr.meta.packages, updatedPackages(result)))
           }
-          outcomes.push({ ...base, action: 'regenerated' })
+          const note = await reportFlutter(pr.number, result, committed.failure)
+          outcomes.push({ ...base, action: 'regenerated', ...note })
         } catch (e) {
           await fail(base, e)
         }

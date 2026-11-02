@@ -33,7 +33,7 @@
       }
     },
     "min_release_age_days": {
-      "description": "Only versions published at least this many days before the schedule time are used.",
+      "description": "Only versions published at least this many days before the schedule time are used. Not applied to the Flutter version in .fvmrc.",
       "type": "integer",
       "minimum": 0,
       "default": 0
@@ -60,12 +60,12 @@
         "required": ["name"],
         "properties": {
           "name": {
-            "description": "Package name.",
+            "description": "Package name, or flutter for the Flutter version in .fvmrc.",
             "type": "string",
             "pattern": "^[a-z_][a-z0-9_]*$"
           },
           "versions": {
-            "description": "Versions to skip, in pub version constraint syntax (for example `>=3.0.0` or `^2.0.0`). If omitted, all updates of the package are skipped.",
+            "description": "Versions to skip, in pub version constraint syntax (for example `>=3.0.0` or `^2.0.0`). If omitted, all updates of the package (or of Flutter) are skipped.",
             "type": "string",
             "pattern": "^(any|(\\^|>=|>|<=|<)?\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?(\\s+(\\^|>=|>|<=|<)?\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?)*)$"
           }
