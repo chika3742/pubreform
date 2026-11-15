@@ -1,6 +1,6 @@
 # pubreform 基本設計
 
-> ステータス: 実装済み（2026-10-18。v1 は未リリース）。セキュリティアドバイザリによる更新（§14.2）は 2026-10-20 に実装した。固定したバージョンの分類（§5.1）は 2026-10-23 に変更した。挙動を変えるときは、先にこの設計書を直す。「13. 仮決めした点」は必要に応じて更新する。実装に必要な決定は[詳細設計](detailed-design.md)に書く。
+> ステータス: 実装済み（2026-10-18。v1 は未リリース）。セキュリティアドバイザリによる更新（§14.2）は 2026-10-20 に実装した。固定したバージョンの分類（§5.1）は 2026-10-23 に変更した。Flutter SDK の更新（§14.4）は 2026-11-15 に基本設計を書いた段階で、未実装。挙動を変えるときは、先にこの設計書を直す。「13. 仮決めした点」は必要に応じて更新する。実装に必要な決定は[詳細設計](detailed-design.md)に書く。
 
 ## 1. 概要
 
@@ -24,7 +24,7 @@ pubreform は、Dart / Flutter プロジェクトの pub 依存を更新する P
 
 - path / git / sdk 依存、pub.dev 以外のホストの依存
 - `dependency_overrides` に書かれたパッケージ
-- Dart / Flutter SDK 自体と `environment` の更新
+- Dart / Flutter SDK 自体と `environment` の更新（`.fvmrc` の Flutter のバージョンの更新は §14.4 で設計した。未実装）
 - pub workspace、ルート以外のディレクトリ。ルートの pubspec に `workspace:` があれば、未対応として何も変更せずに失敗終了する（将来の対応は §14.1）
 - `pubspec.lock` をコミットしないプロジェクト（ライブラリなど）
 - プレリリース版（更新先は安定版のみ）
@@ -346,7 +346,7 @@ ignore:
 
 設定ファイルの置き場所は `.github/pubreform.yaml`（入力 `config` で変えられる）。先頭の行で JSON スキーマ（[`pubreform.schema.json`](../pubreform.schema.json)）を指定すると、エディタで補完と検証が効く（詳細 §4.2）。
 
-`versioning` と `ignore` は要件にはない追加項目。不要なら削除する。更新後のコマンド（`post_update`）の設定は §14.3。
+`versioning` と `ignore` は要件にはない追加項目。不要なら削除する。更新後のコマンド（`post_update`）の設定は §14.3。Flutter SDK の更新（`flutter`。未実装）の設定は §14.4。
 
 ### 10.3 ワークフロー例
 
@@ -634,6 +634,30 @@ Flutter のプロジェクトでも使えるが、コンテナの中で使える
 - コンテナの中で、読み取り専用の Dart SDK と pub のキャッシュで `dart run` が動き、ランナーのプロセスと環境変数が見えず、ネットワークに接続できない（詳細 §19.8）。Flutter SDK では `flutter` が動かない（上記）
 - GitHub のランナーで、`docker` が使え、ランナーのファイルから作ったイメージで動き、コンテナから認証情報とトークンが読めないことを、pubreform-e2e（詳細 §17.2、[run #6](https://github.com/chika3742/pubreform-e2e/actions/runs/39206665275)）で確かめた
 - main の生成コードがすでに古いと、作り直した差分がすべての PR に混ざる。README に、先に main で生成コードを最新にしておくよう書く
+
+### 14.4 Flutter SDK の更新
+
+> 基本設計のみ（2026-11-15。未実装）。設計は [Flutter SDK の更新の基本設計](flutter-sdk-design.md)に分けて書く。ここには概要と、実装するときにこの設計書で変わる点だけを書く。
+
+`.fvmrc` で固定している Flutter SDK のバージョンを、最新の安定版に上げる PR を作る。今のバージョンは `.fvmrc` だけから読み、`.fvmrc` がなければ更新しない。
+
+- **更新先**: Flutter 公式のリリース一覧の安定版のうち、`cutoff`（§4.1）以前に公開された最も新しいバージョン。待機期間と slot はパッケージと同じ
+- **PR**: 専用の PR を 1 つ作る（種類 `flutter`、ブランチ `pubreform/flutter`、タイトル `Update Flutter from <前> to <後>`）。パッケージの更新単位（§5）とは別に計画する
+- **更新するファイル**: `.fvmrc`、`.vscode/settings.json` の `dart.flutterSdkPath`、`pubspec.yaml` の `environment`、`pubspec.lock`、更新後のコマンド（§14.3）で変わったファイル
+- **解決**: 新しい SDK の pub で、ベースの lockfile を残して `pub get` する。今の直接依存の制約では解決できなければ、§5.4 と同じ考え方で、動かす必要のある直接依存を求めて同じ PR で上げる。それでも解決できなければ PR を作らず、ジョブサマリーに原因を出す
+- **設定**: `flutter.enabled`（既定 `true`）、`flutter.versioning`（`environment` の書き換え方。省略するとトップレベルの `versioning`）、`flutter.reapply`（変化がないときに、新しい SDK の取得と適用を省くか。既定 `on-change`）
+
+実装するときに、この設計書の次の箇所を直す。
+
+| 箇所 | 変わる点 |
+|---|---|
+| §2 | 対象外から、`.fvmrc` の Flutter のバージョンと `environment` の更新を外す |
+| §3、§3.1 | リリース一覧の取得、Flutter の更新単位の計画と適用を足す。Flutter の更新単位は、設定によって適用を省く（「実行のたびにすべての更新単位を適用し直す」の例外） |
+| §6、§6.1 | PR の種類に `flutter` を足す。メタデータに Flutter の更新前後のバージョンを入れる |
+| §7.2 | Flutter の PR の「同じ内容」は、更新先のバージョンだけで判定する |
+| §8 | Flutter の PR の本文（Flutter と Dart の表、`flutter/flutter` の `CHANGELOG.md` の抜粋） |
+| §9 | リリース一覧を取得できないときは、全体のエラーにする |
+| §10.2 | 設定に `flutter` を足す |
 
 ## 参考
 

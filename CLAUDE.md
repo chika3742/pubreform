@@ -5,6 +5,7 @@ pub の依存を更新する PR を作成・保守する GitHub Action。TypeScr
 ## 仕様
 
 - `docs/design.md`（基本設計）と `docs/detailed-design.md`（詳細設計）が仕様。挙動を変えるときは、先に設計書を直す
+- `docs/flutter-sdk-design.md` は Flutter SDK の更新（基本 §14.4）の基本設計。未実装で、詳細設計はまだない
 - モジュールの役割は詳細設計 §2。コードのコメントには設計書の節（`§n`）を書かない
 - pub の挙動（解決、lockfile の書き方、コマンドのフラグ）に関わる判断は、推測せずに実際の `dart pub` / `fvm flutter pub` で確かめる。設計書に「確認済み」とある点は、すべて実際に動かして確かめたもの
 - `pubreform.schema.json` と `src/config.ts` の判定は一致させる（`test/config-schema.test.ts` で確かめる）
