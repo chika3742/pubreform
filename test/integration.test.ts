@@ -1,15 +1,18 @@
 // Integration test of the registry proxy with real pub.
 // Needs network access to pub.dev, so it runs only with PUBREFORM_IT=1:
 //   PUBREFORM_IT=1 bun test test/integration.test.ts
-// `dart` (Dart 3 stable) and `fvm` (with Flutter 3.47.7 installable) must be on PATH.
+// `dart` (Dart 3 stable) and `fvm` (with Flutter 3.47.7 and 3.50.0 installable) must be on PATH.
 import { afterAll, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
+import { applyUnit } from '../src/applier.ts'
+import { type FlutterRelease, chooseTarget, installFlutter, planFlutter, rewriteEnvironment, rewriteFvmrc } from '../src/flutter.ts'
+import type { Unit } from '../src/planner.ts'
 import { Pub, cachedPackageDir, pubCommand } from '../src/pub.ts'
-import { lockVersions } from '../src/pubspec.ts'
+import { directDeps, lockVersions } from '../src/pubspec.ts'
 import { PROXY_PORT, RegistryProxy } from '../src/proxy.ts'
 import { compareVersions } from '../src/version.ts'
 
@@ -187,3 +190,127 @@ for (const fx of FIXTURES) {
     })
   })
 }
+
+// Flutter updates with the new SDK's pub: Flutter 3.47.7 → 3.50.0 with fvm.
+// Flutter 3.47.7's flutter_test pins test_api 0.7.12, and 3.50.0's pins 0.7.14.
+// test 1.31.1 needs test_api 0.7.12, and only 1.32.0 needs 0.7.14, so newer releases of test do not change the results.
+// The release list is fixed, so that a newer stable Flutter does not change them either.
+describe.skipIf(!IT)('Flutter update with fvm', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pubreform-it-flutter-'))
+  const env = { PUB_CACHE: path.join(tmp, 'pub-cache') }
+  afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }))
+
+  const releases: FlutterRelease[] = [
+    { version: '3.50.0', dart: '3.14.0', released: new Date('2026-11-11T18:00:00Z') },
+    { version: '3.47.9', dart: '3.13.7', released: new Date('2026-10-29T18:00:00Z') },
+    { version: '3.47.8', dart: '3.13.6', released: new Date('2026-10-23T18:00:00Z') },
+    { version: '3.47.7', dart: '3.13.5', released: new Date('2026-10-08T18:00:00Z') },
+  ]
+  const cutoff = new Date('2026-11-13T00:00:00Z')
+  const pubspec = (test: string) => `name: app
+environment:
+  sdk: ^3.9.0
+  flutter: 3.47.7
+dependencies:
+  flutter:
+    sdk: flutter
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  test: ${test} # the test runner
+`
+
+  /** The base lockfile, resolved with Flutter 3.47.7 and test 1.31.1, and the constraint of `test`. */
+  async function baseOf(test: string) {
+    const dir = fs.mkdtempSync(path.join(tmp, 'base-'))
+    fs.writeFileSync(path.join(dir, '.fvmrc'), JSON.stringify({ flutter: '3.47.7' }))
+    const proxy = new RegistryProxy({ cutoff, locked: new Map(), ignore: [] })
+    await proxy.start()
+    try {
+      const pub = new Pub({ dir, flutter: true, fvm: true, hostedUrl: proxy.url, env })
+      const pinned = await pub.run(['get'], { pubspec: pubspec('1.31.1'), lock: '' })
+      return await pub.run(['get'], { pubspec: pubspec(test), lock: pinned.lock })
+    } finally {
+      await proxy.stop()
+    }
+  }
+
+  const cases: [constraint: string, targets: Record<string, string>, written: string][] = [
+    ['"^1.31.1"', {}, 'test: "^1.31.1" # the test runner'],
+    ['1.31.1', { test: '1.32.0' }, 'test: 1.32.0 # the test runner'],
+    ['">=1.31.1 <1.32.0"', { test: '1.32.0' }, 'test: ^1.32.0 # the test runner'],
+  ]
+  for (const [constraint, targets, written] of cases) {
+    test(`test: ${constraint}`, async () => {
+      const base = await baseOf(constraint)
+      const locked = lockVersions(base.lock)
+      expect([locked.get('test'), locked.get('test_api'), locked.get('test_core')]).toEqual(['1.31.1', '0.7.12', '0.6.18'])
+      const deps = directDeps(base.pubspec, base.lock)
+      const { target } = chooseTarget(releases, '3.47.7', cutoff)
+      expect(target).toMatchObject({ from: '3.47.7', to: '3.50.0', dartFrom: '3.13.5', dartTo: '3.14.0' })
+      const environment = rewriteEnvironment(base.pubspec, { flutter: '3.50.0', dart: '3.14.0' }, 'increase')
+      expect(environment).toContain('  sdk: ^3.14.0\n  flutter: 3.50.0\n')
+
+      const dir = fs.mkdtempSync(path.join(tmp, 'flutter-'))
+      fs.writeFileSync(path.join(dir, '.fvmrc'), rewriteFvmrc(JSON.stringify({ flutter: '3.47.7' }), '3.47.7', '3.50.0'))
+      await installFlutter(dir, '3.50.0')
+      const proxy = new RegistryProxy({ cutoff, locked, ignore: [] })
+      await proxy.start()
+      try {
+        const pub = new Pub({ dir, flutter: true, fvm: true, hostedUrl: proxy.url, env })
+        const planned = await planFlutter({
+          deps,
+          pubspec: environment,
+          resolve: async (args, p) => lockVersions((await pub.run(args, { pubspec: p, lock: base.lock })).lock),
+        })
+        expect(planned).toEqual({ unit: { kind: 'flutter', members: constraint.startsWith('">=') ? ['test'] : [], targets } })
+        const unit = (planned as { unit: Unit }).unit
+        const calls: string[][] = []
+        const result = (await applyUnit(unit, {
+          base: { pubspec: environment, lock: base.lock },
+          deps,
+          versioning: 'increase',
+          pub: (args, f) => {
+            calls.push(args)
+            return pub.run(args, f)
+          },
+          fixes: new Map(),
+          cutoff,
+          flutter: { from: '3.47.7', to: '3.50.0', dartTo: '3.14.0', files: [] },
+        }))!
+        expect(calls).toEqual([Object.keys(targets).length === 0 ? ['get'] : ['add', `dev:test:${constraint === '1.31.1' ? '' : '^'}1.32.0`]])
+        expect(result.changes).toEqual({ test: { from: '1.31.1', to: '1.32.0', section: 'dev_dependencies' } })
+        const after = lockVersions(result.files.lock)
+        expect([after.get('test'), after.get('test_api'), after.get('test_core')]).toEqual(['1.32.0', '0.7.14', '0.6.20'])
+        expect(result.files.lock).toContain('  flutter: "3.50.0"')
+        expect(result.files.lock).toContain('  dart: ">=3.14.0 <4.0.0"')
+        // The comment and the other constraints are kept.
+        expect(result.files.pubspec).toContain(`  ${written}\n`)
+        expect(result.files.pubspec).toContain('  sdk: ^3.14.0\n  flutter: 3.50.0\n')
+      } finally {
+        await proxy.stop()
+      }
+    })
+  }
+
+  test('a new SDK whose packages are hidden by the release age does not resolve', async () => {
+    const base = await baseOf('"^1.31.1"')
+    const dir = fs.mkdtempSync(path.join(tmp, 'flutter-'))
+    fs.writeFileSync(path.join(dir, '.fvmrc'), JSON.stringify({ flutter: '3.50.0' }))
+    // test_api 0.7.14 was published on 2026-09-02.
+    const proxy = new RegistryProxy({ cutoff: new Date('2026-08-01T00:00:00Z'), locked: lockVersions(base.lock), ignore: [] })
+    await proxy.start()
+    try {
+      const pub = new Pub({ dir, flutter: true, fvm: true, hostedUrl: proxy.url, env })
+      const planned = await planFlutter({
+        deps: directDeps(base.pubspec, base.lock),
+        pubspec: rewriteEnvironment(base.pubspec, { flutter: '3.50.0', dart: '3.14.0' }, 'lockfile-only'),
+        resolve: async (args, p) => lockVersions((await pub.run(args, { pubspec: p, lock: base.lock })).lock),
+      })
+      expect(planned).toEqual({ unresolvable: expect.stringContaining('version solving failed.') })
+      expect((planned as { unresolvable: string }).unresolvable).toContain('test_api 0.7.14')
+    } finally {
+      await proxy.stop()
+    }
+  })
+})
