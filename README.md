@@ -111,6 +111,9 @@ The workflow decides when the action runs. This one runs it every Monday, after 
 | `post_update[].run` | (required) | The command, run with `sh -c` at the repository root |
 | `post_update[].network` | `false` | Whether the command can use the network |
 | `post_update[].env` | `[]` | Names of more environment variables to pass, with their values from the workflow. Names starting with `INPUT_` or `ACTIONS_` are not allowed. The values can reach the pull request, through files the command writes or through the output in an error comment, so take care with secrets |
+| `flutter.enabled` | `true` | Whether to update the Flutter version pinned in `.fvmrc`. See [Flutter SDK updates](#flutter-sdk-updates) |
+| `flutter.versioning` | the value of `versioning` | How the `sdk` and `flutter` constraints in `environment` are rewritten for the new Flutter. `increase` raises their lower bounds. `lockfile-only` rewrites them only when the new version does not fit |
+| `flutter.reapply` | `on-change` | `on-change` does not install the new SDK again while the pull request is up to date with the default branch and the config. `always` updates it on every run |
 
 The action has two inputs: `token` (required), and `config`, the path to the config file on the default branch (default `.github/pubreform.yaml`).
 
@@ -155,6 +158,18 @@ on:
 schedule:
   cron: "0 9 * * 1"       # new releases: once a week
 ```
+
+### Flutter SDK updates
+
+When `.fvmrc` pins a stable Flutter version, such as `"flutter": "3.47.7"`, pubreform also keeps a pull request that updates it to the latest stable release, titled `Update Flutter from 3.47.7 to 3.50.0` (branch `pubreform/flutter`):
+
+- The release must have been out for `min_release_age_days`, as for packages. There is one pull request, to the latest stable release. Channels, forks, pre-releases and `flavors` are not updated, and nothing is done without `.fvmrc`
+- It changes the version in `.fvmrc`, the version in `dart.flutterSdkPath` of `.vscode/settings.json`, the `sdk` and `flutter` constraints in `environment` (with the Dart bundled with the new Flutter for `sdk`), and `pubspec.lock`, resolved by the new SDK. Comments and formatting are kept. Versions written elsewhere, such as in workflows, are not changed
+- Direct dependencies that must move for the new Flutter (for example, a `test` that the new `flutter_test` does not allow) are updated in the same pull request, and listed in its description. If it does not resolve even then, there is no pull request, and the reason is in the job summary; an open one is closed with the reason
+- With `flutter.versioning: increase`, raising the lower bound of `sdk` also raises the language version, which can change the results of `dart format` and lints. Use `lockfile-only` to keep it
+- The new SDK is installed with fvm whenever the update is applied, which takes time and disk space. With `flutter.reapply: on-change`, a run in which the default branch and the config did not change leaves the pull request as it is without installing it, so newer versions of the dependencies it raises, and new security advisories, are picked up only after such a change
+- Post-update commands run with the new SDK
+- To skip a version, close its pull request without merging: the next version gets a new one
 
 ### Post-update commands
 

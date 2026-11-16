@@ -1,6 +1,6 @@
 # pubreform 詳細設計: Flutter SDK の更新
 
-> ステータス: 詳細設計のみ（2026-11-16。未実装）。[Flutter SDK の更新の基本設計](flutter-sdk-design.md)を前提に、実装に必要な決定を書く。節の番号だけの参照（§n）はこの文書の節を指す。ほかの設計書の節は、「基本 §n」（[基本設計](design.md)）、「詳細 §n」（[詳細設計](detailed-design.md)）、「F 基本 §n」（Flutter SDK の更新の基本設計）と書く。挙動を変えるときは、先に設計書を直す。実装したら、この文書の内容を詳細設計に移すかどうかを決める。
+> ステータス: 実装済み（詳細設計と実装は 2026-11-16）。単体テスト、ローカル E2E（§16.1。偽の fvm と偽の Flutter SDK）、結合テスト（§16.2。fvm 4.3.2、Flutter 3.47.7 と 3.50.0、pub.dev）で確かめた（§17 の「実装のときに確かめたこと」）。本物の GitHub では動かしていない（§18）。[Flutter SDK の更新の基本設計](flutter-sdk-design.md)を前提に、実装に必要な決定を書く。節の番号だけの参照（§n）はこの文書の節を指す。ほかの設計書の節は、「基本 §n」（[基本設計](design.md)）、「詳細 §n」（[詳細設計](detailed-design.md)）、「F 基本 §n」（Flutter SDK の更新の基本設計）と書く。挙動を変えるときは、先に設計書を直す。実装したら、この文書の内容を詳細設計に移すかどうかを決める。
 
 ## 1. 方針
 
@@ -151,7 +151,7 @@ rewriteSdkConstraint(constraint: string, v: string, versioning: Versioning): str
 rewriteEnvironment(pubspec: string, v: { flutter: string; dart: string }, versioning: Versioning): string
 ```
 
-`rewriteSdkConstraint` は、制約を `parseConstraint`（詳細 §6）と同じ字句で比較の並びに分け、次の表で書き換えて、空白 1 つでつないで返す（F 基本 §4.2 の表と同じ内容）。
+`rewriteSdkConstraint` は、制約を `parseConstraint`（詳細 §6）と同じ字句で比較の並びに分け、次の表で書き換えて、空白 1 つでつないで返す（F 基本 §4.2 の表と同じ内容）。どの比較も変わらなければ、元の文字列をそのまま返す（空白の書き方だけの差分を作らないため）。
 
 | 字句 | `increase` | `lockfile-only` |
 |---|---|---|
@@ -494,9 +494,10 @@ Status は、`kind` が `flutter` の `Outcome` から決める。
 | `notified` | `Not updated in #<n> (manual commits)` |
 | `skipped` | `Closed in #<n>` |
 | `error` | `Error` |
-| 解決できない | `Does not resolve`。表の下に、原因を整形済みテキスト（`<pre>`。エスケープする）で書く（最新版に上げられない直接依存と同じ形） |
+| 解決できない | `Does not resolve`。表の下に、原因を整形済みテキスト（`<pre>`。エスケープする）で書く（最新版に上げられない直接依存と同じ形。折りたたみの見出しは `Flutter <T>`） |
 
 - `target` がなく `waiting` だけがあるときは、表を出さない
+- エラーの一覧（詳細 §16）の見出しも、`flutter` の行は `Flutter` と、一緒に上げる直接依存にする（パッケージがないと `pubreform` と書かれてしまうため）
 - `waiting` があれば、`Waiting for the release age: Flutter <version> (published <日時>, used from <日時>)` の 1 行を足す。使われ始める時刻は、パッケージと同じ `firstSlotShowing` で求める
 
 ## 16. テスト
@@ -533,7 +534,7 @@ Status は、`kind` が `flutter` の `Outcome` から決める。
 6. 利用者がクローズ: PR をマージせずに閉じて実行すると、PR は作られず、偽の fvm は 3.50.0 で呼ばれない。一覧に 3.50.1（30 日前）を足して実行すると、3.50.1 への PR が作られる
 7. 解決できない: 3.50.2（30 日前）を足し、その偽の SDK が存在しない `fx_pin: 9.9.9` を要求するようにして実行すると、3.50.1 の PR が §9.5 のコメントで閉じられ、ジョブは成功し、ジョブサマリーに原因が出る
 8. 無効: `flutter.enabled: false` にして実行すると、リリース一覧を取得しない（フィクスチャー用サーバーに要求が来ない）
-9. 更新後のコマンド（`test/e2e/post-update.test.ts` に足す。Docker が要る）: Flutter の PR のコミットに、新しい SDK で動かした生成結果が入る。コンテナの `FLUTTER_ROOT` が 3.50.0 の偽の SDK を指す
+9. 更新後のコマンド（`test/e2e/post-update.test.ts` に足す。Docker が要る）: Flutter の PR のコミットに、新しい SDK で動かした生成結果が入る。コンテナの `FLUTTER_ROOT` が 3.50.0 の偽の SDK を指す。偽の SDK には同梱の Dart がないので、コマンドは `sh` のスクリプトにし、`FLUTTER_ROOT` と、そこにある `bin/cache/flutter.version.json` の内容をファイルに書く。コミットに入る `.fvmrc` と `.vscode/settings.json` は適用の結果で、コマンドで変わったファイルの数に入らない
 
 今のローカル E2E（`.fvmrc` のないプロジェクト）は変えない。Flutter の更新が有効にならないので、リリース一覧を取得せず、外部に接続しないままである。
 
@@ -584,12 +585,17 @@ GitHub E2E（詳細 §17.2）は変えない。本物の GitHub でしか分か�
 - `yaml` 2 の `parseDocument` で、`environment` のスカラーの `range` と種類（`PLAIN`、`QUOTE_DOUBLE`、`QUOTE_SINGLE`）が取れ、その範囲だけを差し替えると、引用符、後ろのコメント、空白が残った
 - 今の `extractChangelog` は、Flutter の `CHANGELOG.md` の見出し（`### [3.47.9](…)`）をバージョンの見出しとして読めた。`flutter-3.50-candidate.0` からは 3.50.0 の節（末尾に `## Flutter 3.47 Changes` の行が付く）が、`flutter-3.47-candidate.0` からは 3.47.9 と 3.47.8 の節が取れた。`withoutBacklinks` は Issue へのリンクを `redirect.github.com` に置き換えた
 
+**実装のときに確かめたこと**（2026-11-16。fvm 4.3.2、Flutter 3.47.7 と 3.50.0、Dart 3.14.0、pub.dev、Docker 29.9.2）
+
+- 結合テスト（§16.2）: `test` の制約が `^1.31.1`、`1.31.1`、`>=1.31.1 <1.32.0` の 3 つで、`planFlutter` と `applyUnit` の結果が上の表のとおりになった。`flutter.versioning: increase` で `sdk: ^3.14.0`、`flutter: 3.50.0` に書き換えた `pubspec.yaml` を、本物の Flutter 3.50.0 で解決できた。lockfile の `sdks` は `dart: ">=3.14.0 <4.0.0"`、`flutter: "3.50.0"` になった。cutoff を 2026-08-01 にすると `unresolvable` になった
+- 本物の `fvm flutter --version --machine` の出力は JSON だけで、`frameworkVersion`、`dartSdkVersion`、`flutterRoot` があった（`installFlutter` の確認）
+- ローカル E2E（§16.1）の場面 1〜9 と、今までの場面（詳細 §17.1）がすべて通った
+
 ## 18. 未確認のこと
 
 | 項目 | 内容 |
 |---|---|
 | GitHub のランナー | fvm による新しい SDK の取得にかかる時間とディスクの使用量。setup-fvm と組み合わせた実行。リリース一覧と `raw.githubusercontent.com` の取得 |
-| `flutter.versioning: increase` | `sdk` の下限を上げた `pubspec.yaml` での本物の解決（`sdk: ^3.14.0` は、制約の判定を偽の `FLUTTER_ROOT` と Dart 3.14.0 で確かめただけ。F 基本 §11） |
 | Dart だけのプロジェクト | `.fvmrc` のある Dart だけのプロジェクト（`fvm dart pub`）での解決。fvm のソースでは `fvm flutter` と同じ経路だが、動かしていない |
 | リリースブランチの名前 | `flutter-<major>.<minor>-candidate.0` であることを確かめたのは 3.47 と 3.50 だけ。違うマイナーでは、更新履歴が取得できずリンクだけになる |
 | 本文とジョブサマリーの表示 | 本物の GitHub での表示 |
