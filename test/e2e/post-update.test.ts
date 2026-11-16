@@ -8,6 +8,15 @@ import os from 'node:os'
 import path from 'node:path'
 import { parseMeta } from '../../src/render.ts'
 import { FakeGitHub } from './fake-github.ts'
+import {
+  FLUTTER_CHANGELOGS,
+  FLUTTER_CONFIG,
+  FLUTTER_RELEASES,
+  FLUTTER_SDKS,
+  flutterFixtures,
+  makeFakeFlutter,
+  makeFlutterProject,
+} from './fake-flutter.ts'
 import { type FixtureServer, startFixtureServer } from './fixtures.ts'
 import { CONFIG, PROBE_RESULT, PROBE_SECRET, makeProject } from './make-project.ts'
 
@@ -158,5 +167,76 @@ describe.skipIf(!DOCKER)('local E2E: post_update', () => {
     const counts = open().map((pr) => pr.comments.length)
     expect((await runAction()).status).not.toBe(0)
     expect(open().map((pr) => pr.comments.length)).toEqual(counts)
+  })
+})
+
+// The commands of a Flutter update run with its new SDK. fvm and the SDKs are the fakes of fake-flutter.ts.
+describe.skipIf(!DOCKER)('local E2E: post_update with a Flutter update', () => {
+  let tmp = ''
+
+  afterAll(() => {
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true })
+  })
+
+  test('9. the commands see the new SDK, and their files are committed with .fvmrc', async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pubreform-e2e-post-update-flutter-'))
+    const fake = makeFakeFlutter(path.join(tmp, 'flutter'), FLUTTER_SDKS)
+    const config = `${FLUTTER_CONFIG}post_update:\n  - run: sh tool/sdk.sh\n`
+    const project = {
+      ...(await makeFlutterProject(fake, config)),
+      '.gitignore': '.dart_tool/\n',
+      // Records the SDK in the container: FLUTTER_ROOT and the version file there.
+      'tool/sdk.sh': 'echo "$FLUTTER_ROOT" > sdk.txt\ncat "$FLUTTER_ROOT/bin/cache/flutter.version.json" >> sdk.txt\n',
+    }
+    const registry = await startFixtureServer({
+      fixtures: flutterFixtures(),
+      flutterReleases: FLUTTER_RELEASES,
+      flutterChangelogs: FLUTTER_CHANGELOGS,
+    })
+    const bare = path.join(tmp, 'origin', 'owner', 'repo.git')
+    fs.mkdirSync(bare, { recursive: true })
+    const github = new FakeGitHub(bare)
+    try {
+      github.git(['init', '--quiet', '--bare', '--initial-branch=main'])
+      const emptyTree = github.git(['hash-object', '-t', 'tree', '/dev/null'])
+      github.git(['update-ref', 'refs/heads/main', github.commitTree(github.writeTree(emptyTree, project), [], 'Initial commit')])
+      await github.start()
+      fs.writeFileSync(path.join(tmp, 'summary.md'), '')
+      const env: Record<string, string> = {
+        PATH: `${fake.bin}:${process.env.PATH ?? ''}`,
+        HOME: process.env.HOME ?? tmp,
+        PUB_CACHE: path.join(tmp, 'pub-cache'),
+        GITHUB_REPOSITORY: 'owner/repo',
+        GITHUB_SERVER_URL: `file://${path.join(tmp, 'origin')}`,
+        GITHUB_API_URL: github.url,
+        GITHUB_STEP_SUMMARY: path.join(tmp, 'summary.md'),
+        RUNNER_TEMP: path.join(tmp, 'runner'),
+        INPUT_TOKEN: TOKEN,
+        INPUT_CONFIG: '.github/pubreform.yaml',
+        PUBREFORM_UPSTREAM: registry.url,
+        PUBREFORM_FLUTTER_RELEASES: registry.flutterReleasesUrl,
+        PUBREFORM_FLUTTER_CHANGELOG: registry.flutterChangelogUrl,
+      }
+      const child = spawn('node', [MAIN], { env })
+      let output = ''
+      child.stdout.on('data', (d) => (output += d))
+      child.stderr.on('data', (d) => (output += d))
+      const status = await new Promise<number>((resolve) => child.on('close', (code) => resolve(code ?? -1)))
+      if (status !== 0) throw new Error(`pubreform failed:\n${output.split('\n').slice(-60).join('\n')}`)
+
+      const prs = github.prs.filter((pr) => pr.state === 'open')
+      expect(prs.map((pr) => pr.branch)).toEqual(['pubreform/flutter'])
+      const head = github.headOf(prs[0]!)
+      expect(github.readFile(head, 'sdk.txt')).toBe(`${fake.root('3.50.0')}\n{"flutterVersion":"3.50.0"}`)
+      // .fvmrc and .vscode/settings.json are the result of the update, and counted only once.
+      expect(github.readFile(head, '.fvmrc')).toContain('"flutter": "3.50.0"')
+      const files = github.git(['diff', '--name-only', `${head}^`, head]).split('\n')
+      expect(files.sort()).toEqual(['.fvmrc', '.vscode/settings.json', 'pubspec.lock', 'pubspec.yaml', 'sdk.txt'])
+      expect(prs[0]!.body).toContain('Files changed by the `post_update` commands: 1')
+      expect(output).toContain('::group::Post update: sh tool/sdk.sh')
+    } finally {
+      await github.stop()
+      await registry.close()
+    }
   })
 })

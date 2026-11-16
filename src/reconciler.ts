@@ -1,11 +1,14 @@
 // Matching planned units with existing pull requests and deciding operations.
 import type { Fix } from './advisories.ts'
 import type { UnitResult } from './applier.ts'
+import type { Reapply } from './config.ts'
+import type { FlutterTarget } from './flutter.ts'
 import { PostUpdateError, type TreeEntry } from './generate.ts'
 import type { Plan, Unit } from './planner.ts'
 import type { GitHub } from './github.ts'
 import {
   BRANCH_PREFIX,
+  FLUTTER_BRANCH,
   type Meta,
   type PackageInfo,
   advisoryIds,
@@ -23,6 +26,7 @@ import {
   metaOf,
   renderBody,
   title,
+  unresolvableComment,
 } from './render.ts'
 
 export interface PrState {
@@ -44,22 +48,32 @@ export interface UnitError {
 export type Op =
   | { op: 'create'; result: UnitResult; branch: string }
   | { op: 'regenerate'; pr: PrState; result: UnitResult; contentChanged: boolean }
-  /** `result` is the unit matched with the pull request (for the job summary). */
-  | { op: 'notifyManual'; pr: PrState; result: UnitResult }
+  /** `result` is the unit matched with the pull request (for the job summary), if it was applied. */
+  | { op: 'notifyManual'; pr: PrState; result?: UnitResult }
   | { op: 'commentError'; pr: PrState; log: string }
-  | { op: 'close'; pr: PrState; supersededBy?: string } // supersededBy: the branch of the unit that takes over
+  /**
+   * supersededBy: the branch of the unit that takes over.
+   * unresolvable: a flutter pull request closed because the new Flutter does not resolve.
+   */
+  | { op: 'close'; pr: PrState; supersededBy?: string; unresolvable?: FlutterUnresolvable }
   /** Only the advisories changed: the title, body and metadata are updated, not the commit. */
   | { op: 'refresh'; pr: PrState; result: UnitResult }
   /** `result` is the unit matched with the pull request, if any. */
   | { op: 'none'; pr: PrState; result?: UnitResult }
-  /** A unit without a pull request, skipped because the same update was closed without merging. */
-  | { op: 'skip'; result: UnitResult; closedPr: PrState }
+  /** A unit without a pull request, skipped because the same update was closed without merging. No `result` when it was not applied. */
+  | { op: 'skip'; result?: UnitResult; closedPr: PrState }
   /** A unit that failed to apply and has no pull request. Only logged. */
   | { op: 'error'; unit: Unit; log: string }
 
 export interface DecideContext {
   baseHash: string
   configHash: string
+}
+
+/** The new Flutter does not resolve: its version, and pub's explanation. */
+export interface FlutterUnresolvable {
+  version: string
+  reason: string
 }
 
 type Item = { unit: Unit; result?: UnitResult; error?: string }
@@ -132,7 +146,9 @@ export function match(items: Item[], openPrs: PrState[]): Map<Item, PrState> {
 function decideBoth(pr: PrState, result: UnitResult, ctx: DecideContext): Op {
   const checked = isRebaseChecked(pr.body)
   const meta = pr.meta
-  const contentChanged = meta !== undefined && !sameTargets(metaTargets(meta), targets(result))
+  const contentChanged =
+    meta !== undefined &&
+    (!sameTargets(metaTargets(meta), targets(result)) || (result.flutter !== undefined && meta.flutter?.[1] !== result.flutter.to))
   const regenerate: Op = { op: 'regenerate', pr, result, contentChanged }
   if (meta && pr.headSha !== meta.commit && pr.headSha !== meta.previous && !checked) return { op: 'notifyManual', pr, result }
   // The previous regeneration stopped before moving the branch.
@@ -147,8 +163,38 @@ function decideBoth(pr: PrState, result: UnitResult, ctx: DecideContext): Op {
 }
 
 /**
+ * Whether the Flutter update to `target` is applied in this run, or the operation without applying it.
+ * Installing a new SDK takes long, so with `on-change` an up-to-date pull request is not applied again.
+ */
+export function decideFlutter(
+  target: FlutterTarget,
+  openPrs: PrState[],
+  closedPrs: PrState[],
+  ctx: DecideContext,
+  reapply: Reapply,
+): 'apply' | Op {
+  const pr = openPrs.find((p) => p.branch === FLUTTER_BRANCH)
+  if (!pr) {
+    // Only the target is compared: the packages raised with it may differ.
+    const closedPr = closedPrs.find((p) => p.meta?.kind === 'flutter' && p.meta.flutter?.[1] === target.to && !p.meta.closed)
+    return closedPr ? { op: 'skip', closedPr } : 'apply'
+  }
+  if (reapply === 'always') return 'apply'
+  const meta = pr.meta
+  if (!meta || meta.flutter?.[1] !== target.to) return 'apply'
+  if (meta.baseHash !== ctx.baseHash || meta.configHash !== ctx.configHash) return 'apply'
+  if (isRebaseChecked(pr.body)) return 'apply'
+  if (pr.mergeable === false && pr.mergeableState === 'dirty') return 'apply'
+  // The previous regeneration stopped before moving the branch.
+  if (meta.previous !== undefined && pr.headSha === meta.previous) return 'apply'
+  if (pr.headSha !== meta.commit) return { op: 'notifyManual', pr }
+  return { op: 'none', pr }
+}
+
+/**
  * Decides the operations. Pure: comments are not read here.
  * `results` are the applied units, `unitErrors` the units that failed to apply.
+ * `flutterUnresolvable` is set when the new Flutter was applied and does not resolve.
  */
 export function decide(
   results: UnitResult[],
@@ -157,6 +203,7 @@ export function decide(
   openPrs: PrState[],
   closedPrs: PrState[],
   ctx: DecideContext,
+  flutterUnresolvable?: FlutterUnresolvable,
 ): Op[] {
   const items: Item[] = [
     ...results.map((result) => ({ unit: result.unit, result })),
@@ -176,7 +223,8 @@ export function decide(
       ops.push(decideBoth(pr, result, ctx))
       continue
     }
-    const closed = closedPrs.find(
+    // decideFlutter has compared a flutter unit with the closed pull requests: by the target, not the packages.
+    const closed = result.unit.kind === 'flutter' ? undefined : closedPrs.find(
       // Only pull requests that a person closed stop the same update; those closed by pubreform do not.
       (p) =>
         p.meta &&
@@ -191,12 +239,19 @@ export function decide(
   // Packages of units that failed to apply: their pull requests are kept, as for uncertain ones.
   const failed = new Set(unitErrors.flatMap((e) => e.unit.members))
   for (const pr of openPrs.filter((p) => !matched.has(p))) {
+    // A flutter unit that failed to apply is matched by its branch: here, there is no Flutter update.
+    if (pr.branch === FLUTTER_BRANCH) {
+      ops.push({ op: 'close', pr, unresolvable: flutterUnresolvable })
+      continue
+    }
     const packages = prPackages(pr)
     if (packages.some((name) => plan.uncertain.has(name) || failed.has(name))) {
       ops.push({ op: 'none', pr })
       continue
     }
     const successor = items.find((i) => {
+      // A flutter unit raises packages only for the new Flutter: it takes over no pull request.
+      if (i.unit.kind === 'flutter') return false
       const names = new Set([...i.unit.members, ...(i.result ? unitPackages(i.result) : [])])
       return packages.some((name) => names.has(name))
     })
@@ -251,6 +306,20 @@ export interface ExecuteContext {
   generate?: (result: UnitResult) => Promise<TreeEntry[]>
 }
 
+/** What an outcome is about, for logs and the job summary. */
+export function outcomeLabel(o: Pick<Outcome, 'kind' | 'packages'>): string[] {
+  return o.kind === 'flutter' ? ['Flutter', ...o.packages] : o.packages
+}
+
+/** What the update of a result or a pull request is, for the job log: the Flutter versions, or the packages. */
+function subject(flutter: readonly [string, string] | undefined, packages: string[]): string {
+  return flutter ? `${flutter[0]} → ${flutter[1]}` : packages.join(', ')
+}
+
+const resultSubject = (result: UnitResult) =>
+  subject(result.flutter && [result.flutter.from, result.flutter.to], unitPackages(result))
+const prSubject = (pr: PrState) => subject(pr.meta?.flutter, prPackages(pr))
+
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
@@ -298,7 +367,7 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
   /** Records a failure, and comments it on the pull request if there is one. */
   const fail = async (outcome: Omit<Outcome, 'action' | 'error'>, e: unknown) => {
     const error = errorText(e)
-    ctx.log(`Error (${outcome.packages.join(', ')}): ${ctx.formatLog(error)}`)
+    ctx.log(`Error (${outcomeLabel(outcome).join(', ')}): ${ctx.formatLog(error)}`)
     let comment = ''
     if (outcome.pr !== undefined) {
       try {
@@ -317,6 +386,7 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
       baseSha: ctx.baseSha,
       baseTree: ctx.baseTree,
       files: result.files,
+      extra: result.flutter?.files,
       generated,
       message: commitMessage(result),
     })
@@ -340,7 +410,7 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
       case 'create': {
         const base = { kind: op.result.unit.kind, packages: unitPackages(op.result), ...fixedPackages(op.result) }
         let pr: number | undefined
-        ctx.info(`Create a pull request (${base.kind}: ${base.packages.join(', ')}) on ${op.branch}`)
+        ctx.info(`Create a pull request (${base.kind}: ${resultSubject(op.result)}) on ${op.branch}`)
         try {
           const { sha, generated } = await commit(op.result)
           await github.createBranch(op.branch, sha)
@@ -363,7 +433,7 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
         const { pr, result } = op
         const base = { kind: result.unit.kind, packages: unitPackages(result), pr: pr.number, ...fixedPackages(result) }
         numbers.set(pr.branch, pr.number)
-        ctx.info(`Regenerate #${pr.number} (${base.packages.join(', ')})`)
+        ctx.info(`Regenerate #${pr.number} (${resultSubject(result)})`)
         try {
           const { sha, generated } = await commit(result)
           // The body goes first, so that the next run can tell a partial failure from manual commits.
@@ -374,7 +444,11 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
             ctx.info(`Comment the content change on #${pr.number}`)
             await github.comment(
               pr.number,
-              contentChangedComment(pr.meta.packages, { ...result.changes, ...result.transitiveFixes }),
+              contentChangedComment(
+                pr.meta.packages,
+                { ...result.changes, ...result.transitiveFixes },
+                result.flutter && { before: pr.meta.flutter, after: result.flutter },
+              ),
             )
           }
           outcomes.push({ ...base, action: 'regenerated' })
@@ -405,7 +479,7 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
       }
       case 'notifyManual': {
         const { pr } = op
-        const base = { kind: prKind(pr), packages: prPackages(pr), pr: pr.number, ...fixedPackages(op.result) }
+        const base = { kind: prKind(pr), packages: prPackages(pr), pr: pr.number, ...(op.result ? fixedPackages(op.result) : {}) }
         numbers.set(pr.branch, pr.number)
         try {
           const marker = manualMarker(pr.headSha)
@@ -442,23 +516,30 @@ export async function execute(ops: Op[], ctx: ExecuteContext): Promise<Outcome[]
           ...(op.result ? fixedPackages(op.result) : {}),
         })
         break
-      case 'skip':
-        ctx.info(`Skip ${unitPackages(op.result).join(', ')}: the same update was closed in #${op.closedPr.number}`)
+      case 'skip': {
+        const { result, closedPr } = op
+        const what = result ? resultSubject(result) : prSubject(closedPr)
+        ctx.info(`Skip ${what}: the same update was closed in #${closedPr.number}`)
         outcomes.push({
-          kind: op.result.unit.kind,
-          packages: unitPackages(op.result),
+          kind: result ? result.unit.kind : prKind(closedPr),
+          packages: result ? unitPackages(result) : prPackages(closedPr),
           action: 'skipped',
-          pr: op.closedPr.number,
-          ...fixedPackages(op.result),
+          pr: closedPr.number,
+          ...(result ? fixedPackages(result) : {}),
         })
         break
+      }
       case 'close': {
         const { pr } = op
         const base = { kind: prKind(pr), packages: prPackages(pr), pr: pr.number }
         try {
           const supersededBy = op.supersededBy === undefined ? undefined : numbers.get(op.supersededBy)
           ctx.info(`Close #${pr.number}${supersededBy === undefined ? '' : ` (superseded by #${supersededBy})`}`)
-          await github.comment(pr.number, closeComment(supersededBy))
+          const { unresolvable } = op
+          await github.comment(
+            pr.number,
+            unresolvable ? unresolvableComment(unresolvable.version, unresolvable.reason) : closeComment(supersededBy),
+          )
           // closed: true tells a later run that pubreform, not a person, closed it.
           await github.closePr(pr.number, markClosed(pr.body))
           await github.deleteBranch(pr.branch)

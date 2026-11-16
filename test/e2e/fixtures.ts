@@ -20,6 +20,16 @@ export type Fixtures = Record<string, FixtureVersion[]>
 /** package -> advisories in the OSV format, as pub.dev returns them. */
 export type Advisories = Record<string, object[]>
 
+/** A release in the Flutter release list. */
+export interface FlutterFixtureRelease {
+  version: string
+  channel?: string
+  /** dart_sdk_version. */
+  dart: string
+  /** Released this many days before the server starts. */
+  daysAgo: number
+}
+
 /** Packages that produce each case of the local E2E. Every package starts locked at 1.0.0. */
 export function defaultFixtures(): Fixtures {
   const old = (version: string, extra: Partial<FixtureVersion> = {}) => ({ version, daysAgo: 30, ...extra })
@@ -149,6 +159,14 @@ export function archiveOf(name: string, versions: FixtureVersion[], version: str
 
 export interface FixtureServer {
   url: string
+  /** In place of releases_linux.json (PUBREFORM_FLUTTER_RELEASES). */
+  flutterReleasesUrl: string
+  /** In place of https://raw.githubusercontent.com/flutter/flutter (PUBREFORM_FLUTTER_CHANGELOG). */
+  flutterChangelogUrl: string
+  /** How many times the Flutter release list was requested. */
+  readonly flutterReleaseRequests: number
+  /** Adds a Flutter release while the server runs. */
+  addFlutterRelease(release: FlutterFixtureRelease): void
   /** Adds a version while the server runs. */
   addVersion(name: string, version: FixtureVersion): void
   /** Adds a security advisory (OSV) while the server runs. */
@@ -157,12 +175,23 @@ export interface FixtureServer {
 }
 
 export async function startFixtureServer(
-  options: { port?: number; fixtures?: Fixtures; advisories?: Advisories; now?: Date } = {},
+  options: {
+    port?: number
+    fixtures?: Fixtures
+    advisories?: Advisories
+    now?: Date
+    flutterReleases?: FlutterFixtureRelease[]
+    /** Release branch -> CHANGELOG.md of flutter/flutter. */
+    flutterChangelogs?: Record<string, string>
+  } = {},
 ): Promise<FixtureServer> {
   const fixtures = options.fixtures ?? defaultFixtures()
   const advisories: Advisories = { ...options.advisories }
   const now = options.now ?? new Date()
+  const flutterReleases = [...(options.flutterReleases ?? [])]
+  let flutterReleaseRequests = 0
   let url = ''
+  const releaseDate = (daysAgo: number) => new Date(now.getTime() - daysAgo * 24 * 60 * 60 * 1000).toISOString()
 
   const listing = (name: string) => {
     const versions = fixtures[name]!
@@ -185,7 +214,23 @@ export async function startFixtureServer(
   const server = http.createServer((req, res) => {
     const path = new URL(req.url ?? '/', 'http://localhost').pathname
     let m: RegExpExecArray | null
-    if ((m = /^\/api\/packages\/([a-z0-9_]+)$/.exec(path)) && fixtures[m[1]!]) {
+    if (path === '/flutter/releases_linux.json') {
+      flutterReleaseRequests++
+      // Newest first, as the real list.
+      const releases = [...flutterReleases].reverse().map((r) => ({
+        hash: r.version,
+        channel: r.channel ?? 'stable',
+        version: r.version,
+        dart_sdk_version: r.dart,
+        release_date: releaseDate(r.daysAgo),
+        archive: `stable/linux/flutter_linux_${r.version}-stable.tar.xz`,
+      }))
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ base_url: `${url}/flutter`, current_release: {}, releases }))
+    } else if ((m = /^\/flutter\/raw\/([^/]+)\/CHANGELOG\.md$/.exec(path)) && options.flutterChangelogs?.[m[1]!] !== undefined) {
+      res.writeHead(200, { 'content-type': 'text/plain' })
+      res.end(options.flutterChangelogs[m[1]!])
+    } else if ((m = /^\/api\/packages\/([a-z0-9_]+)$/.exec(path)) && fixtures[m[1]!]) {
       res.writeHead(200, { 'content-type': 'application/vnd.pub.v2+json' })
       res.end(JSON.stringify(listing(m[1]!)))
     } else if ((m = /^\/api\/packages\/([a-z0-9_]+)\/advisories$/.exec(path)) && fixtures[m[1]!]) {
@@ -212,6 +257,14 @@ export async function startFixtureServer(
 
   return {
     url,
+    flutterReleasesUrl: `${url}/flutter/releases_linux.json`,
+    flutterChangelogUrl: `${url}/flutter/raw`,
+    get flutterReleaseRequests() {
+      return flutterReleaseRequests
+    },
+    addFlutterRelease(release) {
+      flutterReleases.push(release)
+    },
     addVersion(name, version) {
       fixtures[name]!.push(version)
     },

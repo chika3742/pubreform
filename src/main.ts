@@ -8,13 +8,38 @@ import { type Fix, collectFixes, fetchAdvisories } from './advisories.ts'
 import { type UnitResult, applyUnit } from './applier.ts'
 import { type Window, computeWindow, firstSlotShowing } from './clock.ts'
 import { type Config, configHash, parseConfig } from './config.ts'
+import {
+  type FlutterRelease,
+  type FlutterTarget,
+  chooseTarget,
+  fetchFlutterChangelog,
+  fetchReleases,
+  installFlutter,
+  pinnedFlutter,
+  planFlutter,
+  prepareFlutterDir,
+  rewriteEnvironment,
+  rewriteFvmrc,
+  rewriteVscodeSettings,
+} from './flutter.ts'
 import { Generator, buildImage, checkEnvironment, findSdk, removeImage } from './generate.ts'
 import { GitHub } from './github.ts'
-import { type Plan, plan } from './planner.ts'
+import { type Plan, type Unit, plan } from './planner.ts'
 import { RegistryProxy } from './proxy.ts'
 import { Pub, cachedPackageDir, cloneBase, pubCacheDir } from './pub.ts'
 import { type Section, baseHash, directDeps, hasWorkspace, isFlutter, lockVersions } from './pubspec.ts'
-import { type Outcome, type PlanFailures, type UnitError, advisoryStatus, decide, execute } from './reconciler.ts'
+import {
+  type FlutterUnresolvable,
+  type Op,
+  type Outcome,
+  type PlanFailures,
+  type UnitError,
+  advisoryStatus,
+  decide,
+  decideFlutter,
+  execute,
+  outcomeLabel,
+} from './reconciler.ts'
 import { formatLog, readPackageInfo } from './render.ts'
 
 async function readOptional(file: string): Promise<string | undefined> {
@@ -52,6 +77,24 @@ function formatTime(date: Date, timeZone: string): string {
   return `${date.toLocaleString('sv-SE', { timeZone })} (${timeZone})`
 }
 
+/** The Flutter update of this run, for the job summary. Only when it is enabled. */
+interface FlutterSummary {
+  target?: FlutterTarget
+  waiting?: { version: string; released: Date; shownFrom: Date }
+  unresolvable?: FlutterUnresolvable
+}
+
+/** The status of the Flutter update, from the outcome of the flutter unit. */
+function flutterStatus(outcomes: Outcome[], unresolvable: boolean, prLink: (n: number) => string): string {
+  if (unresolvable) return 'Does not resolve'
+  const o = outcomes.find((x) => x.kind === 'flutter' && x.action !== 'closed')
+  if (o === undefined || o.action === 'error') return 'Error'
+  const pr = o.pr === undefined ? '' : prLink(o.pr)
+  if (o.action === 'notified') return `Not updated in ${pr} (manual commits)`
+  if (o.action === 'skipped') return `Closed in ${pr}`
+  return `Pull request ${pr}`
+}
+
 async function writeSummary(opts: {
   window: Window
   config: Config
@@ -60,9 +103,11 @@ async function writeSummary(opts: {
   outcomes: Outcome[]
   fixes: Map<string, Fix>
   failures: PlanFailures
+  flutter?: FlutterSummary
   prUrl: (n: number) => string
 }) {
   const { window, config, outcomes } = opts
+  const prLink = (n: number) => `<a href="${opts.prUrl(n)}">#${n}</a>`
   const s = core.summary.addHeading('pubreform', 2)
   s.addList([
     `slot: ${formatTime(window.slot, config.schedule.timezone)}`,
@@ -89,13 +134,33 @@ async function writeSummary(opts: {
       ],
       ...outcomes.map((o) => [
         o.kind ?? '',
-        o.packages.map(pkgLink).join(', '),
+        [...(o.kind === 'flutter' ? ['Flutter'] : []), ...o.packages.map(pkgLink)].join(', '),
         actions[o.action],
-        o.pr === undefined ? '' : `<a href="${opts.prUrl(o.pr)}">#${o.pr}</a>`,
+        o.pr === undefined ? '' : prLink(o.pr),
       ]),
     ])
   }
   const tz = config.schedule.timezone
+  const flutter = opts.flutter
+  if (flutter && (flutter.target || flutter.waiting || flutter.unresolvable)) {
+    s.addHeading('Flutter SDK', 3)
+    if (flutter.target) {
+      s.addTable([
+        ['Current', 'Target', 'Status'].map((data) => ({ data, header: true })),
+        [flutter.target.from, flutter.target.to, flutterStatus(outcomes, flutter.unresolvable !== undefined, prLink)],
+      ])
+    }
+    if (flutter.unresolvable) {
+      s.addDetails(`Flutter ${flutter.unresolvable.version}`, `<pre>${escapeHtml(flutter.unresolvable.reason)}</pre>`)
+    }
+    if (flutter.waiting) {
+      const w = flutter.waiting
+      s.addRaw(
+        `<p>Waiting for the release age: Flutter ${w.version} (published ${formatTime(w.released, tz)}, used from ${formatTime(w.shownFrom, tz)})</p>`,
+        true,
+      )
+    }
+  }
   if (opts.waiting.length > 0) {
     s.addHeading('Waiting for the release age', 3)
     s.addTable([
@@ -139,7 +204,7 @@ async function writeSummary(opts: {
   if (errors.length > 0) {
     s.addHeading('Errors', 3)
     for (const o of errors) {
-      s.addRaw(`<p>${o.packages.join(', ') || 'pubreform'}${o.pr === undefined ? '' : ` (#${o.pr})`}</p>`, true)
+      s.addRaw(`<p>${outcomeLabel(o).join(', ') || 'pubreform'}${o.pr === undefined ? '' : ` (#${o.pr})`}</p>`, true)
       s.addCodeBlock(o.error!)
     }
   }
@@ -174,6 +239,7 @@ export async function run(): Promise<void> {
     lock: await readRequired(path.join(dir, 'pubspec.lock'), 'pubspec.lock'),
   }
   const fvmrc = await readOptional(path.join(dir, '.fvmrc'))
+  const vscodeSettings = await readOptional(path.join(dir, '.vscode', 'settings.json'))
   if (hasWorkspace(files.pubspec)) throw new Error('pub workspaces are not supported')
   const postUpdate = config.post_update.length > 0
   if (postUpdate) await checkEnvironment()
@@ -181,6 +247,27 @@ export async function run(): Promise<void> {
 
   const window = computeWindow(config.schedule, config.min_release_age_days, new Date())
   core.info(`slot: ${window.slot.toISOString()}, cutoff: ${window.cutoff.toISOString()}`)
+
+  // The Flutter update: only for a stable version in .fvmrc. Not getting the releases is a global error.
+  const currentFlutter = config.flutter.enabled ? pinnedFlutter(fvmrc) : undefined
+  let releases: FlutterRelease[] = []
+  let flutterSummary: FlutterSummary | undefined
+  if (currentFlutter !== undefined) {
+    // For tests only: fetch from a fixture server.
+    releases = await fetchReleases(process.env.PUBREFORM_FLUTTER_RELEASES || undefined)
+    const { target, waiting } = chooseTarget(releases, currentFlutter, window.cutoff)
+    core.info(`Flutter ${currentFlutter}: target ${target?.to ?? 'none'}${waiting ? `, waiting for ${waiting.version}` : ''}`)
+    flutterSummary = {
+      ...(target ? { target } : {}),
+      ...(waiting
+        ? { waiting: { ...waiting, shownFrom: firstSlotShowing(config.schedule, config.min_release_age_days, waiting.released) } }
+        : {}),
+    }
+  }
+
+  // Before applying: whether the Flutter update is applied depends on its pull request.
+  const openPrs = await github.openPrs(base)
+  const closedPrs = await github.closedPrs(base)
 
   const deps = directDeps(files.pubspec, files.lock)
   const proxy = new RegistryProxy({
@@ -196,6 +283,8 @@ export async function run(): Promise<void> {
   const results: UnitResult[] = []
   const unitErrors: UnitError[] = []
   const waiting: Waiting[] = []
+  /** Operations on the flutter pull request decided without applying the update. */
+  const flutterOps: Op[] = []
   try {
     // Every resolution sees the same versions, so the fixes are known before planning.
     fixes = await core.group('Security advisories', async () => {
@@ -247,13 +336,80 @@ export async function run(): Promise<void> {
         }
       })
     }
+    const target = flutterSummary?.target
+    if (target) {
+      const decided = decideFlutter(target, openPrs, closedPrs, hashes, config.flutter.reapply)
+      if (decided !== 'apply') {
+        core.info(`Flutter ${target.to}: not applied (${decided.op})`)
+        flutterOps.push(decided)
+      } else {
+        await core.group(`Apply flutter: ${target.from} → ${target.to}`, async () => {
+          const unit: Unit = { kind: 'flutter', members: [], targets: {} }
+          try {
+            const result = await applyFlutter(target)
+            if ('unresolvable' in result) {
+              core.info(`Flutter ${target.to} does not resolve:\n${result.unresolvable}`)
+              flutterSummary!.unresolvable = { version: target.to, reason: result.unresolvable }
+            } else {
+              results.push(result)
+            }
+          } catch (e) {
+            unitErrors.push({ unit, log: e instanceof Error ? e.message : String(e) })
+          }
+        })
+      }
+    }
   } finally {
     await proxy.stop()
   }
 
-  const openPrs = await github.openPrs(base)
-  const closedPrs = await github.closedPrs(base)
-  const ops = decide(results, unitErrors, thePlan, openPrs, closedPrs, hashes)
+  /** Resolves and applies the Flutter update with the new SDK, in a copy of the base. */
+  async function applyFlutter(target: FlutterTarget): Promise<UnitResult | { unresolvable: string }> {
+    const from = target.from
+    const flutterFiles = [{ path: '.fvmrc', content: rewriteFvmrc(fvmrc!, from, target.to) }]
+    if (vscodeSettings !== undefined) {
+      const content = rewriteVscodeSettings(vscodeSettings, from, target.to)
+      if (content !== vscodeSettings) flutterFiles.push({ path: '.vscode/settings.json', content })
+    }
+    const pubspec = rewriteEnvironment(files.pubspec, { flutter: target.to, dart: target.dartTo }, config.flutter.versioning)
+    const flutterDir = path.join(path.dirname(dir), 'flutter')
+    await prepareFlutterDir(dir, flutterDir, flutterFiles[0]!.content)
+    await installFlutter(flutterDir, target.to)
+    const flutterPub = new Pub({ dir: flutterDir, flutter: isFlutter(files.pubspec), fvm: true, hostedUrl: proxy.url })
+    const planned = await planFlutter({
+      deps,
+      pubspec,
+      resolve: async (args, p) => lockVersions((await flutterPub.run(args, { pubspec: p, lock: files.lock })).lock),
+    })
+    if ('unresolvable' in planned) return planned
+    const result = (await applyUnit(planned.unit, {
+      base: { pubspec, lock: files.lock },
+      deps,
+      versioning: config.versioning,
+      pub: (args, f) => flutterPub.run(args, f),
+      fixes,
+      cutoff: window.cutoff,
+      flutter: { from, to: target.to, ...(target.dartFrom ? { dartFrom: target.dartFrom } : {}), dartTo: target.dartTo, files: flutterFiles },
+    }))!
+    // For tests only: fetch from a fixture server.
+    const changelog = await fetchFlutterChangelog(releases, from, target.to, process.env.PUBREFORM_FLUTTER_CHANGELOG || undefined)
+    return changelog === undefined ? result : { ...result, flutter: { ...result.flutter!, changelog } }
+  }
+
+  // The flutter pull request of an operation decided without applying is not matched again.
+  const flutterPrs = new Set(flutterOps.flatMap((o) => ('pr' in o ? [o.pr] : [])))
+  const ops = [
+    ...decide(
+      results,
+      unitErrors,
+      thePlan,
+      openPrs.filter((p) => !flutterPrs.has(p)),
+      closedPrs,
+      hashes,
+      flutterSummary?.unresolvable,
+    ),
+    ...flutterOps,
+  ]
   const flutter = isFlutter(files.pubspec)
   const fvm = fvmrc !== undefined
   // Failing to prepare post_update is a global error: nothing is changed.
@@ -307,6 +463,7 @@ export async function run(): Promise<void> {
       failed: new Set(unitErrors.flatMap((e) => e.unit.members)),
       minorFailed: unitErrors.some((e) => e.unit.kind === 'minor'),
     },
+    flutter: flutterSummary,
     prUrl: (n) => `${serverUrl}/${repository}/pull/${n}`,
   })
   const errors = outcomes.filter((o) => o.error !== undefined).length

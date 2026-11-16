@@ -75,20 +75,36 @@ export type Constraint = Comparison[]
 
 const COMPARISON = /^(\^|>=|>|<=|<)?\s*(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/
 
+/** A comparison as written. `op` is empty for an exact version. */
+export interface WrittenComparison {
+  op: '^' | '>=' | '>' | '<=' | '<' | ''
+  version: string
+}
+
 /**
- * Parses `any`, `^v`, `>=v`, `>v`, `<=v`, `<v`, `v`, and intersections of them.
+ * Splits `any`, `^v`, `>=v`, `>v`, `<=v`, `<v`, `v`, and intersections of them, into comparisons. `any` has none.
  * As in pub, whitespace after an operator and between comparisons is optional (`>= 1.0.0`, `>=1.0.0<2.0.0`).
  */
-export function parseConstraint(s: string): Constraint {
+export function splitConstraint(s: string): WrittenComparison[] {
   let rest = s.trim()
   if (rest === 'any') return []
-  const result: Constraint = []
+  const result: WrittenComparison[] = []
   while (rest !== '') {
     const m = COMPARISON.exec(rest)
     if (!m) throw new Error(`invalid version constraint "${s}"`)
     rest = rest.slice(m[0].length).trimStart()
-    const version = parseVersion(m[2]!)
-    const op = m[1]
+    parseVersion(m[2]!)
+    result.push({ op: (m[1] as WrittenComparison['op'] | undefined) ?? '', version: m[2]! })
+  }
+  if (result.length === 0) throw new Error(`invalid version constraint "${s}"`)
+  return result
+}
+
+/** Parses a constraint (see splitConstraint). */
+export function parseConstraint(s: string): Constraint {
+  const result: Constraint = []
+  for (const { op, version: written } of splitConstraint(s)) {
+    const version = parseVersion(written)
     if (op === '^') {
       const upper =
         version.major > 0
@@ -96,10 +112,9 @@ export function parseConstraint(s: string): Constraint {
           : { major: 0, minor: version.minor + 1, patch: 0, pre: [], build: [] }
       result.push({ op: '>=', version }, { op: '<', version: upper })
     } else {
-      result.push({ op: (op as Op | undefined) ?? '=', version })
+      result.push({ op: op === '' ? '=' : op, version })
     }
   }
-  if (result.length === 0) throw new Error(`invalid version constraint "${s}"`)
   return result
 }
 

@@ -12,6 +12,18 @@ export interface Change {
   section: Section
 }
 
+/** The Flutter SDK update of a flutter unit. */
+export interface FlutterChange {
+  from: string
+  to: string
+  dartFrom?: string
+  dartTo: string
+  /** .fvmrc, and .vscode/settings.json when it changed. */
+  files: { path: string; content: string }[]
+  /** The extracted changelog, when it could be fetched. */
+  changelog?: string
+}
+
 export interface UnitResult {
   unit: Unit
   files: PubFiles
@@ -21,6 +33,8 @@ export interface UnitResult {
   transitiveFixes: Record<string, { from: string; to: string }>
   /** Advisories that this result fixes, by package name, then id. */
   advisories: FixedAdvisory[]
+  /** Set on a flutter unit. */
+  flutter?: FlutterChange
 }
 
 export interface FixedAdvisory {
@@ -44,6 +58,8 @@ export function applyArgs(unit: Unit, deps: DirectDep[], versioning: Versioning)
       const spec = `${name}:${dep && isPinned(dep.constraint) ? '' : '^'}${unit.targets[name]}`
       return dep?.section === 'dev_dependencies' ? `dev:${spec}` : spec
     })
+  // A flutter unit without targets resolves the environment and the base lockfile with the new SDK again.
+  if (unit.kind === 'flutter' && Object.keys(unit.targets).length === 0) return [['get']]
   if (unit.kind !== 'minor') return [['add', ...specs(Object.keys(unit.targets))]]
   const upgrade = versioning === 'increase' ? ['upgrade', '--tighten'] : ['upgrade']
   // pub upgrade does not move pinned versions, so they are raised to their versions in U first.
@@ -62,10 +78,21 @@ export function directChanges(deps: DirectDep[], lock: string): Record<string, C
   return changes
 }
 
-/** Returns undefined when neither a direct dependency nor a fixed transitive one changes. */
+/**
+ * Returns undefined when neither a direct dependency nor a fixed transitive one changes, except for a flutter unit:
+ * its update is the Flutter version. `flutter` is put in the result as it is.
+ */
 export async function applyUnit(
   unit: Unit,
-  opts: { base: PubFiles; deps: DirectDep[]; versioning: Versioning; pub: RunPub; fixes: Map<string, Fix>; cutoff: Date },
+  opts: {
+    base: PubFiles
+    deps: DirectDep[]
+    versioning: Versioning
+    pub: RunPub
+    fixes: Map<string, Fix>
+    cutoff: Date
+    flutter?: FlutterChange
+  },
 ): Promise<UnitResult | undefined> {
   let files = opts.base
   for (const args of applyArgs(unit, opts.deps, opts.versioning)) files = await opts.pub(args, files)
@@ -83,6 +110,7 @@ export async function applyUnit(
       advisories.push({ package: fix.name, advisory, from: fix.locked, to, ...(early ? { early } : {}) })
     }
   }
-  if (Object.keys(changes).length === 0 && Object.keys(transitiveFixes).length === 0) return undefined
-  return { unit, files, changes, transitiveFixes, advisories }
+  const empty = Object.keys(changes).length === 0 && Object.keys(transitiveFixes).length === 0
+  if (empty && unit.kind !== 'flutter') return undefined
+  return { unit, files, changes, transitiveFixes, advisories, ...(opts.flutter ? { flutter: opts.flutter } : {}) }
 }

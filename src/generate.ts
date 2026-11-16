@@ -106,13 +106,13 @@ function throughLink(root: string, p: string): boolean {
 
 /**
  * Turns the changed paths in `dir` into tree entries. The contents are untrusted: paths outside the tree are dropped,
- * and links are committed as links instead of being followed.
+ * and links are committed as links instead of being followed. `updated` are more files that the update itself writes.
  */
-export function treeEntries(dir: string, changes: StatusEntry[]): TreeEntry[] {
+export function treeEntries(dir: string, changes: StatusEntry[], updated: string[] = []): TreeEntry[] {
   const entries: TreeEntry[] = []
   for (const change of changes) {
     const p = change.path
-    if (!isInside(p) || UPDATE_FILES.has(p)) continue
+    if (!isInside(p) || UPDATE_FILES.has(p) || updated.includes(p)) continue
     if (change.deleted) {
       entries.push({ path: p, deleted: true })
       continue
@@ -334,6 +334,7 @@ export interface GeneratorOptions {
   hostedUrl: string
   /** From buildImage. */
   image: string
+  /** The SDK of the base. A flutter unit uses the SDK of its new version instead. */
   sdk: Sdk
   pubCache: string
 }
@@ -349,18 +350,27 @@ export class Generator {
       // The tracked files of the base, without .git: git would run the hooks and the config that the commands wrote.
       const gitDir = path.join(baseDir, '.git')
       await run('git', ['--git-dir', gitDir, '--work-tree', baseDir, 'checkout-index', '--all', `--prefix=${dir}/`])
+      // A Flutter update: .fvmrc names the new version, for pub and for the SDK of the commands.
+      const updated = result.flutter?.files ?? []
+      for (const file of updated) await fsp.writeFile(path.join(dir, file.path), file.content)
       // As the runner's user, outside the container, through the stopped proxy's URL: every package is in the cache.
-      const pub = new Pub({ dir, flutter: this.options.flutter, fvm: this.options.fvm, hostedUrl: this.options.hostedUrl })
+      const { flutter, fvm } = this.options
+      const pub = new Pub({ dir, flutter, fvm, hostedUrl: this.options.hostedUrl })
       await pub.run(['get', '--offline'], result.files)
-      for (const command of this.options.commands) await this.runCommand(command, dir)
-      return treeEntries(dir, await changedFiles(baseDir, dir))
+      const sdk = result.flutter ? await findSdk({ flutter, fvm, cwd: dir }) : this.options.sdk
+      for (const command of this.options.commands) await this.runCommand(command, dir, sdk)
+      return treeEntries(
+        dir,
+        await changedFiles(baseDir, dir),
+        updated.map((f) => f.path),
+      )
     } finally {
       await fsp.rm(dir, { recursive: true, force: true })
     }
   }
 
-  private async runCommand(command: PostUpdate, dir: string) {
-    const { image, sdk, pubCache } = this.options
+  private async runCommand(command: PostUpdate, dir: string, sdk: Sdk) {
+    const { image, pubCache } = this.options
     const env = commandEnv(process.env, { sdk, pubCache, extra: command.env })
     const name = `pubreform-${random()}`
     const args = dockerArgs(command, {

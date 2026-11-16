@@ -48,6 +48,12 @@ describe('applyArgs', () => {
     const unit: Unit = { kind: 'single', members: ['http'], targets: { http: '2.0.0', lints: '5.0.1' } }
     expect(applyArgs(unit, pinned, 'increase')).toEqual([['add', 'http:^2.0.0', 'dev:lints:5.0.1']])
   })
+  test('flutter: pub get without targets, pub add with them', () => {
+    expect(applyArgs({ kind: 'flutter', members: [], targets: {} }, deps, 'increase')).toEqual([['get']])
+    const pinned = deps.map((d) => (d.name === 'lints' ? { ...d, constraint: '5.0.0' } : d))
+    const unit: Unit = { kind: 'flutter', members: ['http'], targets: { http: '2.0.0', lints: '5.0.1' } }
+    expect(applyArgs(unit, pinned, 'lockfile-only')).toEqual([['add', 'http:^2.0.0', 'dev:lints:5.0.1']])
+  })
 })
 
 describe('applyUnit', () => {
@@ -113,6 +119,25 @@ describe('applyUnit', () => {
       pub: async () => ({ pubspec: base.pubspec, lock: lock({ http: '1.5.0', lints: '5.0.0', meta: '1.16.0', async: '2.14.0' }) }),
     })
     expect(result).toBeUndefined()
+  })
+
+  test('a flutter unit is kept without changes, with its Flutter update', async () => {
+    const unit: Unit = { kind: 'flutter', members: [], targets: {} }
+    const flutter = { from: '3.47.7', to: '3.50.0', dartTo: '3.14.0', files: [{ path: '.fvmrc', content: '{"flutter":"3.50.0"}' }] }
+    const files = { pubspec: 'environment:\n  flutter: 3.50.0\n', lock: base.lock }
+    const result = await applyUnit(unit, {
+      base: files,
+      deps,
+      versioning: 'increase',
+      fixes: new Map(),
+      cutoff: new Date(),
+      pub: async (args, f) => {
+        expect(args).toEqual(['get'])
+        return f
+      },
+      flutter,
+    })
+    expect(result).toEqual({ unit, files, changes: {}, transitiveFixes: {}, advisories: [], flutter })
   })
 
   describe('security advisories', () => {

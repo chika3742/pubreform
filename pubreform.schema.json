@@ -104,6 +104,28 @@
           }
         }
       }
+    },
+    "flutter": {
+      "description": "Updates of the Flutter SDK version in `.fvmrc`.",
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "enabled": {
+          "description": "Whether to update the Flutter version in `.fvmrc`. Nothing is done without `.fvmrc`.",
+          "type": "boolean",
+          "default": true
+        },
+        "versioning": {
+          "description": "How the `sdk` and `flutter` constraints in `environment` are rewritten: `increase` always raises the lower bounds, `lockfile-only` rewrites them only when the new version does not fit. Defaults to the top-level `versioning`.",
+          "enum": ["increase", "lockfile-only"]
+        },
+        "reapply": {
+          "description": "`on-change` skips installing the new SDK and updating the pull request when nothing changed on the default branch or in the config. `always` updates it on every run.",
+          "enum": ["on-change", "always"],
+          "default": "on-change"
+        }
+      }
     }
   }
 }

@@ -21,10 +21,12 @@ import {
   type Meta,
   metaOf,
   parseMeta,
+  REBASE_LINE,
   readPackageInfo,
   renderBody,
   renderMeta,
   title,
+  unresolvableComment,
   withoutBacklinks,
 } from '../src/render.ts'
 
@@ -458,5 +460,165 @@ describe('withoutBacklinks', () => {
   test('keeps headings and HTML entities', () => {
     const text = '## 1.2.0\n\n&#123; ##4'
     expect(withoutBacklinks(text, 'https://github.com/o/r')).toBe(text)
+  })
+})
+
+describe('flutter', () => {
+  const flutter: UnitResult = {
+    unit: { kind: 'flutter', members: ['test'], targets: { test: '1.32.0' } },
+    files: { pubspec: '', lock: '' },
+    changes: { test: { from: '1.31.1', to: '1.32.0', section: 'dev_dependencies' } },
+    transitiveFixes: {},
+    advisories: [],
+    flutter: {
+      from: '3.47.7',
+      to: '3.50.0',
+      dartFrom: '3.13.5',
+      dartTo: '3.14.0',
+      files: [{ path: '.fvmrc', content: '{"flutter": "3.50.0"}' }],
+      changelog: '### [3.50.0](https://github.com/flutter/flutter/releases/tag/3.50.0)\n- Changes.',
+    },
+  }
+  const only: UnitResult = { ...flutter, unit: { kind: 'flutter', members: [], targets: {} }, changes: {} }
+
+  test('branch, title and commit message', () => {
+    expect(branchName(flutter.unit)).toBe('pubreform/flutter')
+    expect(title(flutter)).toBe('Update Flutter from 3.47.7 to 3.50.0')
+    expect(title(only)).toBe('Update Flutter from 3.47.7 to 3.50.0')
+    const adv: Advisory = { id: 'GHSA-x', aliases: [], versions: new Set() }
+    expect(title({ ...flutter, advisories: [{ package: 'test', advisory: adv, from: '1.31.1', to: '1.32.0' }] })).toBe(
+      '[Security] Update Flutter from 3.47.7 to 3.50.0',
+    )
+    expect(commitMessage(flutter)).toBe(`Update Flutter from 3.47.7 to 3.50.0
+
+| | From | To |
+|---|---|---|
+| Flutter | 3.47.7 | 3.50.0 |
+| Dart | 3.13.5 | 3.14.0 |
+
+| Package | From | To | Type |
+|---|---|---|---|
+| test | 1.31.1 | 1.32.0 | dev |
+`)
+    const { dartFrom, ...noDart } = flutter.flutter!
+    expect(commitMessage({ ...only, flutter: noDart })).toBe(`Update Flutter from 3.47.7 to 3.50.0
+
+| | From | To |
+|---|---|---|
+| Flutter | 3.47.7 | 3.50.0 |
+`)
+  })
+
+  test('metadata', () => {
+    const meta = metaOf(flutter, hashes, 'abc')
+    expect(renderMeta(meta)).toStartWith('<!-- pubreform:meta {"v":1,"kind":"flutter","flutter":["3.47.7","3.50.0"],"packages":{"test":["1.31.1","1.32.0"]},')
+    expect(parseMeta(renderMeta(meta))).toEqual(meta)
+    expect(metaOf(only, hashes, 'abc').packages).toEqual({})
+    expect('flutter' in metaOf(single, hashes, 'abc')).toBe(false)
+  })
+
+  test('body', () => {
+    const infos = new Map([['test', { source: 'https://github.com/dart-lang/test', changelog: '## 1.32.0\n\n- New.\n\n## 1.31.1\n' }]])
+    const body = renderBody(flutter, metaOf(flutter, hashes, 'abc'), infos, { generated: 2, timeZone: 'UTC' })
+    expect(body).toBe(`Updates Flutter.
+
+| | From | To |
+|---|---|---|
+| Flutter | 3.47.7 | 3.50.0 |
+| Dart | 3.13.5 | 3.14.0 |
+
+Updates the following packages together, because the new Flutter requires them.
+
+| Package | From | To | Type |
+|---|---|---|---|
+| [test](https://pub.dev/packages/test) | 1.31.1 | 1.32.0 | dev |
+
+Files changed by the \`post_update\` commands: 2
+
+### Flutter 3.47.7 → 3.50.0
+
+[Release](https://github.com/flutter/flutter/releases/tag/3.50.0)
+
+<details>
+<summary>Changelog</summary>
+
+### [3.50.0](https://github.com/flutter/flutter/releases/tag/3.50.0)
+- Changes.
+
+</details>
+
+### test 1.31.1 → 1.32.0
+
+[pub.dev](https://pub.dev/packages/test/versions/1.32.0) · [Source](https://github.com/dart-lang/test)
+
+<details>
+<summary>Changelog</summary>
+
+## 1.32.0
+
+- New.
+
+</details>
+
+---
+
+${REBASE_LINE}
+
+${renderMeta(metaOf(flutter, hashes, 'abc'))}
+`)
+  })
+
+  test('without packages or a changelog', () => {
+    const { changelog, ...noChangelog } = only.flutter!
+    const result = { ...only, flutter: noChangelog }
+    const body = renderBody(result, metaOf(result, hashes, 'abc'), new Map(), { timeZone: 'UTC' })
+    expect(body).toStartWith(`Updates Flutter.
+
+| | From | To |
+|---|---|---|
+| Flutter | 3.47.7 | 3.50.0 |
+| Dart | 3.13.5 | 3.14.0 |
+
+### Flutter 3.47.7 → 3.50.0
+
+[Release](https://github.com/flutter/flutter/releases/tag/3.50.0)
+
+[Changelog](https://github.com/flutter/flutter/blob/flutter-3.50-candidate.0/CHANGELOG.md)
+
+---
+`)
+  })
+
+  test('the Flutter changelog takes one share of 50,000 characters', () => {
+    const long = `### [3.50.0](https://github.com/flutter/flutter/releases/tag/3.50.0)\n\n\`\`\`\n${'- line of text\n'.repeat(4000)}`
+    const result = { ...flutter, flutter: { ...flutter.flutter!, changelog: long } }
+    const body = renderBody(result, metaOf(result, hashes, 'abc'), new Map(), { timeZone: 'UTC' })
+    const section = body.slice(body.indexOf('### Flutter'), body.indexOf('### test'))
+    expect(section.length).toBeLessThanOrEqual(25_000 + 300)
+    expect(section).toContain(
+      '- line of text\n\`\`\`\n…\n\n[Full changelog](https://github.com/flutter/flutter/blob/flutter-3.50-candidate.0/CHANGELOG.md)',
+    )
+  })
+
+  test('comments', () => {
+    expect(
+      contentChangedComment({ test: ['1.31.1', '1.32.0'] }, { test: { from: '1.31.1', to: '1.32.0' } }, {
+        before: ['3.47.7', '3.50.0'],
+        after: { from: '3.47.7', to: '3.50.0' },
+      }),
+    ).toBe('The update in this PR has changed.\n\n| Package | Before | After |\n|---|---|---|\n| Flutter | 3.47.7 → 3.50.0 | 3.47.7 → 3.50.0 |')
+    expect(contentChangedComment({}, { test: { from: '1.31.1', to: '1.32.0' } }, { before: ['3.47.7', '3.47.9'], after: { from: '3.47.7', to: '3.50.0' } })).toBe(
+      'The update in this PR has changed.\n\n| Package | Before | After |\n|---|---|---|\n| Flutter | 3.47.7 → 3.47.9 | 3.47.7 → 3.50.0 |\n| test | – | 1.31.1 → 1.32.0 |',
+    )
+    expect(unresolvableComment('3.50.0', 'Because app requires ```x```, version solving failed.')).toBe(`Closing: Flutter 3.50.0 does not resolve with the dependencies of this project.
+
+<details>
+<summary>Reason</summary>
+
+\`\`\`\`
+Because app requires \`\`\`x\`\`\`, version solving failed.
+\`\`\`\`
+
+</details>`)
   })
 })

@@ -83,6 +83,12 @@ describe('treeEntries', () => {
       { path: 'old.g.dart', deleted: true },
     ])
   })
+  test('leaves out the other files that the update writes', () => {
+    const changes = ['lib/a.g.dart', '.fvmrc', '.vscode/settings.json'].map((p) => ({ path: p, deleted: false }))
+    expect(treeEntries(dir, [...changes, { path: '.fvmrc', deleted: true }], ['.fvmrc', '.vscode/settings.json'])).toEqual([
+      { path: 'lib/a.g.dart', mode: '100644', content: '\ufeffpart of a;\r\n' },
+    ])
+  })
 })
 
 describe('commandEnv', () => {

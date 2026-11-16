@@ -10,7 +10,15 @@ describe('parseConfig', () => {
       versioning: 'increase',
       ignore: [],
       post_update: [],
+      flutter: { enabled: true, versioning: 'increase', reapply: 'on-change' },
     })
+  })
+
+  test('flutter.versioning defaults to the top-level versioning', () => {
+    expect(parseConfig('schedule: {cron: "0 9 * * 1"}\nversioning: lockfile-only\n').flutter.versioning).toBe('lockfile-only')
+    expect(
+      parseConfig('schedule: {cron: "0 9 * * 1"}\nversioning: lockfile-only\nflutter: {versioning: increase}\n').flutter.versioning,
+    ).toBe('increase')
   })
 
   test('reads all keys', () => {
@@ -31,6 +39,10 @@ post_update:
   - run: ./tool/generate_api.sh
     network: true
     env: [API_SPEC_URL]
+flutter:
+  enabled: false
+  versioning: increase
+  reapply: always
 `)
     expect(config).toEqual({
       schedule: { cron: '0 9 * * 1', timezone: 'Asia/Tokyo' },
@@ -42,6 +54,7 @@ post_update:
         { run: 'dart run build_runner build', network: false, env: [] },
         { run: './tool/generate_api.sh', network: true, env: ['API_SPEC_URL'] },
       ],
+      flutter: { enabled: false, versioning: 'increase', reapply: 'always' },
     })
   })
 
@@ -74,6 +87,11 @@ post_update:
     ['schedule: {cron: "0 9 * * 1"}\npost_update: [{run: a, env: [A-B]}]', 'post_update[0].env[0]: invalid environment variable name'],
     ['schedule: {cron: "0 9 * * 1"}\npost_update: [{run: a, env: [A, A]}]', 'post_update[0].env[1]: duplicate name "A"'],
     ['schedule: {cron: "0 9 * * 1"}\npost_update: [{run: a, env: [INPUT_TOKEN]}]', 'post_update[0].env[0]: "INPUT_TOKEN" must not be passed'],
+    ['schedule: {cron: "0 9 * * 1"}\nflutter:', 'flutter: must be a map'],
+    ['schedule: {cron: "0 9 * * 1"}\nflutter: {version: 3.50.0}', 'flutter.version: unknown key'],
+    ['schedule: {cron: "0 9 * * 1"}\nflutter: {enabled: 1}', 'flutter.enabled: must be true or false'],
+    ['schedule: {cron: "0 9 * * 1"}\nflutter: {versioning: widen}', 'flutter.versioning: must be'],
+    ['schedule: {cron: "0 9 * * 1"}\nflutter: {reapply: never}', 'flutter.reapply: must be'],
     ['schedule: {cron: "0 9 * * 1"}\npost_update: [{run: a, env: [ACTIONS_ID_TOKEN_REQUEST_TOKEN]}]', 'post_update[0].env[0]: "ACTIONS_ID_TOKEN_REQUEST_TOKEN" must not be passed'],
   ]
   for (const [text, message] of errors) {
@@ -98,6 +116,15 @@ describe('configHash', () => {
     const full = parseConfig('schedule:\n  cron: "0 9 * * 1"\npost_update: [{run: a, network: false, env: []}]\n')
     expect(configHash(short)).toBe(configHash(full))
     expect(configHash(short)).not.toBe(configHash(base))
+  })
+  test('changes with flutter, whose versioning defaults to the top-level one', () => {
+    const other = parseConfig('schedule:\n  cron: "0 9 * * 1"\nflutter: {reapply: always}\n')
+    expect(configHash(other)).not.toBe(configHash(base))
+    const explicit = parseConfig('schedule:\n  cron: "0 9 * * 1"\nflutter: {versioning: increase}\n')
+    expect(configHash(explicit)).toBe(configHash(base))
+    const top = parseConfig('schedule:\n  cron: "0 9 * * 1"\nversioning: lockfile-only\n')
+    const both = parseConfig('schedule:\n  cron: "0 9 * * 1"\nversioning: lockfile-only\nflutter: {versioning: increase}\n')
+    expect(configHash(both)).not.toBe(configHash(top))
   })
   test('changes with labels', () => {
     const other = parseConfig('schedule:\n  cron: "0 9 * * 1"\nlabels: [deps]\n')
