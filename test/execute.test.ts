@@ -362,3 +362,77 @@ describe('execute', () => {
     })
   })
 })
+
+describe('execute: flutter', () => {
+  const flutter: UnitResult = {
+    unit: { kind: 'flutter', members: ['test'], targets: { test: '1.32.0' } },
+    files: { pubspec: 'p', lock: 'l' },
+    changes: { test: { from: '1.31.1', to: '1.32.0', section: 'dev_dependencies' } },
+    transitiveFixes: {},
+    advisories: [],
+    flutter: { from: '3.47.7', to: '3.50.0', dartTo: '3.14.0', files: [{ path: '.fvmrc', content: '{"flutter": "3.50.0"}' }] },
+  }
+  const meta = {
+    v: 1 as const,
+    kind: 'flutter' as const,
+    flutter: ['3.47.7', '3.47.9'] as [string, string],
+    packages: {},
+    baseHash: 'x',
+    configHash: 'y',
+    commit: 'head',
+  }
+
+  test('create commits .fvmrc, and logs the versions', async () => {
+    const { github, calls } = fakeGitHub()
+    let extra: unknown
+    const createCommit = github.createCommit
+    github.createCommit = async (o) => {
+      extra = o.extra
+      return createCommit(o)
+    }
+    const infos: string[] = []
+    const outcomes = await execute([{ op: 'create', result: flutter, branch: 'pubreform/flutter' }], context(github, infos))
+    expect(extra).toEqual([{ path: '.fvmrc', content: '{"flutter": "3.50.0"}' }])
+    expect(infos[0]).toBe('Create a pull request (flutter: 3.47.7 → 3.50.0) on pubreform/flutter')
+    expect(calls[2]).toBe('createPr pubreform/flutter Update Flutter from 3.47.7 to 3.50.0')
+    expect(outcomes).toEqual([{ kind: 'flutter', packages: ['test'], action: 'created', pr: 100 }])
+  })
+
+  test('regenerate comments the Flutter versions', async () => {
+    const { github, comments } = fakeGitHub({ heads: { 'pubreform/flutter': 'head' } })
+    const pr = prOf(3, 'pubreform/flutter', { meta })
+    await execute([{ op: 'regenerate', pr, result: flutter, contentChanged: true }], context(github))
+    expect(comments.get(3)![0]!.body).toBe(
+      'The update in this PR has changed.\n\n| Package | Before | After |\n|---|---|---|\n| Flutter | 3.47.7 → 3.47.9 | 3.47.7 → 3.50.0 |\n| test | – | 1.31.1 → 1.32.0 |',
+    )
+  })
+
+  test('skip and notifyManual without a result take the packages from the pull request', async () => {
+    const { github } = fakeGitHub()
+    const withTest = { ...meta, packages: { test: ['1.31.1', '1.32.0'] as [string, string] } }
+    const infos: string[] = []
+    const outcomes = await execute(
+      [
+        { op: 'skip', closedPr: prOf(9, 'pubreform/flutter', { meta: withTest }) },
+        { op: 'notifyManual', pr: prOf(3, 'pubreform/flutter', { meta: withTest }) },
+      ],
+      context(github, infos),
+    )
+    expect(infos[0]).toBe('Skip 3.47.7 → 3.47.9: the same update was closed in #9')
+    expect(outcomes).toEqual([
+      { kind: 'flutter', packages: ['test'], action: 'skipped', pr: 9 },
+      { kind: 'flutter', packages: ['test'], action: 'notified', pr: 3 },
+    ])
+  })
+
+  test('close because the new Flutter does not resolve', async () => {
+    const { github, calls, comments } = fakeGitHub()
+    const pr = prOf(3, 'pubreform/flutter', { meta, body: renderMeta(meta) })
+    const unresolvable = { version: '3.50.2', reason: 'Because x, version solving failed.' }
+    const outcomes = await execute([{ op: 'close', pr, unresolvable }], context(github))
+    expect(comments.get(3)![0]!.body).toStartWith('Closing: Flutter 3.50.2 does not resolve with the dependencies of this project.')
+    expect(comments.get(3)![0]!.body).toContain('```\nBecause x, version solving failed.\n```')
+    expect(calls.slice(1)).toEqual(['closePr 3 meta closed', 'deleteBranch pubreform/flutter'])
+    expect(outcomes).toEqual([{ kind: 'flutter', packages: [], action: 'closed', pr: 3 }])
+  })
+})

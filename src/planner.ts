@@ -6,11 +6,11 @@ import { allows, compareVersions, isPinned, isStable, maxVersion } from './versi
 /** Resolves with pub and returns name -> version from the resulting lockfile. */
 export type Resolve = (args: string[], pubspec: string) => Promise<Map<string, string>>
 
-export type UnitKind = 'single' | 'minor' | 'group'
+export type UnitKind = 'single' | 'minor' | 'group' | 'flutter'
 
 export interface Unit {
   kind: UnitKind
-  /** minor: direct dependencies that change in U (may be empty when only fixed transitive ones change). single / group: S. */
+  /** minor: direct dependencies that change in U (may be empty when only fixed transitive ones change). single / group: S. flutter: the direct dependencies raised with the new Flutter. */
   members: string[]
   /** single / group: the versions in R of the members, and in S's resolution of the pinned dependencies outside S that it moves. minor: the versions in U of the pinned members. */
   targets: Record<string, string>

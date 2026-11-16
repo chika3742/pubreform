@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { UnitResult } from '../src/applier.ts'
 import type { Unit } from '../src/planner.ts'
 import type { Fix } from '../src/advisories.ts'
-import { type Outcome, type PrState, advisoryStatus, decide } from '../src/reconciler.ts'
+import { type Outcome, type PrState, advisoryStatus, decide, decideFlutter } from '../src/reconciler.ts'
 import { type Meta, REBASE_LINE, branchName, renderMeta } from '../src/render.ts'
 
 const ctx = { baseHash: 'base', configHash: 'config' }
@@ -248,5 +248,97 @@ describe('decide: pull requests without units', () => {
     expect(decide([], [], { uncertain: new Set(['http']) }, [p], [], ctx)).toEqual([{ op: 'none', pr: p }])
     const noMeta = pr(http, { meta: null })
     expect(decide([], [], { uncertain: new Set(['http']) }, [noMeta], [], ctx)).toEqual([{ op: 'none', pr: noMeta }])
+  })
+})
+
+describe('flutter', () => {
+  const target = { from: '3.47.7', to: '3.50.0', dartFrom: '3.13.5', dartTo: '3.14.0', released: new Date('2026-11-11T00:00:00Z') }
+  const flutterResult = (to: string, changes: Record<string, [string, string]> = {}): UnitResult => ({
+    ...result('flutter', changes, []),
+    flutter: { from: '3.47.7', to, dartTo: '3.14.0', files: [] },
+  })
+  const flutter = flutterResult('3.50.0')
+  const flutterPr = (overrides: Parameters<typeof pr>[1] = {}) =>
+    pr(flutter, { ...overrides, meta: overrides.meta === null ? null : { flutter: ['3.47.7', '3.50.0'], ...overrides.meta } })
+
+  describe('decideFlutter', () => {
+    const d = (open: PrState[], closed: PrState[] = [], reapply: 'on-change' | 'always' = 'on-change') =>
+      decideFlutter(target, open, closed, ctx, reapply)
+    test('skip when a person closed a pull request to the same version, whatever the packages', () => {
+      const closed = flutterPr({ number: 60, meta: { packages: { test: ['1.31.1', '1.32.0'] } } })
+      expect(d([], [closed])).toEqual({ op: 'skip', closedPr: closed })
+      expect(d([], [closed], 'always')).toEqual({ op: 'skip', closedPr: closed })
+    })
+    test('apply without a pull request, or when the closed one is another version or closed by pubreform', () => {
+      expect(d([])).toBe('apply')
+      expect(d([], [flutterPr({ meta: { flutter: ['3.47.7', '3.47.9'] } })])).toBe('apply')
+      expect(d([], [flutterPr({ meta: { closed: true } })])).toBe('apply')
+      expect(d([], [pr(http)])).toBe('apply')
+    })
+    test('always applies', () => {
+      expect(d([flutterPr()], [], 'always')).toBe('apply')
+    })
+    test('apply when anything of the pull request changed', () => {
+      expect(d([flutterPr({ meta: null })])).toBe('apply')
+      expect(d([flutterPr({ meta: { flutter: ['3.47.7', '3.47.9'] } })])).toBe('apply')
+      expect(d([flutterPr({ meta: { baseHash: 'old' } })])).toBe('apply')
+      expect(d([flutterPr({ meta: { configHash: 'old' } })])).toBe('apply')
+      const checked = flutterPr({ headSha: 'other' })
+      checked.body = checked.body.replace('- [ ]', '- [x]')
+      expect(d([checked])).toBe('apply')
+      expect(d([flutterPr({ mergeable: false, mergeableState: 'dirty' })])).toBe('apply')
+      expect(d([flutterPr({ headSha: 'c1', meta: { commit: 'c2', previous: 'c1' } })])).toBe('apply')
+    })
+    test('manual commits, and nothing changed', () => {
+      const manual = flutterPr({ headSha: 'other' })
+      expect(d([manual])).toEqual({ op: 'notifyManual', pr: manual })
+      const same = flutterPr()
+      expect(d([same, pr(http)])).toEqual({ op: 'none', pr: same })
+      const regenerated = flutterPr({ headSha: 'c2', meta: { commit: 'c2', previous: 'c1' } })
+      expect(d([regenerated])).toEqual({ op: 'none', pr: regenerated })
+      expect(d([flutterPr({ mergeable: null, mergeableState: 'unknown' })])).toMatchObject({ op: 'none' })
+    })
+  })
+
+  describe('decide', () => {
+    test('create without comparing the closed pull requests, which decideFlutter did', () => {
+      const closed = flutterPr()
+      expect(decide([flutter], [], noUncertain, [], [closed], ctx)).toEqual([
+        { op: 'create', result: flutter, branch: 'pubreform/flutter' },
+      ])
+    })
+    test('a new target is a content change; the same one is not', () => {
+      const p = flutterPr({ meta: { flutter: ['3.47.7', '3.47.9'], baseHash: 'old' } })
+      expect(decide([flutter], [], noUncertain, [p], [], ctx)).toEqual([{ op: 'regenerate', pr: p, result: flutter, contentChanged: true }])
+      const same = flutterPr({ meta: { baseHash: 'old' } })
+      expect(decide([flutter], [], noUncertain, [same], [], ctx)).toEqual([
+        { op: 'regenerate', pr: same, result: flutter, contentChanged: false },
+      ])
+      const withTest = flutterResult('3.50.0', { test: ['1.31.1', '1.32.0'] })
+      expect(decide([withTest], [], noUncertain, [flutterPr()], [], ctx)[0]).toMatchObject({ op: 'regenerate', contentChanged: true })
+    })
+    test('closed without a unit, whatever failed for the packages', () => {
+      const p = flutterPr({ meta: { packages: { test: ['1.31.1', '1.32.0'] } } })
+      const failed = [{ unit: { kind: 'single' as const, members: ['test'], targets: {} }, log: 'boom' }]
+      expect(decide([], failed, { uncertain: new Set(['test']) }, [p], [], ctx)).toEqual([
+        { op: 'error', unit: failed[0]!.unit, log: 'boom' },
+        { op: 'close', pr: p, unresolvable: undefined },
+      ])
+      const unresolvable = { version: '3.50.0', reason: 'version solving failed.' }
+      expect(decide([], [], noUncertain, [p], [], ctx, unresolvable)).toEqual([{ op: 'close', pr: p, unresolvable }])
+    })
+    test('a failed flutter unit comments on its pull request', () => {
+      const p = flutterPr()
+      const unit = { kind: 'flutter' as const, members: [], targets: {} }
+      expect(decide([], [{ unit, log: 'boom' }], noUncertain, [p], [], ctx)).toEqual([{ op: 'commentError', pr: p, log: 'boom' }])
+    })
+    test('takes over no pull request of a package', () => {
+      const p = pr(result('single', { test: ['1.31.1', '2.0.0'] }))
+      const withTest = flutterResult('3.50.0', { test: ['1.31.1', '1.32.0'] })
+      expect(decide([withTest], [], noUncertain, [p], [], ctx)).toEqual([
+        { op: 'create', result: withTest, branch: 'pubreform/flutter' },
+        { op: 'close', pr: p, supersededBy: undefined },
+      ])
+    })
   })
 })

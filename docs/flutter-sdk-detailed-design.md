@@ -435,10 +435,12 @@ fetchFlutterChangelog(releases: FlutterRelease[], from: string, to: string): Pro
 ```ts
 | { op: 'notifyManual'; pr: PrState; result?: UnitResult }                  // result を省略できるようにする
 | { op: 'skip'; result?: UnitResult; closedPr: PrState }                    // 同上
-| { op: 'close'; pr: PrState; supersededBy?: string; unresolvable?: string } // unresolvable: §9.5 のコメントにする
+| { op: 'close'; pr: PrState; supersededBy?: string; unresolvable?: FlutterUnresolvable } // unresolvable: §9.5 のコメントにする
+
+interface FlutterUnresolvable { version: string; reason: string } // version: T、reason: planFlutter の unresolvable
 ```
 
-`decide` の変更（引数に `flutterUnresolvable?: string` を足す）:
+`decide` の変更（引数に `flutterUnresolvable?: FlutterUnresolvable` を足す。§9.5 のコメントに `T` を書くので、説明の文と一緒に `T` も渡す）:
 
 | 箇所 | 変更 |
 |---|---|

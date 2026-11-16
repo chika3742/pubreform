@@ -96,17 +96,22 @@ export class GitHub {
     return data.filter((p) => p.merged_at === null && this.isOurs(p)).map((p) => this.toState(p))
   }
 
-  /** Creates a commit with the two files, and the files changed by the post_update commands, on top of the base commit. */
+  /**
+   * Creates a commit with the two files, more files of the update (`extra`, such as .fvmrc), and the files changed by
+   * the post_update commands, on top of the base commit.
+   */
   async createCommit(opts: {
     baseSha: string
     baseTree: string
     files: PubFiles
+    extra?: { path: string; content: string }[]
     generated?: TreeEntry[]
     message: string
   }): Promise<string> {
     const tree: TreeItem[] = [
       { path: 'pubspec.yaml', mode: '100644', type: 'blob', content: opts.files.pubspec },
       { path: 'pubspec.lock', mode: '100644', type: 'blob', content: opts.files.lock },
+      ...(opts.extra ?? []).map((f): TreeItem => ({ path: f.path, mode: '100644', type: 'blob', content: f.content })),
     ]
     for (const entry of opts.generated ?? []) {
       if ('deleted' in entry) {

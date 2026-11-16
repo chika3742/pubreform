@@ -3,15 +3,19 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parse } from 'yaml'
-import type { UnitResult } from './applier.ts'
+import type { FlutterChange, UnitResult } from './applier.ts'
+import { flutterChangelogUrl } from './flutter.ts'
 import type { Unit, UnitKind } from './planner.ts'
 import { compareVersions, parseVersion } from './version.ts'
 
 export const BRANCH_PREFIX = 'pubreform/'
+export const FLUTTER_BRANCH = `${BRANCH_PREFIX}flutter`
 
 export interface Meta {
   v: 1
   kind: UnitKind
+  /** The Flutter versions of a flutter pull request. */
+  flutter?: [from: string, to: string]
   packages: Record<string, [from: string, to: string]>
   baseHash: string
   configHash: string
@@ -34,6 +38,8 @@ export function branchName(unit: Unit): string {
       return `${BRANCH_PREFIX}minor-and-patch`
     case 'group':
       return `${BRANCH_PREFIX}group/${[...unit.members].sort()[0]}`
+    case 'flutter':
+      return FLUTTER_BRANCH
   }
 }
 
@@ -64,6 +70,8 @@ export function title(result: UnitResult): string {
   // single, and minor / group with one change, name the package.
   const name = kind === 'single' ? members[0]! : changed.size === 1 ? [...changed.keys()][0] : undefined
   const prefix = result.advisories.length > 0 ? SECURITY_PREFIX : ''
+  // The packages raised with Flutter are only in the tables.
+  if (result.flutter) return `${prefix}Update Flutter from ${result.flutter.from} to ${result.flutter.to}`
   if (name !== undefined) return `${prefix}Update ${name} from ${changed.get(name)?.from ?? '?'} to ${to(name)}`
   if (kind === 'minor') return `${prefix}Update minor and patch (${changed.size} packages)`
   return `${prefix}Update ${[...members].sort().map((n) => `${n} to ${to(n)}`).join(', ')}`
@@ -77,7 +85,21 @@ function changeTable(result: UnitResult, link: boolean): string {
   return ['| Package | From | To | Type |', '|---|---|---|---|', ...lines].join('\n')
 }
 
+function flutterTable(flutter: FlutterChange): string {
+  return [
+    '| | From | To |',
+    '|---|---|---|',
+    `| Flutter | ${flutter.from} | ${flutter.to} |`,
+    // Without the Dart of the current version in the release list, there is no Dart row.
+    ...(flutter.dartFrom === undefined ? [] : [`| Dart | ${flutter.dartFrom} | ${flutter.dartTo} |`]),
+  ].join('\n')
+}
+
 export function commitMessage(result: UnitResult): string {
+  if (result.flutter) {
+    const tables = [flutterTable(result.flutter), ...(rows(result).length > 0 ? [changeTable(result, false)] : [])]
+    return `${title(result)}\n\n${tables.join('\n\n')}\n`
+  }
   if (result.unit.kind === 'single' || rows(result).length === 1) return title(result)
   return `${title(result)}\n\n${changeTable(result, false)}\n`
 }
@@ -107,25 +129,31 @@ export function readPackageInfo(dir: string): PackageInfo {
 
 const HEADING = /^#{1,4}\s*\[?v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]*)?)\]?/
 
-/** The sections of versions in (from, to], in file order. Undefined when there are none. */
-export function extractChangelog(text: string, from: string, to: string): string | undefined {
+/** The sections of the versions that `keep` accepts, in file order. A section runs up to the next version heading. */
+export function changelogSections(text: string, keep: (version: string) => boolean): string[] {
   const sections: string[] = []
   let current: string[] | undefined
   for (const line of text.split(/\r?\n/)) {
     const m = HEADING.exec(line)
     if (m) {
-      let inRange = false
+      let kept = false
       try {
-        const v = parseVersion(m[1]!)
-        inRange = compareVersions(v, from) > 0 && compareVersions(v, to) <= 0
+        parseVersion(m[1]!)
+        kept = keep(m[1]!)
       } catch {}
       if (current) sections.push(current.join('\n').trimEnd())
-      current = inRange ? [line] : undefined
+      current = kept ? [line] : undefined
     } else if (current) {
       current.push(line)
     }
   }
   if (current) sections.push(current.join('\n').trimEnd())
+  return sections
+}
+
+/** The sections of versions in (from, to], in file order. Undefined when there are none. */
+export function extractChangelog(text: string, from: string, to: string): string | undefined {
+  const sections = changelogSections(text, (v) => compareVersions(v, from) > 0 && compareVersions(v, to) <= 0)
   return sections.length > 0 ? sections.join('\n\n') : undefined
 }
 
@@ -212,7 +240,7 @@ export function closeFence(text: string): string {
   return open === undefined ? text : `${text}\n${open.indent}${open.fence}`
 }
 
-function truncate(text: string, budget: number, name: string): string {
+function truncate(text: string, budget: number, fullUrl: string): string {
   if (text.length <= budget) return closeFence(text)
   const lines: string[] = []
   let length = 0
@@ -221,7 +249,17 @@ function truncate(text: string, budget: number, name: string): string {
     lines.push(line)
     length += line.length + 1
   }
-  return `${closeFence(lines.join('\n'))}\n…\n\n[Full changelog](${changelogUrl(name)})`
+  return `${closeFence(lines.join('\n'))}\n…\n\n[Full changelog](${fullUrl})`
+}
+
+const changelogDetails = (changelog: string) => `<details>\n<summary>Changelog</summary>\n\n${changelog}\n\n</details>`
+
+function flutterSection(flutter: FlutterChange, changelog: string | undefined): string {
+  return [
+    `### Flutter ${flutter.from} → ${flutter.to}`,
+    `[Release](https://github.com/flutter/flutter/releases/tag/${flutter.to})`,
+    changelog === undefined ? `[Changelog](${flutterChangelogUrl(flutter.to)})` : changelogDetails(changelog),
+  ].join('\n\n')
 }
 
 function packageSection(name: string, change: { from: string; to: string }, info: PackageInfo, changelog: string | undefined): string {
@@ -231,7 +269,7 @@ function packageSection(name: string, change: { from: string; to: string }, info
   if (changelog === undefined) {
     parts.push(`[Changelog](${changelogUrl(name)})`)
   } else {
-    parts.push(`<details>\n<summary>Changelog</summary>\n\n${changelog}\n\n</details>`)
+    parts.push(changelogDetails(changelog))
   }
   return parts.join('\n\n')
 }
@@ -274,6 +312,7 @@ export function metaOf(
   const meta: Meta = {
     v: 1,
     kind: result.unit.kind,
+    ...(result.flutter ? { flutter: [result.flutter.from, result.flutter.to] } : {}),
     packages: Object.fromEntries(rows(result).map(([name, c]) => [name, [c.from, c.to]])),
     baseHash: hashes.baseHash,
     configHash: hashes.configHash,
@@ -332,22 +371,37 @@ export function renderBody(
 ): string {
   const changes = rows(result)
   const generated = opts.generated ?? 0
+  const { flutter } = result
   const build = (withChangelog: boolean) => {
-    const budget = Math.floor(CHANGELOG_BUDGET / changes.length)
+    // Flutter counts as one more changelog.
+    const budget = Math.floor(CHANGELOG_BUDGET / (changes.length + (flutter ? 1 : 0)))
     const sections = changes.map(([name, change]) => {
       const info = infos.get(name) ?? {}
       let changelog: string | undefined
       if (withChangelog && info.changelog !== undefined) {
         const extracted = extractChangelog(info.changelog, change.from, change.to)
-        if (extracted !== undefined) changelog = truncate(withoutBacklinks(extracted, info.source), budget, name)
+        if (extracted !== undefined) changelog = truncate(withoutBacklinks(extracted, info.source), budget, changelogUrl(name))
       }
       return packageSection(name, change, info, changelog)
     })
+    const packages = flutter
+      ? [
+          'Updates Flutter.',
+          flutterTable(flutter),
+          ...(changes.length > 0
+            ? ['Updates the following packages together, because the new Flutter requires them.', changeTable(result, true)]
+            : []),
+        ]
+      : ['Updates the following packages.', changeTable(result, true)]
+    const flutterChangelog =
+      flutter?.changelog !== undefined && withChangelog
+        ? truncate(flutter.changelog, budget, flutterChangelogUrl(flutter.to))
+        : undefined
     return [
       ...(result.advisories.length > 0 ? [advisoryTable(result, opts.timeZone)] : []),
-      'Updates the following packages.',
-      changeTable(result, true),
+      ...packages,
       ...(generated > 0 ? [`Files changed by the \`post_update\` commands: ${generated}`] : []),
+      ...(flutter ? [flutterSection(flutter, flutterChangelog)] : []),
       ...sections,
       '---',
       REBASE_LINE,
@@ -360,14 +414,22 @@ export function renderBody(
 
 // ---- Comments ----
 
-export function contentChangedComment(before: Meta['packages'], after: Record<string, { from: string; to: string }>): string {
+/** `flutter` is for a flutter pull request: its row comes first, also when its target did not change. */
+export function contentChangedComment(
+  before: Meta['packages'],
+  after: Record<string, { from: string; to: string }>,
+  flutter?: { before?: [from: string, to: string]; after: { from: string; to: string } },
+): string {
   const names = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()
+  const cell = (from: string | undefined, to: string | undefined) => (from && to ? `${from} → ${to}` : '–')
   const rows: string[] = []
+  if (flutter) {
+    rows.push(`| Flutter | ${cell(flutter.before?.[0], flutter.before?.[1])} | ${cell(flutter.after.from, flutter.after.to)} |`)
+  }
   for (const name of names) {
     const b = before[name]
     const a = after[name]
     if (b && a && b[1] === a.to) continue
-    const cell = (from: string | undefined, to: string | undefined) => (from && to ? `${from} → ${to}` : '–')
     rows.push(`| ${name} | ${cell(b?.[0], b?.[1])} | ${cell(a?.from, a?.to)} |`)
   }
   return ['The update in this PR has changed.', '', '| Package | Before | After |', '|---|---|---|', ...rows].join('\n')
@@ -375,6 +437,29 @@ export function contentChangedComment(before: Meta['packages'], after: Record<st
 
 export function closeComment(supersededBy?: number): string {
   return supersededBy === undefined ? 'Closing: this update is no longer needed.' : `Closing: superseded by #${supersededBy}.`
+}
+
+/** A fence longer than any backtick run in the text. */
+function fenceFor(text: string): string {
+  const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((m) => m[0].length))
+  return '`'.repeat(Math.max(3, longest + 1))
+}
+
+/** Closing a flutter pull request because the new Flutter does not resolve. `reason` is pub's explanation. */
+export function unresolvableComment(version: string, reason: string): string {
+  const fence = fenceFor(reason)
+  return [
+    `Closing: Flutter ${version} does not resolve with the dependencies of this project.`,
+    '',
+    '<details>',
+    '<summary>Reason</summary>',
+    '',
+    fence,
+    reason,
+    fence,
+    '',
+    '</details>',
+  ].join('\n')
 }
 
 export function manualMarker(headSha: string): string {
@@ -402,9 +487,7 @@ export function errorHashOf(comment: string): string | undefined {
 
 /** `hash` defaults to the hash of the log. */
 export function errorComment(log: string, hash = errorHash(log)): string {
-  // A fence longer than any backtick run in the log.
-  const longest = Math.max(0, ...[...log.matchAll(/`+/g)].map((m) => m[0].length))
-  const fence = '`'.repeat(Math.max(3, longest + 1))
+  const fence = fenceFor(log)
   return [
     'pubreform failed to update this PR.',
     '',

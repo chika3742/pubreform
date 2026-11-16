@@ -24,6 +24,16 @@ export interface PostUpdate {
   env: string[]
 }
 
+export type Reapply = 'on-change' | 'always'
+
+export interface FlutterConfig {
+  enabled: boolean
+  /** How the environment constraints are rewritten. Defaults to the top-level `versioning`. */
+  versioning: Versioning
+  /** Whether a Flutter update without changes is applied again (`always`) or not (`on-change`). */
+  reapply: Reapply
+}
+
 export interface Config {
   schedule: { cron: string; timezone: string }
   min_release_age_days: number
@@ -31,6 +41,7 @@ export interface Config {
   versioning: Versioning
   ignore: IgnoreRule[]
   post_update: PostUpdate[]
+  flutter: FlutterConfig
 }
 
 export class ConfigError extends Error {
@@ -159,6 +170,31 @@ function parsePostUpdate(v: unknown): PostUpdate[] {
   })
 }
 
+function parseVersioning(v: unknown, path: string): Versioning {
+  if (v !== 'increase' && v !== 'lockfile-only') fail(path, 'must be "increase" or "lockfile-only"')
+  return v
+}
+
+function parseFlutter(v: unknown, versioning: Versioning): FlutterConfig {
+  if (!isObject(v)) fail('flutter', 'must be a map')
+  checkKeys(v, 'flutter', ['enabled', 'versioning', 'reapply'])
+  let enabled = true
+  if (v.enabled !== undefined) {
+    if (typeof v.enabled !== 'boolean') fail('flutter.enabled', 'must be true or false')
+    enabled = v.enabled
+  }
+  let reapply: Reapply = 'on-change'
+  if (v.reapply !== undefined) {
+    if (v.reapply !== 'on-change' && v.reapply !== 'always') fail('flutter.reapply', 'must be "on-change" or "always"')
+    reapply = v.reapply
+  }
+  return {
+    enabled,
+    versioning: v.versioning === undefined ? versioning : parseVersioning(v.versioning, 'flutter.versioning'),
+    reapply,
+  }
+}
+
 /** Validates a parsed config and fills in defaults. Throws ConfigError. */
 export function validateConfig(raw: unknown): Config {
   if (!isObject(raw)) fail('', 'the config must be a map')
@@ -170,6 +206,7 @@ export function validateConfig(raw: unknown): Config {
     'versioning',
     'ignore',
     'post_update',
+    'flutter',
   ])
   if (raw.$schema !== undefined) requireString(raw.$schema, '$schema')
   if (raw.schedule === undefined) fail('schedule', 'is required')
@@ -184,13 +221,7 @@ export function validateConfig(raw: unknown): Config {
     minReleaseAgeDays = v
   }
 
-  let versioning: Versioning = 'increase'
-  if (raw.versioning !== undefined) {
-    if (raw.versioning !== 'increase' && raw.versioning !== 'lockfile-only') {
-      fail('versioning', 'must be "increase" or "lockfile-only"')
-    }
-    versioning = raw.versioning
-  }
+  const versioning: Versioning = raw.versioning === undefined ? 'increase' : parseVersioning(raw.versioning, 'versioning')
 
   return {
     schedule,
@@ -199,6 +230,7 @@ export function validateConfig(raw: unknown): Config {
     versioning,
     ignore: raw.ignore === undefined ? [] : parseIgnore(raw.ignore),
     post_update: raw.post_update === undefined ? [] : parsePostUpdate(raw.post_update),
+    flutter: parseFlutter(raw.flutter === undefined ? {} : raw.flutter, versioning),
   }
 }
 

@@ -92,6 +92,15 @@ ignore:
   ['post_update env ACTIONS_', 'schedule: {cron: "0 9 * * 1"}\npost_update: [{run: a, env: [ACTIONS_RUNTIME_TOKEN]}]', false],
   ['post_update env lower input_', 'schedule: {cron: "0 9 * * 1"}\npost_update: [{run: a, env: [input_x]}]', true],
   ['post_update env INPUT', 'schedule: {cron: "0 9 * * 1"}\npost_update: [{run: a, env: [INPUT]}]', true],
+  ['flutter full', 'schedule: {cron: "0 9 * * 1"}\nflutter: {enabled: false, versioning: lockfile-only, reapply: always}', true],
+  ['flutter empty', 'schedule: {cron: "0 9 * * 1"}\nflutter: {}', true],
+  ['flutter null', 'schedule: {cron: "0 9 * * 1"}\nflutter:', false],
+  ['flutter list', 'schedule: {cron: "0 9 * * 1"}\nflutter: [a]', false],
+  ['flutter unknown key', 'schedule: {cron: "0 9 * * 1"}\nflutter: {version: 3.50.0}', false],
+  ['flutter enabled string', 'schedule: {cron: "0 9 * * 1"}\nflutter: {enabled: "true"}', false],
+  ['flutter versioning unknown', 'schedule: {cron: "0 9 * * 1"}\nflutter: {versioning: widen}', false],
+  ['flutter reapply unknown', 'schedule: {cron: "0 9 * * 1"}\nflutter: {reapply: never}', false],
+  ['flutter reapply on-change', 'schedule: {cron: "0 9 * * 1"}\nflutter: {reapply: on-change}', true],
 ]
 
 describe('schema and config.ts agree', () => {
